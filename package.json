@@ -1,0 +1,42 @@
+{
+  "name": "nb-search",
+  "version": "0.1.0",
+  "description": "Standalone synchronous search and durable research runtime",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "bin": {
+    "nb-search": "./dist/cli.mjs",
+    "nb-search-mcp": "./dist/mcp.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "tsdown": "0.22.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
+  }
+}
