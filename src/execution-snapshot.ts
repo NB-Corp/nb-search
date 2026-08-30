@@ -121,7 +121,7 @@ export function resolveSnapshotBindings(
   const bindings = new Map<string, SecretBinding>();
   for (const binding of snapshot.credential_bindings) {
     const value = resolveWorkerGrant(binding.worker_grant, env, opaqueGrants);
-    if (value === undefined) {
+    if (value === undefined || (binding.provider_id === 'grok' && value.length > 8192)) {
       throw new NbSearchError('CONFIGURATION_ERROR', `Worker credential grant is unavailable for slot ${binding.credential_slot_id}.`);
     }
     bindings.set(binding.credential_slot_id, {
@@ -146,6 +146,9 @@ function resolveWorkerGrant(
   catch { return undefined; }
   if (!isRecord(value)) return undefined;
   const raw = value[grant.key];
+  if (grant.key === 'grok') {
+    return isRecord(raw) && typeof raw['apiKey'] === 'string' ? nonempty(raw['apiKey']) : undefined;
+  }
   if (grant.key === 'searchGateway' && isRecord(raw)) {
     return nonempty(typeof raw['token'] === 'string' ? raw['token'] : undefined)
       ?? nonempty(typeof raw['apiKey'] === 'string' ? raw['apiKey'] : undefined);

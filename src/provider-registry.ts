@@ -3,7 +3,8 @@ import { stableFingerprint } from './config-schema.ts';
 import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
 import {
-  ExaProvider, SearchGatewayProvider, TavilyProvider, validateProviderBaseUrl, validateSearchPath,
+  ExaProvider, GrokProvider, SearchGatewayProvider, TavilyProvider, validateGrokBaseUrl, validateGrokModel,
+  validateProviderBaseUrl, validateSearchPath,
 } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
 import type { ProviderCapability, ProviderId, SearchProvider } from './types.ts';
@@ -107,7 +108,7 @@ export class ProviderRegistry {
 }
 
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] {
-  return [exaRegistration, searchGatewayRegistration, tavilyRegistration];
+  return [exaRegistration, grokRegistration, searchGatewayRegistration, tavilyRegistration];
 }
 
 const exaRegistration: ProviderRegistration = {
@@ -150,6 +151,38 @@ const tavilyRegistration: ProviderRegistration = {
         ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
         ...(typeof context.instance.options['search_path'] === 'string' ? { searchPath: context.instance.options['search_path'] } : {}),
         providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id,
+        clock: context.clock,
+      }),
+    };
+  },
+};
+
+const grokRegistration: ProviderRegistration = {
+  descriptor: {
+    provider_id: 'grok', adapter_version: 'l3', capabilities: ['retrieval'],
+    activation: { kind: 'credential', required: true, endpoint: 'required' },
+    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'text', path: '/chat/completions' }],
+    auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['model'],
+    option_schema: {
+      type: 'object',
+      properties: { model: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$' } },
+      additionalProperties: false,
+    },
+  },
+  validate: validateGrokInstance,
+  create(context) {
+    const credential = requireCredential(context);
+    if (context.instance.base_url === undefined || typeof context.instance.options['model'] !== 'string') {
+      throw new NbSearchError('CONFIGURATION_ERROR', `Provider instance ${context.instance_id} is incomplete.`);
+    }
+    return {
+      retrieval: new GrokProvider({
+        apiKey: credential.value,
+        baseUrl: context.instance.base_url,
+        model: context.instance.options['model'],
+        transport: context.transports.http,
+        providerInstanceId: context.instance_id,
+        credentialSlotId: credential.credential_slot_id,
         clock: context.clock,
       }),
     };
@@ -202,6 +235,12 @@ function validateGatewayInstance(instanceId: string, instance: ProviderInstanceC
   if (profile !== undefined && (typeof profile !== 'string' || profile.trim() === '' || profile !== profile.trim() || profile.length > 256)) {
     throw invalidOption(instanceId);
   }
+}
+
+function validateGrokInstance(instanceId: string, instance: ProviderInstanceConfig): void {
+  validateKnownOptions(instanceId, instance, ['model']);
+  if (instance.base_url !== undefined) validateGrokBaseUrl(instance.base_url);
+  validateGrokModel(instance.options['model']);
 }
 
 function validateKnownOptions(instanceId: string, instance: ProviderInstanceConfig, keys: readonly string[]): void {

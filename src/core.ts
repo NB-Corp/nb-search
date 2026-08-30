@@ -64,7 +64,7 @@ export class SearchService {
     }
 
     const execution = await this.executor.execute(plan, {
-      query, limit: maxResults, profile,
+      query, limit: maxResults, profile, request_time_utc: startedAt.toISOString(),
       ...(routedRequest.intent === undefined ? {} : { intent: routedRequest.intent }),
       ...(routedRequest.freshness === undefined ? {} : { freshness: routedRequest.freshness }),
     }, budgetMs, request.signal);

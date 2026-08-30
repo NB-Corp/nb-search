@@ -63,7 +63,7 @@ describe('NbSearchRuntime contract', () => {
       NB_SEARCH_EXA_API_KEY: 'profile-secret-sentinel',
     }, {
       config: {
-        provider_instances: { 'tavily.default': { enabled: false } },
+        provider_instances: { 'tavily.default': { enabled: false }, 'grok.default': { enabled: false } },
         profiles: {
           default: { stages: [{ kind: 'parallel', invocations: [{
             provider_instance_id: 'exa.default', capability: 'answer', role: 'answer', trigger: 'always',
@@ -92,7 +92,7 @@ describe('NbSearchRuntime contract', () => {
     }, {
       launcher: { async launch() { /* Snapshot inspection does not start a worker. */ } },
       config: {
-        provider_instances: { 'tavily.default': { enabled: false } },
+        provider_instances: { 'tavily.default': { enabled: false }, 'grok.default': { enabled: false } },
         credential_slots: { 'exa.default': { provider_id: 'exa', worker_grant: 'higher-opaque-grant' } },
       },
     });

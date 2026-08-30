@@ -106,6 +106,7 @@ export type {
   SnapshotProviderInstance,
 } from './execution-snapshot.ts';
 export type { HttpRequest, HttpResponse, HttpTransport, JsonRequest, JsonResponse, JsonTransport } from './transport.ts';
+export { ResponseLimitError } from './transport.ts';
 export type {
   ArtifactState,
   AttemptState,

@@ -10,7 +10,7 @@ export type SearchProfileId = typeof SEARCH_PROFILE_IDS[number];
 export type SearchIntent = typeof SEARCH_INTENTS[number];
 export type Freshness = typeof FRESHNESS_VALUES[number];
 
-export type ProviderName = 'exa' | 'tavily' | (string & {});
+export type ProviderName = 'exa' | 'tavily' | 'grok' | (string & {});
 export type ProviderId = ProviderName;
 export type ProviderInstanceId = string;
 export type CredentialSlotId = string;
@@ -39,6 +39,7 @@ export interface PublicError {
 export interface ProviderSearchRequest {
   query: string; limit: number; signal: AbortSignal;
   profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness;
+  request_time_utc?: string;
 }
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
@@ -140,7 +141,7 @@ export interface CapabilityEnvelope {
   search: { max_results: 20; max_timeout_ms: 45000 };
   research: { max_sources: 100; max_duration_ms: 3600000; detached_worker: true; guaranteed_process_survival: false };
   providers: {
-    exa: { configured: boolean }; tavily: { configured: boolean };
+    exa: { configured: boolean }; tavily: { configured: boolean }; grok: { configured: boolean };
     instances?: Array<{
       provider_id: ProviderId; provider_instance_id: ProviderInstanceId; credential_slot_id?: CredentialSlotId;
       enabled: boolean; ready: boolean; capabilities: readonly ProviderCapability[];

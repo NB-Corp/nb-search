@@ -18,7 +18,7 @@ export interface AppConfiguration {
   log_level: 'error' | 'warn' | 'info' | 'debug';
   providers: SearchProvider[];
   providers_by_instance: ReadonlyMap<string, SearchProvider>;
-  provider_configured: Record<'exa' | 'tavily', boolean>;
+  provider_configured: Record<'exa' | 'tavily' | 'grok', boolean>;
   provider_readiness: Readonly<Record<string, boolean>>;
   resolved: ResolvedConfiguration;
   registry: ProviderRegistry;
@@ -75,7 +75,7 @@ export function loadConfiguration(
       providersByInstance.set(instanceId, ports.retrieval);
     }
   }
-  const configured = (providerId: 'exa' | 'tavily'): boolean => Object.entries(resolved.config.provider_instances)
+  const configured = (providerId: 'exa' | 'tavily' | 'grok'): boolean => Object.entries(resolved.config.provider_instances)
     .some(([instanceId, instance]) => instance.provider_id === providerId && readiness[instanceId] === true);
   return {
     home: resolve(resolved.config.home ?? '.'),
@@ -84,7 +84,7 @@ export function loadConfiguration(
     log_level: resolved.config.log_level,
     providers,
     providers_by_instance: providersByInstance,
-    provider_configured: { exa: configured('exa'), tavily: configured('tavily') },
+    provider_configured: { exa: configured('exa'), tavily: configured('tavily'), grok: configured('grok') },
     provider_readiness: readiness,
     resolved,
     registry,

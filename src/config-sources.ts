@@ -7,7 +7,7 @@ import {
   type CanonicalConfig, type CanonicalConfigPatch, type CredentialSlotConfig, type ProviderInstancePatch,
 } from './config-schema.ts';
 import { NbSearchError } from './errors.ts';
-import { validateProviderBaseUrl } from './providers.ts';
+import { DEFAULT_GROK_MODEL, validateGrokBaseUrl, validateGrokModel, validateProviderBaseUrl } from './providers.ts';
 
 export interface ConfigurationDiagnostic {
   code: 'LEGACY_NOT_FOUND' | 'LEGACY_INVALID' | 'LEGACY_UNSUPPORTED' | 'SOURCE_APPLIED' | 'GATEWAY_AGGREGATE_INCOMPLETE';
@@ -18,7 +18,7 @@ export interface ConfigurationDiagnostic {
 
 export type WorkerGrant =
   | { kind: 'environment'; name: string }
-  | { kind: 'legacy-json'; path: string; key: 'exa' | 'tavily' | 'searchGateway' }
+  | { kind: 'legacy-json'; path: string; key: 'exa' | 'tavily' | 'grok' | 'searchGateway' }
   | { kind: 'opaque'; id: string };
 
 export interface SecretBinding {
@@ -58,6 +58,7 @@ interface SourcePatch { label: string; patch: CanonicalConfigPatch }
 
 const LEGACY_REQUEST_TIMEOUT_SECONDS = 90;
 const LEGACY_PROVIDER_TIMEOUT_SECONDS = 20;
+const LEGACY_GROK_TIMEOUT_SECONDS = 30;
 const LEGACY_RETRY_MAX_ATTEMPTS = 2;
 const LEGACY_RETRY_BACKOFF_MS = 500;
 
@@ -96,6 +97,7 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
   const provenance = new Map<string, string>();
   let merged: unknown = {};
   for (const source of sources) merged = mergeConfig(merged, source.patch, source.label, provenance);
+  materializeGrokModelDefaults(merged, provenance);
   const beforeCompatibility = parseResolvedConfig(merged);
   const preliminarySecrets = resolveConfiguredSecrets(beforeCompatibility, env, legacySecrets, provenance);
   addCompatibilityProfiles(merged, provenance, preliminarySecrets, diagnostics);
@@ -140,11 +142,17 @@ export function defaultConfiguration(home: string): CanonicalConfigPatch {
         provider_id: 'search-gateway', enabled: false, credential_slot_id: 'search-gateway.aggregate',
         timeout_ms: 40_000, retry: { max_attempts: 2, backoff_ms: 500, max_backoff_ms: 2_000 }, options: {},
       },
+      'grok.default': {
+        provider_id: 'grok', enabled: true, credential_slot_id: 'grok.default',
+        timeout_ms: 30_000, retry: { max_attempts: 2, backoff_ms: 500, max_backoff_ms: 2_000 },
+        options: { model: DEFAULT_GROK_MODEL },
+      },
     },
     credential_slots: {
       'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' },
       'tavily.default': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_API_KEY' },
       'search-gateway.aggregate': { provider_id: 'search-gateway', env: 'NB_SEARCH_GATEWAY_TOKEN' },
+      'grok.default': { provider_id: 'grok', env: 'NB_SEARCH_GROK_API_KEY' },
     },
     profiles: {
       [DEFAULT_PROFILE_ID]: {
@@ -190,6 +198,7 @@ function readLegacySource(
   const credentialSlots: Record<string, CredentialSlotConfig> = {};
   mapLegacyProvider('exa', value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyProvider('tavily', value, path, providerInstances, credentialSlots, secrets, diagnostics);
+  mapLegacyGrok(value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyGateway(value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyPolicies(value, path, providerInstances, diagnostics);
   const patch: CanonicalConfigPatch = {};
@@ -274,6 +283,54 @@ function mapLegacyProvider(
   });
 }
 
+function mapLegacyGrok(
+  value: Record<string, unknown>,
+  path: string,
+  instances: Record<string, ProviderInstancePatch>,
+  slots: Record<string, CredentialSlotConfig>,
+  secrets: Map<string, SecretBinding>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const raw = value['grok'];
+  if (raw === undefined) return;
+  if (!isRecord(raw)) {
+    diagnostics.push({ code: 'LEGACY_INVALID', source: 'legacy', path, message: 'Legacy grok was invalid and was ignored.' });
+    return;
+  }
+  const patch: ProviderInstancePatch = {};
+  const base = nonempty(stringValue(raw['apiUrl']));
+  if (base !== undefined) {
+    if (isStrictGrokUrl(base)) patch.base_url = base;
+    else legacyGrokWarning(path, 'grok.apiUrl', diagnostics);
+  } else if (raw['apiUrl'] !== undefined && (typeof raw['apiUrl'] !== 'string' || raw['apiUrl'].trim() !== '')) {
+    legacyGrokWarning(path, 'grok.apiUrl', diagnostics);
+  }
+  const model = nonempty(stringValue(raw['model']));
+  if (model !== undefined) {
+    if (isStrictGrokModel(model)) patch.options = { model };
+    else legacyGrokWarning(path, 'grok.model', diagnostics);
+  } else if (raw['model'] !== undefined && (typeof raw['model'] !== 'string' || raw['model'].trim() !== '')) {
+    legacyGrokWarning(path, 'grok.model', diagnostics);
+  }
+  if (Object.keys(patch).length > 0) instances['grok.default'] = { ...instances['grok.default'], ...patch };
+  const credential = nonempty(stringValue(raw['apiKey']));
+  if (credential === undefined) {
+    if (raw['apiKey'] !== undefined && (typeof raw['apiKey'] !== 'string' || raw['apiKey'].trim() !== '')) {
+      legacyGrokWarning(path, 'grok.apiKey', diagnostics);
+    }
+    return;
+  }
+  if (credential.length > 8192) {
+    legacyGrokWarning(path, 'grok.apiKey', diagnostics);
+    return;
+  }
+  slots['grok.default'] = { provider_id: 'grok', worker_grant: 'legacy:grok' };
+  secrets.set('grok.default', {
+    credential_slot_id: 'grok.default', provider_id: 'grok', value: credential,
+    worker_grant: { kind: 'legacy-json', path, key: 'grok' },
+  });
+}
+
 function mapLegacyPolicies(
   value: Record<string, unknown>,
   path: string,
@@ -320,6 +377,15 @@ function mapLegacyPolicies(
       },
     };
   }
+  const grokTimeoutSeconds = legacyNumber(
+    providerTimeouts['grok'], LEGACY_GROK_TIMEOUT_SECONDS, 0.1,
+    path, 'searchLayer.providerTimeouts.grok', diagnostics, 3_600,
+  );
+  instances['grok.default'] = {
+    ...instances['grok.default'],
+    timeout_ms: Math.round(Math.min(requestTimeoutSeconds, grokTimeoutSeconds) * 1000),
+    retry: { max_attempts: maxAttempts, backoff_ms: Math.round(backoffMs) },
+  };
   const gatewayTimeoutSeconds = legacyNumber(
     providerTimeouts['searchGateway'], 40, 0.1,
     path, 'searchLayer.providerTimeouts.searchGateway', diagnostics, 3_600,
@@ -373,11 +439,67 @@ function environmentPatch(
   mapEnvironmentEndpoint('tavily', 'NB_SEARCH_TAVILY_BASE_URL', ['TAVILY_API_BASE', 'TAVILY_API_URL'], env, instances);
   mapEnvironmentPolicy('exa', env, base, instances, diagnostics);
   mapEnvironmentPolicy('tavily', env, base, instances, diagnostics);
+  mapEnvironmentGrok(env, base, instances, slots, diagnostics);
   mapEnvironmentGateway(env, base, instances, slots, diagnostics);
   mapEnvironmentRetry(env, instances);
   if (Object.keys(instances).length > 0) patch.provider_instances = instances;
   if (Object.keys(slots).length > 0) patch.credential_slots = slots;
   return patch;
+}
+
+function mapEnvironmentGrok(
+  env: NodeJS.ProcessEnv,
+  base: CanonicalConfig,
+  instances: Record<string, ProviderInstancePatch>,
+  slots: Record<string, CredentialSlotConfig>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const instanceId = 'grok.default';
+  const patch: ProviderInstancePatch = { ...instances[instanceId] };
+  const primaryBase = nonempty(env['NB_SEARCH_GROK_BASE_URL']);
+  const aliasBase = nonempty(env['GROK_API_URL']);
+  if (primaryBase !== undefined) {
+    if (!isStrictGrokUrl(primaryBase)) throw new NbSearchError('CONFIGURATION_ERROR', 'NB_SEARCH_GROK_BASE_URL is invalid.');
+    patch.base_url = primaryBase;
+  } else if (aliasBase !== undefined) {
+    if (isStrictGrokUrl(aliasBase)) patch.base_url = aliasBase;
+    else environmentLegacyWarning('GROK_API_URL', diagnostics);
+  }
+  const primaryModel = nonempty(env['NB_SEARCH_GROK_MODEL']);
+  const aliasModel = nonempty(env['GROK_MODEL']);
+  if (primaryModel !== undefined) {
+    if (!isStrictGrokModel(primaryModel)) throw new NbSearchError('CONFIGURATION_ERROR', 'NB_SEARCH_GROK_MODEL is invalid.');
+    patch.options = { ...patch.options, model: primaryModel };
+  } else if (aliasModel !== undefined) {
+    if (isStrictGrokModel(aliasModel)) patch.options = { ...patch.options, model: aliasModel };
+    else environmentLegacyWarning('GROK_MODEL', diagnostics);
+  }
+  const primaryKey = nonempty(env['NB_SEARCH_GROK_API_KEY']);
+  const aliasKey = nonempty(env['GROK_API_KEY']);
+  if (primaryKey !== undefined) {
+    if (primaryKey.length > 8192) throw new NbSearchError('CONFIGURATION_ERROR', 'NB_SEARCH_GROK_API_KEY is invalid.');
+    patch.credential_slot_id = instanceId;
+    slots[instanceId] = { provider_id: 'grok', env: 'NB_SEARCH_GROK_API_KEY' };
+  } else if (aliasKey !== undefined) {
+    if (aliasKey.length <= 8192) {
+      patch.credential_slot_id = instanceId;
+      slots[instanceId] = { provider_id: 'grok', env: 'GROK_API_KEY' };
+    } else environmentLegacyWarning('GROK_API_KEY', diagnostics);
+  }
+  const primaryTimeout = nonempty(env['NB_SEARCH_GROK_TIMEOUT_MS']);
+  const aliasTimeout = nonempty(env['SEARCH_LAYER_GROK_TIMEOUT_SECONDS']);
+  const requestTimeout = nonempty(env['SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS']);
+  if (primaryTimeout !== undefined) {
+    patch.timeout_ms = strictEnvironmentInteger(primaryTimeout, 'NB_SEARCH_GROK_TIMEOUT_MS', 100, 3_600_000);
+  } else if (aliasTimeout !== undefined || requestTimeout !== undefined) {
+    const providerSeconds = legacyEnvironmentNumber(aliasTimeout, 0.1, 'SEARCH_LAYER_GROK_TIMEOUT_SECONDS', diagnostics, 3_600);
+    const requestSeconds = legacyEnvironmentNumber(requestTimeout, 0.1, 'SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS', diagnostics, 3_600);
+    const inherited = base.provider_instances[instanceId]?.timeout_ms ?? 30_000;
+    patch.timeout_ms = providerSeconds === undefined
+      ? requestSeconds === undefined ? inherited : Math.min(inherited, Math.round(requestSeconds * 1000))
+      : Math.round(Math.min(providerSeconds, requestSeconds ?? Number.POSITIVE_INFINITY) * 1000);
+  }
+  if (Object.keys(patch).length > 0) instances[instanceId] = patch;
 }
 
 function mapEnvironmentGateway(
@@ -492,7 +614,7 @@ function mapEnvironmentRetry(
     ...(backoffMs === undefined ? {} : { backoff_ms: strictEnvironmentInteger(backoffMs, 'NB_SEARCH_RETRY_BACKOFF_MS', 0, 60_000) }),
     ...(maxBackoffMs === undefined ? {} : { max_backoff_ms: strictEnvironmentInteger(maxBackoffMs, 'NB_SEARCH_RETRY_MAX_BACKOFF_MS', 0, 300_000) }),
   };
-  for (const instanceId of ['exa.default', 'tavily.default', 'search-gateway.aggregate'] as const) {
+  for (const instanceId of ['exa.default', 'tavily.default', 'grok.default', 'search-gateway.aggregate'] as const) {
     instances[instanceId] = { ...instances[instanceId], retry: { ...instances[instanceId]?.retry, ...retry } };
   }
 }
@@ -531,6 +653,9 @@ function resolveConfiguredSecrets(
     if (slot.env !== undefined) {
       const value = nonempty(env[slot.env]);
       if (value !== undefined) {
+        if (slot.provider_id === 'grok' && value.length > 8192) {
+          throw new NbSearchError('CONFIGURATION_ERROR', `Credential grant is invalid for slot ${slotId}.`);
+        }
         secrets.set(slotId, {
           credential_slot_id: slotId, provider_id: slot.provider_id, value,
           worker_grant: { kind: 'environment', name: slot.env },
@@ -584,12 +709,24 @@ function addCompatibilityProfiles(
   const profiles = value['profiles'];
   const providerInstances = value['provider_instances'];
   const direct = (['exa.default', 'tavily.default'] as const).filter((instanceId) => isRecord(providerInstances[instanceId]));
+  const grok = isRecord(providerInstances['grok.default']) ? providerInstances['grok.default'] : undefined;
   const gateway = isRecord(providerInstances['search-gateway.aggregate'])
     ? providerInstances['search-gateway.aggregate'] : undefined;
   const requested = gateway?.['enabled'] === true;
   const base = typeof gateway?.['base_url'] === 'string' ? gateway['base_url'] : undefined;
   if (base !== undefined) validateProviderBaseUrl(base);
   const active = requested && base !== undefined && secrets.has('search-gateway.aggregate');
+  const grokSlotId = typeof grok?.['credential_slot_id'] === 'string' ? grok['credential_slot_id'] : undefined;
+  const grokCredential = grokSlotId === undefined ? undefined : secrets.get(grokSlotId);
+  const grokReady = grok?.['provider_id'] === 'grok'
+    && grok['enabled'] === true
+    && typeof grok['base_url'] === 'string'
+    && isStrictGrokUrl(grok['base_url'])
+    && isRecord(grok['options'])
+    && isStrictGrokModel(grok['options']['model'])
+    && grokCredential !== undefined
+    && grokCredential.credential_slot_id === grokSlotId
+    && grokCredential.provider_id === 'grok';
   if (requested && !active) {
     diagnostics.push({
       code: 'GATEWAY_AGGREGATE_INCOMPLETE', source: 'compatibility',
@@ -601,29 +738,62 @@ function addCompatibilityProfiles(
     const owner = provenance.get(`profiles.${profileId}`);
     if (owner !== undefined && owner !== 'defaults' && !owner.startsWith('compatibility')) continue;
     if (active) {
+      const invocations = ['search-gateway.aggregate', ...(grokReady ? ['grok.default'] : [])];
       profiles[profileId] = {
         stages: [{
           kind: profileId === 'fast' ? 'fallback' : 'parallel',
-          invocations: [{
-            provider_instance_id: 'search-gateway.aggregate', capability: 'retrieval', role: 'primary', trigger: 'always',
-          }],
-        }],
-      };
-      provenance.set(`profiles.${profileId}`, 'compatibility:search-gateway');
-    } else if (direct.length > 0) {
-      profiles[profileId] = {
-        stages: [{
-          kind: profileId === 'fast' ? 'fallback' : 'parallel',
-          invocations: direct.map((instanceId, index) => ({
-            provider_instance_id: instanceId,
-            capability: 'retrieval',
+          invocations: invocations.map((instanceId, index) => ({
+            provider_instance_id: instanceId, capability: 'retrieval',
             role: profileId === 'fast' && index > 0 ? 'fallback' : 'primary',
             trigger: profileId === 'fast' && index > 0 ? 'empty_or_failure' : 'always',
           })),
         }],
       };
-      provenance.set(`profiles.${profileId}`, 'compatibility:direct');
+      provenance.set(`profiles.${profileId}`, grokReady ? 'compatibility:search-gateway-grok' : 'compatibility:search-gateway');
+    } else if (direct.length > 0) {
+      const invocations = [...direct, ...(grokReady ? ['grok.default'] : [])];
+      const firstExecutable = invocations.findIndex((instanceId) => instanceId === 'grok.default'
+        ? grokReady
+        : compatibilityCredentialReady(
+          providerInstances[instanceId], instanceId === 'exa.default' ? 'exa' : 'tavily', secrets,
+        ));
+      const primaryIndex = firstExecutable < 0 ? 0 : firstExecutable;
+      profiles[profileId] = {
+        stages: [{
+          kind: profileId === 'fast' ? 'fallback' : 'parallel',
+          invocations: invocations.map((instanceId, index) => ({
+            provider_instance_id: instanceId,
+            capability: 'retrieval',
+            role: profileId === 'fast' && index !== primaryIndex ? 'fallback' : 'primary',
+            trigger: profileId === 'fast' && index !== primaryIndex ? 'empty_or_failure' : 'always',
+          })),
+        }],
+      };
+      provenance.set(`profiles.${profileId}`, grokReady ? 'compatibility:direct-grok' : 'compatibility:direct');
     }
+  }
+}
+
+function compatibilityCredentialReady(
+  value: unknown,
+  providerId: string,
+  secrets: SecretBindings,
+): boolean {
+  if (!isRecord(value) || value['provider_id'] !== providerId || value['enabled'] !== true
+    || typeof value['credential_slot_id'] !== 'string') return false;
+  const credential = secrets.get(value['credential_slot_id']);
+  return credential?.credential_slot_id === value['credential_slot_id'] && credential.provider_id === providerId;
+}
+
+function materializeGrokModelDefaults(value: unknown, provenance: Map<string, string>): void {
+  if (!isRecord(value) || !isRecord(value['provider_instances'])) return;
+  for (const [instanceId, instance] of Object.entries(value['provider_instances'])) {
+    if (!isRecord(instance) || instance['provider_id'] !== 'grok') continue;
+    const options = isRecord(instance['options']) ? instance['options'] : {};
+    if (options['model'] !== undefined) continue;
+    options['model'] = DEFAULT_GROK_MODEL;
+    instance['options'] = options;
+    provenance.set(`provider_instances.${instanceId}.options.model`, 'compatibility:grok-model-default');
   }
 }
 
@@ -711,6 +881,21 @@ function boundedProfile(value: unknown): string | undefined {
 }
 function legacyGatewayWarning(path: string, field: string, diagnostics: ConfigurationDiagnostic[]): void {
   diagnostics.push({ code: 'LEGACY_INVALID', source: 'legacy', path, message: `Legacy ${field} was invalid and was ignored.` });
+}
+function legacyGrokWarning(path: string, field: string, diagnostics: ConfigurationDiagnostic[]): void {
+  diagnostics.push({ code: 'LEGACY_INVALID', source: 'legacy', path, message: `Legacy ${field} was invalid and was ignored.` });
+}
+function environmentLegacyWarning(name: string, diagnostics: ConfigurationDiagnostic[]): void {
+  const message = `${name} was invalid and was ignored.`;
+  if (!diagnostics.some((item) => item.source === 'environment' && item.message === message)) {
+    diagnostics.push({ code: 'LEGACY_INVALID', source: 'environment', message });
+  }
+}
+function isStrictGrokUrl(value: string): boolean {
+  try { validateGrokBaseUrl(value); return true; } catch { return false; }
+}
+function isStrictGrokModel(value: unknown): value is string {
+  try { validateGrokModel(value); return true; } catch { return false; }
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function isFile(path: string): boolean {

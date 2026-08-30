@@ -156,7 +156,9 @@ describe('durable execution snapshots', () => {
     const { job } = await store.createOrReuse({ query: 'legacy worker', max_sources: 5, max_duration_ms: 60_000 });
     const configPath = join(root, 'config.json');
     await writeFile(configPath, JSON.stringify({
-      provider_instances: { 'exa.default': { enabled: false }, 'tavily.default': { enabled: false } },
+      provider_instances: {
+        'exa.default': { enabled: false }, 'tavily.default': { enabled: false }, 'grok.default': { enabled: false },
+      },
     }));
     await runWorker(job.job_id, { NB_SEARCH_HOME: root, NB_SEARCH_CONFIG: configPath }, store.root);
     expect(await store.readExecutionSnapshot(job.job_id)).toBeUndefined();

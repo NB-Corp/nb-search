@@ -29,7 +29,7 @@ interface RuntimeDependencies {
   search: SearchService;
   research: ResearchService;
   requestId: () => string;
-  providerConfigured: Readonly<Record<'exa' | 'tavily', boolean>>;
+  providerConfigured: Readonly<Record<'exa' | 'tavily', boolean> & Partial<Record<'grok', boolean>>>;
   retentionHours: number;
   providerInstances?: CapabilityEnvelope['providers']['instances'];
   profiles?: CapabilityEnvelope['profiles'];
@@ -93,6 +93,7 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
       providers: {
         exa: { configured: this.dependencies.providerConfigured.exa },
         tavily: { configured: this.dependencies.providerConfigured.tavily },
+        grok: { configured: this.dependencies.providerConfigured.grok === true },
         ...(this.dependencies.providerInstances === undefined ? {} : { instances: this.dependencies.providerInstances }),
       },
       ...(this.dependencies.profiles === undefined ? {} : { profiles: this.dependencies.profiles }),

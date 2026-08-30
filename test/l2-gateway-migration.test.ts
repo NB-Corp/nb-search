@@ -267,7 +267,7 @@ describe('L2 gateway migration', () => {
       NB_SEARCH_HOME: root, NB_SEARCH_GATEWAY_AGGREGATE: 'true',
       NB_SEARCH_GATEWAY_BASE_URL: 'https://gateway.test', NB_SEARCH_GATEWAY_TOKEN: 'token',
       NB_SEARCH_GATEWAY_PROFILE: 'private-profile',
-    }, { transport });
+    }, { transport, config: { provider_instances: { 'grok.default': { enabled: false } } } });
     const capabilities = await composition.runtime.capabilities();
     expect(capabilities.providers.instances).toContainEqual({
       provider_id: 'search-gateway', provider_instance_id: 'search-gateway.aggregate',
@@ -288,7 +288,7 @@ describe('L2 gateway migration', () => {
       NB_SEARCH_HOME: root, NB_SEARCH_GATEWAY_AGGREGATE: 'true',
       NB_SEARCH_GATEWAY_BASE_URL: 'https://gateway.test', NB_SEARCH_GATEWAY_TOKEN: 'token',
       NB_SEARCH_RETRY_BACKOFF_MS: '0',
-    }, { transport });
+    }, { transport, config: { provider_instances: { 'grok.default': { enabled: false } } } });
     const result = await composition.runtime.search({ query: 'q' });
     expect(result).toMatchObject({ state: 'failed', attempts: [
       { provider: 'search-gateway', attempt: 1, state: 'failed' },
@@ -316,7 +316,7 @@ describe('L2 gateway migration', () => {
     const result = await createRuntimeComposition({
       NB_SEARCH_HOME: root, NB_SEARCH_GATEWAY_AGGREGATE: 'true',
       NB_SEARCH_GATEWAY_BASE_URL: 'https://gateway.test', NB_SEARCH_GATEWAY_TOKEN: 'secret-sentinel',
-    }, { transport }).runtime.search({ query: 'q' });
+    }, { transport, config: { provider_instances: { 'grok.default': { enabled: false } } } }).runtime.search({ query: 'q' });
     expect(result).toMatchObject({
       state: 'succeeded', attempts: [{
         provider: 'search-gateway', attempt: 1, state: 'succeeded', result_count: 1,

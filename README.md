@@ -6,7 +6,7 @@
 
 - Node.js 24.15.0 or newer
 - pnpm 10.33.0 when building from source
-- At least one configured retrieval route: direct Exa/Tavily, an aggregate gateway, or relay-backed Exa/Tavily
+- At least one configured retrieval route: Exa, Tavily, retrieval-only Grok, or an aggregate gateway
 
 Install the published package:
 
@@ -42,6 +42,10 @@ Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search 
 | `NB_SEARCH_TAVILY_BASE_URL` | Tavily endpoint base | Falls back to `TAVILY_API_BASE`, then `TAVILY_API_URL` |
 | `NB_SEARCH_EXA_TIMEOUT_MS` | Per-attempt Exa timeout | Resolved instance policy |
 | `NB_SEARCH_TAVILY_TIMEOUT_MS` | Per-attempt Tavily timeout | Resolved instance policy |
+| `NB_SEARCH_GROK_BASE_URL` | Grok-compatible Chat Completions base or full endpoint | No endpoint; Grok remains unready |
+| `NB_SEARCH_GROK_API_KEY` | Grok bearer credential | Falls back to `GROK_API_KEY` |
+| `NB_SEARCH_GROK_MODEL` | Grok retrieval model ID | `grok-4.1-fast`; falls back to `GROK_MODEL` |
+| `NB_SEARCH_GROK_TIMEOUT_MS` | Per-attempt Grok timeout | `30000` |
 | `NB_SEARCH_GATEWAY_BASE_URL` | Aggregate gateway base URL | No endpoint; aggregate remains inactive |
 | `NB_SEARCH_GATEWAY_TOKEN` | Aggregate or explicit relay downstream token | No token |
 | `NB_SEARCH_GATEWAY_AGGREGATE` | Replace compatibility-owned profiles with aggregate retrieval | `false` |
@@ -56,7 +60,7 @@ Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search 
 | `NB_SEARCH_RETENTION_HOURS` | Age at which terminal jobs become eligible for pruning | `72` |
 | `NB_SEARCH_LOG_LEVEL` | `error`, `warn`, `info`, or `debug` logs on stderr | `warn` |
 
-The canonical file can define provider instances, credential slots, and deterministic routing profiles. Built-in retrieval adapters cover Exa, Tavily, and the aggregate search gateway. Credential slots name environment variables; they do not contain API-key values.
+The canonical file can define provider instances, credential slots, and deterministic routing profiles. Built-in retrieval adapters cover Exa, Tavily, Grok, and the aggregate search gateway. Credential slots name environment variables; they do not contain API-key values.
 
 ```json
 {
@@ -82,6 +86,8 @@ Set `NB_SEARCH_GATEWAY_AGGREGATE=true`, `NB_SEARCH_GATEWAY_BASE_URL`, and `NB_SE
 
 Once active, an aggregate error, timeout, cancellation, or empty response stays on the aggregate route; it does not fall back to direct Exa or Tavily.
 
+Grok becomes ready after both `NB_SEARCH_GROK_BASE_URL` and `NB_SEARCH_GROK_API_KEY` resolve. The endpoint may be a base URL or already end in `/chat/completions`. Grok sends a fixed retrieval prompt and projects only bounded HTTP(S) result rows; it does not expose assistant answers or configurable chat messages, temperature, token limits, streaming, or authentication fields. Custom Grok instances may set only `options.model`.
+
 Exa and Tavily can also use a vendor-compatible relay. Define explicit provider instances with `options.search_path` and provider-bound credential slots. Exa keeps `x-api-key` authentication, Tavily keeps body `api_key`, and both slots may name the same downstream token environment variable.
 
 ```json
@@ -105,9 +111,17 @@ Exa and Tavily can also use a vendor-compatible relay. Define explicit provider 
 
 `search_path` must be an absolute operation path without query text, fragments, traversal segments, empty segments, backslashes, or a trailing slash. Unknown instance options stop configuration before a request is sent.
 
-Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order. A legacy `searchGateway` object maps its base, token, aggregate flag, and downstream profile to `search-gateway.aggregate`; `token` wins over `apiKey`, and `baseUrl` wins over `apiUrl` and `apiBase`. A legacy `searchLayer` object maps `requestTimeoutSeconds`, provider timeouts, and `retry.maxAttempts|backoffMs` into instance policies. Numeric strings remain accepted for compatibility. Invalid optional legacy file values produce a safe diagnostic and use inherited values. Invalid `NB_SEARCH_*`, canonical, host, and runtime values stop configuration.
+Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order. A legacy object-valued `grok` entry maps only `apiUrl`, `apiKey`, and `model`; string shorthand, `baseUrl`, `apiBase`, and `grokMultiAgent` fields do not configure direct Grok.
 
-Legacy gateway aliases remain available: `SEARCH_GATEWAY_BASE_URL`, `SEARCH_GATEWAY_TOKEN`, `SEARCH_GATEWAY_AGGREGATE`, `SEARCH_GATEWAY_PROFILE`, and `SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS`. Direct-provider timeout aliases remain `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, and `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`. Provider attempts use the smaller applicable provider/request budget. The synchronous request timeout and research deadline remain the outer bound for every attempt and retry sleep.
+A legacy `searchGateway` object maps its base, token, aggregate flag, and downstream profile to `search-gateway.aggregate`; `token` wins over `apiKey`, and `baseUrl` wins over `apiUrl` and `apiBase`.
+
+A legacy `searchLayer` object maps `requestTimeoutSeconds`, provider timeouts, and `retry.maxAttempts|backoffMs` into instance policies. Numeric strings remain accepted for compatibility. Invalid optional legacy file values produce a safe diagnostic and use inherited values. Invalid `NB_SEARCH_*`, canonical, host, and runtime values stop configuration.
+
+Legacy gateway aliases remain available: `SEARCH_GATEWAY_BASE_URL`, `SEARCH_GATEWAY_TOKEN`, `SEARCH_GATEWAY_AGGREGATE`, `SEARCH_GATEWAY_PROFILE`, and `SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS`.
+
+Direct Grok aliases remain `GROK_API_URL`, `GROK_API_KEY`, `GROK_MODEL`, and `SEARCH_LAYER_GROK_TIMEOUT_SECONDS`. Other direct-provider timeout aliases remain `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, and `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`.
+
+Provider attempts use the smaller applicable provider/request budget. The synchronous request timeout and research deadline remain the outer bound for every attempt and retry sleep.
 
 Queries, keys, configured endpoints, response bodies, and absolute artifact paths are omitted from logs. `capabilities` reports provider instances, profile readiness, and safe configuration diagnostics without making a network request.
 
@@ -123,9 +137,9 @@ nb-search search "query" --profile fast --intent status --freshness pd
 
 Search accepts 1–20 results and a 1,000–45,000 ms total budget. A provider failure preserves useful results from other providers and marks the result `partial`.
 
-Routing fields are optional. With the aggregate cutover inactive, `default` and `deep` run configured Exa and Tavily retrieval in parallel, while `fast` uses direct fallback order. With the cutover active, each compatibility profile contains one aggregate invocation.
+Routing fields are optional. With the aggregate cutover inactive, `default` and `deep` run ready Exa, Tavily, and Grok retrieval lanes in parallel, while `fast` uses Exa, Tavily, then Grok as ordered fallbacks. With the cutover active, aggregate replaces the Exa/Tavily subplan while ready Grok remains independent: `default` and `deep` run aggregate and Grok in parallel, and `fast` tries aggregate before Grok.
 
-Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. `status` and `news` select Exa fast search; `exploratory` with `deep` selects Exa deep search. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Tavily retrieval always sends `include_answer:false`.
+Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. `status` and `news` select Exa fast search; `exploratory` with `deep` selects Exa deep search. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Grok receives the same value as a prompt hint rather than a hard date filter. Tavily retrieval always sends `include_answer:false`.
 
 Aggregate upstream attempts and source attribution are returned as bounded nested evidence; outer retry, state, ordering, health, and deduplication remain controlled by nb-search.
 
