@@ -161,6 +161,68 @@ describe('research lifecycle', () => {
     expect(second.items[0]).toMatchObject({ title: 'next', url: 'https://next.test/' });
   });
 
+  it('persists aggregate nested evidence in typed summary and source homes only', async () => {
+    const store = new JobStore(await jobsRoot());
+    const { job } = await store.createOrReuse({ query: 'nested', max_sources: 5, max_duration_ms: 60_000 });
+    const envelope = searchEnvelope('succeeded');
+    envelope.attempts = [{
+      provider: 'search-gateway', provider_instance_id: 'search-gateway.aggregate', invocation_id: 'inv-gateway',
+      attempt: 1, state: 'succeeded', duration_ms: 5, result_count: 1,
+      upstream_attempts: [
+        { provider: 'exa', state: 'succeeded', duration_ms: 2, result_count: 1 },
+        { provider: 'tavily', state: 'failed', duration_ms: 3, result_count: 0, error: { code: 'REMOTE' } },
+      ],
+    }];
+    envelope.results[0] = {
+      title: 'Source', url: 'https://example.test/', snippet: 'evidence', providers: ['search-gateway'],
+      provenance: [{
+        provider: 'search-gateway', provider_instance_id: 'search-gateway.aggregate', rank: 0,
+        original_url: 'https://example.test/', upstream: [{ provider: 'exa' }, { provider: 'tavily' }],
+      }],
+    };
+    const searcher: Searcher = { async search() { return structuredClone(envelope); } };
+    await new ResearchRunner(store, searcher).run(job.job_id);
+
+    expect((await store.readArtifact(job.job_id, 'summary')).items[0]).toMatchObject({
+      provider_attempts: [{ upstream_attempts: [{ provider: 'exa' }, { provider: 'tavily' }] }],
+    });
+    expect((await store.readArtifact(job.job_id, 'sources')).items[0]).toMatchObject({
+      provenance: [{ upstream: [{ provider: 'exa' }, { provider: 'tavily' }] }],
+    });
+    expect(String((await store.readArtifact(job.job_id, 'report')).items[0])).not.toMatch(/upstream_attempts|inv-gateway/);
+  });
+
+  it('compacts an oversized evidence summary without replacing its typed shape', async () => {
+    const store = new JobStore(await jobsRoot());
+    const { job } = await store.createOrReuse({ query: 'typed', max_sources: 5, max_duration_ms: 60_000 });
+    const attempts = Array.from({ length: 60 }, (_, index) => ({
+      provider: 'search-gateway', provider_instance_id: 'search-gateway.aggregate', invocation_id: `inv-${String(index)}`,
+      attempt: index + 1, state: 'succeeded', duration_ms: 1, result_count: 1,
+      upstream_attempts: Array.from({ length: 8 }, (_, nested) => ({
+        provider: `provider-${String(nested)}`, state: 'failed', duration_ms: 1, result_count: 0,
+        error: { code: 'REMOTE', message: 'x'.repeat(512) },
+      })),
+    }));
+    await store.writeArtifacts(job.job_id, 'checkpoint', {
+      summary: {
+        kind: 'bounded_evidence_report', query: 'typed', state: 'succeeded', source_count: 1,
+        provider_attempts: attempts, warnings: [], synthesis_claimed: false,
+      },
+      report: 'report', sources: [],
+    });
+    const page = await new ResearchService(store, { async launch() {} }, () => 'request')
+      .read({ job_id: job.job_id, artifact: 'summary' });
+    expect(page.items[0]).toMatchObject({
+      kind: 'bounded_evidence_report', state: 'succeeded', source_count: 1,
+      provider_attempts: expect.arrayContaining([
+        expect.objectContaining({ provider: 'search-gateway', provider_instance_id: 'search-gateway.aggregate', state: 'succeeded' }),
+      ]),
+    });
+    expect((page.items[0] as { provider_attempts: unknown[] }).provider_attempts).toHaveLength(60);
+    expect(page.compaction.applied).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(page), 'utf8')).toBeLessThanOrEqual(24 * 1024);
+  });
+
   it('uses a fixed worker entrypoint and job ID in a hidden detached process', async () => {
     const calls: unknown[][] = [];
     const child = new EventEmitter() as EventEmitter & { unref(): void };

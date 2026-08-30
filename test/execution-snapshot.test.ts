@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createSearchFromSnapshot } from '../src/app.ts';
 import { resolveConfiguration } from '../src/config-sources.ts';
 import { createExecutionSnapshot } from '../src/execution-snapshot.ts';
+import { M1_REGISTRY_FINGERPRINT, M1_REGISTRY_REVISION, validateExecutionSnapshot } from '../src/execution-snapshot.ts';
+import { stableFingerprint } from '../src/config-schema.ts';
 import { JobStore } from '../src/job-store.ts';
 import { compileSearchPlan } from '../src/planner.ts';
 import { builtInProviderRegistrations, ProviderRegistry } from '../src/provider-registry.ts';
@@ -50,6 +52,80 @@ describe('durable execution snapshots', () => {
       url: 'https://snapshot.example/v1/search',
       headers: { 'x-api-key': 'worker-secret' },
     });
+  });
+
+  it('uses selected descriptor identity and keeps secret-byte changes outside the v2 fingerprint', async () => {
+    const root = await temporaryRoot();
+    const first = snapshotFixture(root, 'https://snapshot.example/v1', 'first-secret');
+    const second = snapshotFixture(root, 'https://snapshot.example/v1', 'second-secret');
+    const fullFingerprint = first.registry.fingerprint();
+
+    expect(first.snapshot).toMatchObject({ snapshot_version: '2' });
+    expect(first.snapshot.registry_fingerprint).not.toBe(fullFingerprint);
+    expect(first.snapshot.registry_fingerprint).toBe(second.snapshot.registry_fingerprint);
+    expect(first.snapshot.snapshot_fingerprint).toBe(second.snapshot.snapshot_fingerprint);
+    expect(JSON.stringify(first.snapshot)).not.toMatch(/first-secret|second-secret/);
+  });
+
+  it('replays only the exact bounded M1 direct registry identity', async () => {
+    const root = await temporaryRoot();
+    const fixture = snapshotFixture(root, 'https://snapshot.example/v1', 'start-secret');
+    const legacyBase = {
+      ...structuredClone(fixture.snapshot),
+      snapshot_version: '1' as const,
+      registry_revision: M1_REGISTRY_REVISION,
+      registry_fingerprint: M1_REGISTRY_FINGERPRINT,
+    };
+    const { snapshot_fingerprint: _oldFingerprint, ...withoutFingerprint } = legacyBase;
+    const legacy = validateExecutionSnapshot({ ...withoutFingerprint, snapshot_fingerprint: stableFingerprint(withoutFingerprint) });
+    const transport = new CaptureTransport();
+    const search = createSearchFromSnapshot(legacy, { NB_SEARCH_EXA_API_KEY: 'worker-secret' }, { transport });
+    expect((await search.search({ query: 'q' })).state).toBe('empty');
+
+    const incompatibleBase = { ...withoutFingerprint, registry_fingerprint: '0'.repeat(64) };
+    expect(() => validateExecutionSnapshot({
+      ...incompatibleBase, snapshot_fingerprint: stableFingerprint(incompatibleBase),
+    })).toThrow(expect.objectContaining({ code: 'CONFIGURATION_ERROR' }));
+  });
+
+  it('freezes two provider-bound relay slots sharing one environment grant without its value', async () => {
+    const root = await temporaryRoot();
+    const resolved = resolveConfiguration({
+      env: { SHARED_GATEWAY_TOKEN: 'shared-secret-sentinel' }, cwd: root, homeDirectory: root,
+      config: {
+        provider_instances: {
+          'exa.default': { enabled: false }, 'tavily.default': { enabled: false },
+          'exa.gateway': {
+            provider_id: 'exa', enabled: true, credential_slot_id: 'exa.gateway', base_url: 'https://gateway.test',
+            timeout_ms: 1000, retry: { max_attempts: 1, backoff_ms: 0, max_backoff_ms: 0 },
+            options: { search_path: '/exa/search' },
+          },
+          'tavily.gateway': {
+            provider_id: 'tavily', enabled: true, credential_slot_id: 'tavily.gateway', base_url: 'https://gateway.test',
+            timeout_ms: 1000, retry: { max_attempts: 1, backoff_ms: 0, max_backoff_ms: 0 },
+            options: { search_path: '/api/search' },
+          },
+        },
+        credential_slots: {
+          'exa.gateway': { provider_id: 'exa', env: 'SHARED_GATEWAY_TOKEN' },
+          'tavily.gateway': { provider_id: 'tavily', env: 'SHARED_GATEWAY_TOKEN' },
+        },
+        profiles: { default: { stages: [{ kind: 'parallel', invocations: [
+          { provider_instance_id: 'exa.gateway', capability: 'retrieval', role: 'primary', trigger: 'always' },
+          { provider_instance_id: 'tavily.gateway', capability: 'retrieval', role: 'primary', trigger: 'always' },
+        ] }] } },
+      },
+    });
+    const registry = new ProviderRegistry(builtInProviderRegistrations());
+    const plan = compileSearchPlan({
+      config: resolved.config, registry, readiness: { 'exa.gateway': true, 'tavily.gateway': true },
+    });
+    const snapshot = createExecutionSnapshot(plan, resolved, registry);
+    expect(snapshot.credential_bindings).toEqual([
+      { credential_slot_id: 'exa.gateway', provider_id: 'exa', worker_grant: { kind: 'environment', name: 'SHARED_GATEWAY_TOKEN' } },
+      { credential_slot_id: 'tavily.gateway', provider_id: 'tavily', worker_grant: { kind: 'environment', name: 'SHARED_GATEWAY_TOKEN' } },
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain('shared-secret-sentinel');
   });
 
   it('fails a snapshotted queued job explicitly when its worker grant is missing', async () => {

@@ -7,9 +7,10 @@ import {
   type CanonicalConfig, type CanonicalConfigPatch, type CredentialSlotConfig, type ProviderInstancePatch,
 } from './config-schema.ts';
 import { NbSearchError } from './errors.ts';
+import { validateProviderBaseUrl } from './providers.ts';
 
 export interface ConfigurationDiagnostic {
-  code: 'LEGACY_NOT_FOUND' | 'LEGACY_INVALID' | 'LEGACY_UNSUPPORTED' | 'SOURCE_APPLIED';
+  code: 'LEGACY_NOT_FOUND' | 'LEGACY_INVALID' | 'LEGACY_UNSUPPORTED' | 'SOURCE_APPLIED' | 'GATEWAY_AGGREGATE_INCOMPLETE';
   source: string;
   path?: string;
   message: string;
@@ -17,7 +18,7 @@ export interface ConfigurationDiagnostic {
 
 export type WorkerGrant =
   | { kind: 'environment'; name: string }
-  | { kind: 'legacy-json'; path: string; key: 'exa' | 'tavily' }
+  | { kind: 'legacy-json'; path: string; key: 'exa' | 'tavily' | 'searchGateway' }
   | { kind: 'opaque'; id: string };
 
 export interface SecretBinding {
@@ -95,7 +96,9 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
   const provenance = new Map<string, string>();
   let merged: unknown = {};
   for (const source of sources) merged = mergeConfig(merged, source.patch, source.label, provenance);
-  addCompatibilityProfiles(merged, provenance);
+  const beforeCompatibility = parseResolvedConfig(merged);
+  const preliminarySecrets = resolveConfiguredSecrets(beforeCompatibility, env, legacySecrets, provenance);
+  addCompatibilityProfiles(merged, provenance, preliminarySecrets, diagnostics);
   const config = parseResolvedConfig(merged);
   const secrets = resolveConfiguredSecrets(config, env, legacySecrets, provenance);
   const safeConfig = {
@@ -133,10 +136,15 @@ export function defaultConfiguration(home: string): CanonicalConfigPatch {
         provider_id: 'tavily', enabled: true, credential_slot_id: 'tavily.default',
         base_url: 'https://api.tavily.com/search', timeout_ms: 45_000, retry, options: {},
       },
+      'search-gateway.aggregate': {
+        provider_id: 'search-gateway', enabled: false, credential_slot_id: 'search-gateway.aggregate',
+        timeout_ms: 40_000, retry: { max_attempts: 2, backoff_ms: 500, max_backoff_ms: 2_000 }, options: {},
+      },
     },
     credential_slots: {
       'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' },
       'tavily.default': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_API_KEY' },
+      'search-gateway.aggregate': { provider_id: 'search-gateway', env: 'NB_SEARCH_GATEWAY_TOKEN' },
     },
     profiles: {
       [DEFAULT_PROFILE_ID]: {
@@ -182,11 +190,54 @@ function readLegacySource(
   const credentialSlots: Record<string, CredentialSlotConfig> = {};
   mapLegacyProvider('exa', value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyProvider('tavily', value, path, providerInstances, credentialSlots, secrets, diagnostics);
+  mapLegacyGateway(value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyPolicies(value, path, providerInstances, diagnostics);
   const patch: CanonicalConfigPatch = {};
   if (Object.keys(providerInstances).length > 0) patch.provider_instances = providerInstances;
   if (Object.keys(credentialSlots).length > 0) patch.credential_slots = credentialSlots;
   return patch;
+}
+
+function mapLegacyGateway(
+  value: Record<string, unknown>,
+  path: string,
+  instances: Record<string, ProviderInstancePatch>,
+  slots: Record<string, CredentialSlotConfig>,
+  secrets: Map<string, SecretBinding>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const raw = value['searchGateway'];
+  if (raw === undefined) return;
+  if (!isRecord(raw)) {
+    diagnostics.push({ code: 'LEGACY_INVALID', source: 'legacy', path, message: 'Legacy searchGateway was invalid and was ignored.' });
+    return;
+  }
+  const instanceId = 'search-gateway.aggregate';
+  const patch: ProviderInstancePatch = {};
+  const base = firstNonempty([raw['baseUrl'], raw['apiUrl'], raw['apiBase']]);
+  if (base !== undefined) {
+    if (isStrictHttpUrl(base)) patch.base_url = base;
+    else legacyGatewayWarning(path, 'searchGateway base URL', diagnostics);
+  }
+  if (raw['aggregate'] !== undefined) {
+    const enabled = legacyBoolean(raw['aggregate']);
+    if (enabled === undefined) legacyGatewayWarning(path, 'searchGateway.aggregate', diagnostics);
+    else patch.enabled = enabled;
+  }
+  if (raw['profile'] !== undefined) {
+    const profile = boundedProfile(raw['profile']);
+    if (profile === undefined) legacyGatewayWarning(path, 'searchGateway.profile', diagnostics);
+    else patch.options = { downstream_profile: profile };
+  }
+  instances[instanceId] = { ...instances[instanceId], ...patch };
+  const token = firstNonempty([raw['token'], raw['apiKey']]);
+  if (token !== undefined) {
+    slots[instanceId] = { provider_id: 'search-gateway', worker_grant: 'legacy:searchGateway' };
+    secrets.set(instanceId, {
+      credential_slot_id: instanceId, provider_id: 'search-gateway', value: token,
+      worker_grant: { kind: 'legacy-json', path, key: 'searchGateway' },
+    });
+  }
 }
 
 function mapLegacyProvider(
@@ -269,6 +320,15 @@ function mapLegacyPolicies(
       },
     };
   }
+  const gatewayTimeoutSeconds = legacyNumber(
+    providerTimeouts['searchGateway'], 40, 0.1,
+    path, 'searchLayer.providerTimeouts.searchGateway', diagnostics, 3_600,
+  );
+  instances['search-gateway.aggregate'] = {
+    ...instances['search-gateway.aggregate'],
+    timeout_ms: Math.round(Math.min(requestTimeoutSeconds, gatewayTimeoutSeconds) * 1000),
+    retry: { max_attempts: maxAttempts, backoff_ms: Math.round(backoffMs) },
+  };
 }
 
 function readExplicitSource(path: string, source: string): CanonicalConfigPatch {
@@ -313,10 +373,66 @@ function environmentPatch(
   mapEnvironmentEndpoint('tavily', 'NB_SEARCH_TAVILY_BASE_URL', ['TAVILY_API_BASE', 'TAVILY_API_URL'], env, instances);
   mapEnvironmentPolicy('exa', env, base, instances, diagnostics);
   mapEnvironmentPolicy('tavily', env, base, instances, diagnostics);
+  mapEnvironmentGateway(env, base, instances, slots, diagnostics);
   mapEnvironmentRetry(env, instances);
   if (Object.keys(instances).length > 0) patch.provider_instances = instances;
   if (Object.keys(slots).length > 0) patch.credential_slots = slots;
   return patch;
+}
+
+function mapEnvironmentGateway(
+  env: NodeJS.ProcessEnv,
+  base: CanonicalConfig,
+  instances: Record<string, ProviderInstancePatch>,
+  slots: Record<string, CredentialSlotConfig>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const instanceId = 'search-gateway.aggregate';
+  const patch: ProviderInstancePatch = { ...instances[instanceId] };
+  const primaryBase = nonempty(env['NB_SEARCH_GATEWAY_BASE_URL']);
+  const aliasBase = nonempty(env['SEARCH_GATEWAY_BASE_URL']);
+  const gatewayBase = primaryBase ?? aliasBase;
+  if (gatewayBase !== undefined) {
+    if (!isStrictHttpUrl(gatewayBase)) {
+      if (primaryBase !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'NB_SEARCH_GATEWAY_BASE_URL must be an HTTP(S) URL without user info, query, or fragment.');
+      diagnostics.push({ code: 'LEGACY_INVALID', source: 'environment', message: 'SEARCH_GATEWAY_BASE_URL was invalid and was ignored.' });
+    } else patch.base_url = gatewayBase;
+  }
+  const primaryToken = nonempty(env['NB_SEARCH_GATEWAY_TOKEN']);
+  const aliasToken = nonempty(env['SEARCH_GATEWAY_TOKEN']);
+  if (primaryToken !== undefined || aliasToken !== undefined) {
+    const name = primaryToken !== undefined ? 'NB_SEARCH_GATEWAY_TOKEN' : 'SEARCH_GATEWAY_TOKEN';
+    patch.credential_slot_id = instanceId;
+    slots[instanceId] = { provider_id: 'search-gateway', env: name };
+  }
+  const primaryAggregate = nonempty(env['NB_SEARCH_GATEWAY_AGGREGATE']);
+  const aliasAggregate = nonempty(env['SEARCH_GATEWAY_AGGREGATE']);
+  if (primaryAggregate !== undefined) patch.enabled = strictEnvironmentBoolean(primaryAggregate, 'NB_SEARCH_GATEWAY_AGGREGATE');
+  else if (aliasAggregate !== undefined) {
+    const enabled = legacyBoolean(aliasAggregate);
+    if (enabled === undefined) diagnostics.push({ code: 'LEGACY_INVALID', source: 'environment', message: 'SEARCH_GATEWAY_AGGREGATE was invalid and was ignored.' });
+    else patch.enabled = enabled;
+  }
+  const primaryProfile = nonempty(env['NB_SEARCH_GATEWAY_PROFILE']);
+  const aliasProfile = nonempty(env['SEARCH_GATEWAY_PROFILE']);
+  const profileInput = primaryProfile ?? aliasProfile;
+  if (profileInput !== undefined) {
+    const profile = boundedProfile(profileInput);
+    if (profile === undefined) {
+      if (primaryProfile !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'NB_SEARCH_GATEWAY_PROFILE must contain 1 to 256 characters.');
+      diagnostics.push({ code: 'LEGACY_INVALID', source: 'environment', message: 'SEARCH_GATEWAY_PROFILE was invalid and was ignored.' });
+    } else patch.options = { ...patch.options, downstream_profile: profile };
+  }
+  const primaryTimeout = nonempty(env['NB_SEARCH_GATEWAY_TIMEOUT_MS']);
+  const aliasTimeout = nonempty(env['SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS']);
+  if (primaryTimeout !== undefined) patch.timeout_ms = strictEnvironmentInteger(primaryTimeout, 'NB_SEARCH_GATEWAY_TIMEOUT_MS', 100, 3_600_000);
+  else if (aliasTimeout !== undefined || nonempty(env['SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS']) !== undefined) {
+    const providerSeconds = legacyEnvironmentNumber(aliasTimeout, 0.1, 'SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS', diagnostics, 3_600);
+    const requestSeconds = legacyEnvironmentNumber(nonempty(env['SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS']), 0.1, 'SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS', diagnostics, 3_600);
+    if (providerSeconds !== undefined) patch.timeout_ms = Math.round(Math.min(providerSeconds, requestSeconds ?? Number.POSITIVE_INFINITY) * 1000);
+    else if (requestSeconds !== undefined) patch.timeout_ms = Math.min(base.provider_instances[instanceId]?.timeout_ms ?? 40_000, Math.round(requestSeconds * 1000));
+  }
+  if (Object.keys(patch).length > 0) instances[instanceId] = patch;
 }
 
 function mapEnvironmentEndpoint(
@@ -376,8 +492,7 @@ function mapEnvironmentRetry(
     ...(backoffMs === undefined ? {} : { backoff_ms: strictEnvironmentInteger(backoffMs, 'NB_SEARCH_RETRY_BACKOFF_MS', 0, 60_000) }),
     ...(maxBackoffMs === undefined ? {} : { max_backoff_ms: strictEnvironmentInteger(maxBackoffMs, 'NB_SEARCH_RETRY_MAX_BACKOFF_MS', 0, 300_000) }),
   };
-  for (const providerId of ['exa', 'tavily'] as const) {
-    const instanceId = `${providerId}.default`;
+  for (const instanceId of ['exa.default', 'tavily.default', 'search-gateway.aggregate'] as const) {
     instances[instanceId] = { ...instances[instanceId], retry: { ...instances[instanceId]?.retry, ...retry } };
   }
 }
@@ -459,36 +574,56 @@ function mergeConfig(base: unknown, patch: unknown, source: string, provenance: 
   return current;
 }
 
-function addCompatibilityProfiles(value: unknown, provenance: Map<string, string>): void {
+function addCompatibilityProfiles(
+  value: unknown,
+  provenance: Map<string, string>,
+  secrets: SecretBindings,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
   if (!isRecord(value) || !isRecord(value['profiles']) || !isRecord(value['provider_instances'])) return;
   const profiles = value['profiles'];
   const providerInstances = value['provider_instances'];
   const direct = (['exa.default', 'tavily.default'] as const).filter((instanceId) => isRecord(providerInstances[instanceId]));
-  if (direct.length === 0) return;
-  if (profiles['deep'] === undefined && !provenance.has('profiles.deep')) {
-    profiles['deep'] = {
-      stages: [{
-        kind: 'parallel',
-        invocations: direct.map((instanceId) => ({
-          provider_instance_id: instanceId, capability: 'retrieval', role: 'primary', trigger: 'always',
-        })),
-      }],
-    };
-    provenance.set('profiles.deep', 'compatibility');
+  const gateway = isRecord(providerInstances['search-gateway.aggregate'])
+    ? providerInstances['search-gateway.aggregate'] : undefined;
+  const requested = gateway?.['enabled'] === true;
+  const base = typeof gateway?.['base_url'] === 'string' ? gateway['base_url'] : undefined;
+  if (base !== undefined) validateProviderBaseUrl(base);
+  const active = requested && base !== undefined && secrets.has('search-gateway.aggregate');
+  if (requested && !active) {
+    diagnostics.push({
+      code: 'GATEWAY_AGGREGATE_INCOMPLETE', source: 'compatibility',
+      path: 'provider_instances.search-gateway.aggregate',
+      message: 'Aggregate cutover is enabled but its endpoint or credential is unavailable; direct compatibility profiles remain selected.',
+    });
   }
-  if (profiles['fast'] === undefined && !provenance.has('profiles.fast')) {
-    profiles['fast'] = {
-      stages: [{
-        kind: 'fallback',
-        invocations: direct.map((instanceId, index) => ({
-          provider_instance_id: instanceId,
-          capability: 'retrieval',
-          role: index === 0 ? 'primary' : 'fallback',
-          trigger: index === 0 ? 'always' : 'empty_or_failure',
-        })),
-      }],
-    };
-    provenance.set('profiles.fast', 'compatibility');
+  for (const profileId of ['default', 'deep', 'fast'] as const) {
+    const owner = provenance.get(`profiles.${profileId}`);
+    if (owner !== undefined && owner !== 'defaults' && !owner.startsWith('compatibility')) continue;
+    if (active) {
+      profiles[profileId] = {
+        stages: [{
+          kind: profileId === 'fast' ? 'fallback' : 'parallel',
+          invocations: [{
+            provider_instance_id: 'search-gateway.aggregate', capability: 'retrieval', role: 'primary', trigger: 'always',
+          }],
+        }],
+      };
+      provenance.set(`profiles.${profileId}`, 'compatibility:search-gateway');
+    } else if (direct.length > 0) {
+      profiles[profileId] = {
+        stages: [{
+          kind: profileId === 'fast' ? 'fallback' : 'parallel',
+          invocations: direct.map((instanceId, index) => ({
+            provider_instance_id: instanceId,
+            capability: 'retrieval',
+            role: profileId === 'fast' && index > 0 ? 'fallback' : 'primary',
+            trigger: profileId === 'fast' && index > 0 ? 'empty_or_failure' : 'always',
+          })),
+        }],
+      };
+      provenance.set(`profiles.${profileId}`, 'compatibility:direct');
+    }
   }
 }
 
@@ -556,10 +691,34 @@ function strictEnvironmentInteger(value: string, name: string, minimum: number, 
   }
   return parsed;
 }
+function strictEnvironmentBoolean(value: string, name: string): boolean {
+  const parsed = legacyBoolean(value);
+  if (parsed === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `${name} must be true or false.`);
+  return parsed;
+}
+function legacyBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  return undefined;
+}
+function boundedProfile(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const profile = value.trim();
+  return profile === '' || profile.length > 256 ? undefined : profile;
+}
+function legacyGatewayWarning(path: string, field: string, diagnostics: ConfigurationDiagnostic[]): void {
+  diagnostics.push({ code: 'LEGACY_INVALID', source: 'legacy', path, message: `Legacy ${field} was invalid and was ignored.` });
+}
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function isFile(path: string): boolean {
   try { return statSync(path).isFile(); } catch { return false; }
 }
 function isHttpUrl(value: string): boolean {
   try { const url = new URL(value); return url.protocol === 'https:' || url.protocol === 'http:'; } catch { return false; }
+}
+function isStrictHttpUrl(value: string): boolean {
+  try { validateProviderBaseUrl(value); return true; } catch { return false; }
 }

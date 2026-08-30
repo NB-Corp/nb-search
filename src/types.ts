@@ -43,24 +43,41 @@ export interface ProviderSearchRequest {
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
   metadata?: Readonly<Record<string, unknown>>;
+  upstream_attribution?: readonly UpstreamResultAttribution[];
+  upstream_attribution_omitted?: number;
 }
+export type UpstreamAttemptState = 'succeeded' | 'empty' | 'skipped' | 'failed' | 'timed_out' | 'cancelled' | 'unknown';
+export interface UpstreamError { code?: string; message?: string; retryable?: boolean }
+export interface UpstreamAttempt {
+  provider: ProviderName; state: UpstreamAttemptState; duration_ms: number; result_count: number;
+  attempt?: number; capability?: ProviderCapability; role?: string; trigger?: string; error?: UpstreamError;
+}
+export interface UpstreamResultAttribution { provider: ProviderName }
+export interface ProviderSearchResponse {
+  results: readonly ProviderResult[];
+  upstream_attempts?: readonly UpstreamAttempt[];
+  upstream_attempts_omitted?: number;
+}
+export type ProviderSearchReturn = readonly ProviderResult[] | ProviderSearchResponse;
 export interface SearchProvider {
   readonly name: ProviderName; readonly redactions?: readonly string[];
   readonly provider_id?: ProviderId;
   readonly provider_instance_id?: ProviderInstanceId;
   readonly credential_slot_id?: CredentialSlotId;
-  search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]>;
+  search(request: ProviderSearchRequest): Promise<ProviderSearchReturn>;
 }
 export type AttemptState = 'succeeded' | 'empty' | 'failed' | 'timed_out' | 'cancelled';
 export interface SearchAttempt {
   provider: ProviderName; attempt: number; state: AttemptState; duration_ms: number; result_count: number; error?: PublicError;
   provider_instance_id?: ProviderInstanceId; credential_slot_id?: CredentialSlotId; invocation_id?: InvocationId;
   capability?: ProviderCapability; role?: string; trigger?: string;
+  upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number;
 }
 export interface ResultProvenance {
   provider: ProviderName; rank: number; original_url: string; metadata?: Readonly<Record<string, unknown>>;
   provider_instance_id?: ProviderInstanceId; credential_slot_id?: CredentialSlotId; invocation_id?: InvocationId;
   capability?: ProviderCapability; role?: string; trigger?: string;
+  upstream?: readonly UpstreamResultAttribution[]; upstream_omitted?: number;
 }
 export interface SearchResult {
   title: string; url: string; snippet: string; published_at?: string; site_name?: string; score?: number;

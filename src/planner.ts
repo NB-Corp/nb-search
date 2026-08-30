@@ -7,6 +7,7 @@ import type { ProviderRegistry } from './provider-registry.ts';
 import { safeErrorMessage } from './redaction.ts';
 import type {
   AttemptState, ProviderCapability, ProviderResult, ProviderSearchRequest, PublicError, SearchAttempt, SearchProvider,
+  ProviderSearchResponse, ProviderSearchReturn,
 } from './types.ts';
 
 export const PLAN_SCHEMA_VERSION = '1' as const;
@@ -236,9 +237,14 @@ export class PlanExecutor {
       try {
         const started = this.monotonicNow();
         try {
-          const results = await raceWithAbort(provider.search({ ...request, signal }), signal);
-          attempts.push(attemptRecord(invocation, attempt, results.length === 0 ? 'empty' : 'succeeded', elapsed(started, this.monotonicNow()), results.length));
-          return { invocation, attempts, results };
+          const returned = await raceWithAbort(provider.search({ ...request, signal }), signal);
+          const response = normalizeProviderResponse(returned);
+          attempts.push(attemptRecord(
+            invocation, attempt, response.results.length === 0 ? 'empty' : 'succeeded',
+            elapsed(started, this.monotonicNow()), response.results.length, undefined,
+            response.upstream_attempts, response.upstream_attempts_omitted,
+          ));
+          return { invocation, attempts, results: response.results };
         } catch (error) {
           const callerCancelled = callerSignal?.aborted === true;
           const overallDeadlineReached = !callerCancelled && overallDeadline.signal.aborted;
@@ -310,6 +316,8 @@ function attemptRecord(
   durationMs: number,
   resultCount: number,
   error?: PublicError,
+  upstreamAttempts?: SearchAttempt['upstream_attempts'],
+  upstreamAttemptsOmitted?: number,
 ): SearchAttempt {
   return {
     provider: invocation.provider_id,
@@ -324,6 +332,8 @@ function attemptRecord(
     duration_ms: durationMs,
     result_count: resultCount,
     ...(error === undefined ? {} : { error }),
+    ...(upstreamAttempts === undefined || upstreamAttempts.length === 0 ? {} : { upstream_attempts: upstreamAttempts }),
+    ...(upstreamAttemptsOmitted === undefined || upstreamAttemptsOmitted === 0 ? {} : { upstream_attempts_omitted: upstreamAttemptsOmitted }),
   };
 }
 
@@ -339,6 +349,9 @@ function emptyHealthSnapshot(): {
   };
 }
 function elapsed(started: number, completed: number): number { return Math.max(0, Math.round(completed - started)); }
+function normalizeProviderResponse(value: ProviderSearchReturn): ProviderSearchResponse {
+  return Array.isArray(value) ? { results: value } : value as ProviderSearchResponse;
+}
 async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) throw signal.reason;
   return await new Promise<T>((resolve, reject) => {

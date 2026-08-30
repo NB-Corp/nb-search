@@ -58,9 +58,11 @@ export function loadConfiguration(
     if (instance.enabled && descriptor === undefined) {
       throw new NbSearchError('CONFIGURATION_ERROR', `Provider ${instance.provider_id} is not registered for instance ${instanceId}.`);
     }
+    if (descriptor !== undefined) registry.validate(instanceId, instance);
     const credential = instance.credential_slot_id === undefined ? undefined : resolved.secret_bindings.get(instance.credential_slot_id);
     const ready = instance.enabled && descriptor !== undefined
-      && (!descriptor.activation.required || credential !== undefined);
+      && (!descriptor.activation.required || credential !== undefined)
+      && (descriptor.activation.endpoint !== 'required' || instance.base_url !== undefined);
     readiness[instanceId] = ready;
     if (!ready) continue;
     const ports = registry.create(instanceId, instance, {

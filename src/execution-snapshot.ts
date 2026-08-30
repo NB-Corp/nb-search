@@ -8,8 +8,11 @@ import type { SearchPlan } from './planner.ts';
 import type { ProviderRegistry } from './provider-registry.ts';
 import { FRESHNESS_VALUES, SEARCH_INTENTS, type Freshness, type ProfileId, type SearchIntent } from './types.ts';
 
-export const EXECUTION_SNAPSHOT_VERSION = '1' as const;
+export const EXECUTION_SNAPSHOT_VERSION = '2' as const;
+export const LEGACY_EXECUTION_SNAPSHOT_VERSION = '1' as const;
 export const ARTIFACT_CONTRACT_VERSION = '1' as const;
+export const M1_REGISTRY_REVISION = 'registry-1-a66d6be4db9ec72f' as const;
+export const M1_REGISTRY_FINGERPRINT = 'a66d6be4db9ec72f6a995019da3253fb14f835cbbd3b5401969b12091f7d57f4' as const;
 
 export interface SnapshotProviderInstance {
   provider_instance_id: string;
@@ -23,7 +26,7 @@ export interface SnapshotCredentialBinding {
 }
 
 export interface ExecutionSnapshot {
-  snapshot_version: typeof EXECUTION_SNAPSHOT_VERSION;
+  snapshot_version: typeof EXECUTION_SNAPSHOT_VERSION | typeof LEGACY_EXECUTION_SNAPSHOT_VERSION;
   artifact_contract_version: typeof ARTIFACT_CONTRACT_VERSION;
   plan: SearchPlan;
   plan_fingerprint: string;
@@ -69,8 +72,8 @@ export function createExecutionSnapshot(
     plan_fingerprint: plan.plan_fingerprint,
     config_revision: resolved.config_revision,
     config_fingerprint: resolved.config_fingerprint,
-    registry_revision: registry.revision(),
-    registry_fingerprint: registry.fingerprint(),
+    registry_revision: registry.revisionFor(selectedProviderIds(plan)),
+    registry_fingerprint: registry.fingerprintFor(selectedProviderIds(plan)),
     routing: {
       profile: routing.profile ?? plan.profile_id,
       ...(routing.intent === undefined ? {} : { intent: routing.intent }),
@@ -83,7 +86,7 @@ export function createExecutionSnapshot(
 }
 
 export function validateExecutionSnapshot(value: unknown): ExecutionSnapshot {
-  if (!isRecord(value) || value['snapshot_version'] !== EXECUTION_SNAPSHOT_VERSION
+  if (!isRecord(value) || (value['snapshot_version'] !== EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== LEGACY_EXECUTION_SNAPSHOT_VERSION)
     || value['artifact_contract_version'] !== ARTIFACT_CONTRACT_VERSION
     || typeof value['snapshot_fingerprint'] !== 'string'
     || !isRecord(value['plan']) || !Array.isArray(value['provider_instances']) || !Array.isArray(value['credential_bindings'])) {
@@ -102,6 +105,7 @@ export function validateExecutionSnapshot(value: unknown): ExecutionSnapshot {
   if (stableFingerprint(base) !== fingerprint || candidate.plan.plan_fingerprint !== candidate.plan_fingerprint) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot fingerprint does not match.');
   }
+  if (candidate.snapshot_version === LEGACY_EXECUTION_SNAPSHOT_VERSION) validateLegacyM1Snapshot(candidate);
   const cloned = structuredClone(candidate);
   if (value['routing'] === undefined) {
     cloned.routing = { profile: candidate.plan.profile_id };
@@ -142,8 +146,54 @@ function resolveWorkerGrant(
   catch { return undefined; }
   if (!isRecord(value)) return undefined;
   const raw = value[grant.key];
+  if (grant.key === 'searchGateway' && isRecord(raw)) {
+    return nonempty(typeof raw['token'] === 'string' ? raw['token'] : undefined)
+      ?? nonempty(typeof raw['apiKey'] === 'string' ? raw['apiKey'] : undefined);
+  }
   if (typeof raw === 'string') return nonempty(raw);
   return isRecord(raw) && typeof raw['apiKey'] === 'string' ? nonempty(raw['apiKey']) : undefined;
+}
+
+export function assertSnapshotRegistry(snapshot: ExecutionSnapshot, registry: ProviderRegistry): void {
+  if (snapshot.snapshot_version === LEGACY_EXECUTION_SNAPSHOT_VERSION) {
+    validateLegacyM1Snapshot(snapshot);
+    assertCurrentM1DirectWire(registry);
+    return;
+  }
+  const providerIds = selectedProviderIds(snapshot.plan);
+  if (registry.fingerprintFor(providerIds) !== snapshot.registry_fingerprint
+    || registry.revisionFor(providerIds) !== snapshot.registry_revision) {
+    throw new NbSearchError('CONFIGURATION_ERROR', 'Worker provider registry does not match the execution snapshot.');
+  }
+}
+
+function validateLegacyM1Snapshot(snapshot: ExecutionSnapshot): void {
+  if (snapshot.registry_revision !== M1_REGISTRY_REVISION || snapshot.registry_fingerprint !== M1_REGISTRY_FINGERPRINT) {
+    throw new NbSearchError('CONFIGURATION_ERROR', 'Legacy execution snapshot registry identity is not compatible.');
+  }
+  const providerIds = selectedProviderIds(snapshot.plan);
+  if (providerIds.some((id) => id !== 'exa' && id !== 'tavily')
+    || snapshot.provider_instances.some((item) => item.config.provider_id !== 'exa' && item.config.provider_id !== 'tavily')
+    || snapshot.provider_instances.some((item) => Object.keys(item.config.options).length !== 0)) {
+    throw new NbSearchError('CONFIGURATION_ERROR', 'Legacy execution snapshot is outside the bounded M1 compatibility rule.');
+  }
+}
+
+function assertCurrentM1DirectWire(registry: ProviderRegistry): void {
+  const exa = registry.requireDescriptor('exa');
+  const tavily = registry.requireDescriptor('tavily');
+  const direct = (descriptor: typeof exa, authKind: string, authName: string): boolean =>
+    descriptor.capabilities.includes('retrieval')
+    && descriptor.operations.some((item) => item.capability === 'retrieval' && item.method === 'POST'
+      && item.response_type === 'json' && item.path === '/search')
+    && descriptor.auth.kind === authKind && descriptor.auth.name === authName;
+  if (!direct(exa, 'api-key-header', 'x-api-key') || !direct(tavily, 'api-key-body', 'api_key')) {
+    throw new NbSearchError('CONFIGURATION_ERROR', 'Current providers do not preserve the bounded M1 direct wire contract.');
+  }
+}
+
+function selectedProviderIds(plan: SearchPlan): string[] {
+  return [...new Set(plan.stages.flatMap((stage) => stage.invocations.map((item) => item.provider_id)))].sort();
 }
 
 function nonempty(value: string | undefined): string | undefined { const item = value?.trim(); return item === '' ? undefined : item }

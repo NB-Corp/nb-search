@@ -10,16 +10,21 @@ import type { HttpTransport } from '../src/transport.ts';
 const transport: HttpTransport = { async send<T>() { return { status: 200, body: { results: [] } as T }; } };
 
 describe('static provider registry', () => {
-  it('declares only Exa and Tavily retrieval descriptors with fixed protocol contracts', () => {
+  it('declares Exa, aggregate gateway, and Tavily retrieval descriptors with fixed protocol contracts', () => {
     const registry = new ProviderRegistry(builtInProviderRegistrations());
     expect(registry.descriptors()).toMatchObject([
       {
-        provider_id: 'exa', adapter_version: 'm1', capabilities: ['retrieval'],
+        provider_id: 'exa', adapter_version: 'l2', capabilities: ['retrieval'],
         operations: [{ method: 'POST', response_type: 'json', path: '/search' }],
         auth: { kind: 'api-key-header', name: 'x-api-key' },
       },
       {
-        provider_id: 'tavily', adapter_version: 'm1', capabilities: ['retrieval'],
+        provider_id: 'search-gateway', adapter_version: 'l2', capabilities: ['retrieval'],
+        operations: [{ method: 'POST', response_type: 'json', path: '/v1/aggregate/search' }],
+        auth: { kind: 'bearer-header', name: 'Authorization' },
+      },
+      {
+        provider_id: 'tavily', adapter_version: 'l2', capabilities: ['retrieval'],
         operations: [{ method: 'POST', response_type: 'json', path: '/search' }],
         auth: { kind: 'api-key-body', name: 'api_key' },
       },
@@ -57,4 +62,3 @@ function credential(slotId: string, providerId: string): SecretBinding {
     worker_grant: { kind: 'opaque', id: 'test-grant' },
   };
 }
-

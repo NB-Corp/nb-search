@@ -2,7 +2,9 @@ import type { ProviderInstanceConfig } from './config-schema.ts';
 import { stableFingerprint } from './config-schema.ts';
 import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
-import { ExaProvider, TavilyProvider } from './providers.ts';
+import {
+  ExaProvider, SearchGatewayProvider, TavilyProvider, validateProviderBaseUrl, validateSearchPath,
+} from './providers.ts';
 import type { HttpTransport } from './transport.ts';
 import type { ProviderCapability, ProviderId, SearchProvider } from './types.ts';
 
@@ -12,9 +14,9 @@ export interface ProviderDescriptor {
   provider_id: ProviderId;
   adapter_version: string;
   capabilities: readonly ProviderCapability[];
-  activation: { kind: 'credential' | 'explicit'; required: boolean };
+  activation: { kind: 'credential' | 'explicit'; required: boolean; endpoint?: 'required' };
   operations: ReadonlyArray<{ capability: ProviderCapability; method: 'GET' | 'POST'; response_type: 'json' | 'text'; path: string }>;
-  auth: { kind: 'api-key-header' | 'api-key-body' | 'none'; name?: string };
+  auth: { kind: 'api-key-header' | 'api-key-body' | 'bearer-header' | 'none'; name?: string };
   option_keys: readonly string[];
   option_schema: Readonly<Record<string, unknown>>;
 }
@@ -43,6 +45,7 @@ export interface ProviderPorts {
 
 export interface ProviderRegistration {
   descriptor: ProviderDescriptor;
+  validate?(instanceId: string, instance: ProviderInstanceConfig): void;
   create(context: ProviderFactoryContext): ProviderPorts;
 }
 
@@ -63,6 +66,18 @@ export class ProviderRegistry {
     return this.registrations.get(providerId)?.descriptor;
   }
 
+  requireDescriptor(providerId: ProviderId): ProviderDescriptor {
+    const descriptor = this.descriptor(providerId);
+    if (descriptor === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Provider ${providerId} is not registered.`);
+    return descriptor;
+  }
+
+  validate(instanceId: string, instance: ProviderInstanceConfig): void {
+    const registration = this.registrations.get(instance.provider_id);
+    if (registration === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Provider ${instance.provider_id} is not registered.`);
+    registration.validate?.(instanceId, instance);
+  }
+
   descriptors(): readonly ProviderDescriptor[] {
     return [...this.registrations.values()].map((item) => item.descriptor)
       .sort((left, right) => left.provider_id.localeCompare(right.provider_id));
@@ -71,7 +86,17 @@ export class ProviderRegistry {
   create(instanceId: string, instance: ProviderInstanceConfig, context: Omit<ProviderFactoryContext, 'instance_id' | 'instance'>): ProviderPorts {
     const registration = this.registrations.get(instance.provider_id);
     if (registration === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Provider ${instance.provider_id} is not registered.`);
+    registration.validate?.(instanceId, instance);
     return registration.create({ ...context, instance_id: instanceId, instance });
+  }
+
+  fingerprintFor(providerIds: readonly ProviderId[]): string {
+    const descriptors = [...new Set(providerIds)].sort().map((id) => this.requireDescriptor(id));
+    return stableFingerprint({ schema_version: REGISTRY_SCHEMA_VERSION, descriptors });
+  }
+
+  revisionFor(providerIds: readonly ProviderId[]): string {
+    return `registry-${REGISTRY_SCHEMA_VERSION}-${this.fingerprintFor(providerIds).slice(0, 16)}`;
   }
 
   fingerprint(): string {
@@ -82,23 +107,25 @@ export class ProviderRegistry {
 }
 
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] {
-  return [exaRegistration, tavilyRegistration];
+  return [exaRegistration, searchGatewayRegistration, tavilyRegistration];
 }
 
 const exaRegistration: ProviderRegistration = {
   descriptor: {
-    provider_id: 'exa', adapter_version: 'm1', capabilities: ['retrieval'],
+    provider_id: 'exa', adapter_version: 'l2', capabilities: ['retrieval'],
     activation: { kind: 'credential', required: true },
     operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }],
-    auth: { kind: 'api-key-header', name: 'x-api-key' }, option_keys: [],
-    option_schema: { type: 'object', properties: {}, additionalProperties: false },
+    auth: { kind: 'api-key-header', name: 'x-api-key' }, option_keys: ['search_path'],
+    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
   },
+  validate: validateRelayInstance,
   create(context) {
     const credential = requireCredential(context);
     return {
       retrieval: new ExaProvider({
         apiKey: credential.value, transport: context.transports.http,
         ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
+        ...(typeof context.instance.options['search_path'] === 'string' ? { searchPath: context.instance.options['search_path'] } : {}),
         providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id,
         clock: context.clock,
       }),
@@ -108,24 +135,82 @@ const exaRegistration: ProviderRegistration = {
 
 const tavilyRegistration: ProviderRegistration = {
   descriptor: {
-    provider_id: 'tavily', adapter_version: 'm1', capabilities: ['retrieval'],
+    provider_id: 'tavily', adapter_version: 'l2', capabilities: ['retrieval'],
     activation: { kind: 'credential', required: true },
     operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }],
-    auth: { kind: 'api-key-body', name: 'api_key' }, option_keys: [],
-    option_schema: { type: 'object', properties: {}, additionalProperties: false },
+    auth: { kind: 'api-key-body', name: 'api_key' }, option_keys: ['search_path'],
+    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
   },
+  validate: validateRelayInstance,
   create(context) {
     const credential = requireCredential(context);
     return {
       retrieval: new TavilyProvider({
         apiKey: credential.value, transport: context.transports.http,
         ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
+        ...(typeof context.instance.options['search_path'] === 'string' ? { searchPath: context.instance.options['search_path'] } : {}),
         providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id,
         clock: context.clock,
       }),
     };
   },
 };
+
+const searchGatewayRegistration: ProviderRegistration = {
+  descriptor: {
+    provider_id: 'search-gateway', adapter_version: 'l2', capabilities: ['retrieval'],
+    activation: { kind: 'credential', required: true, endpoint: 'required' },
+    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/v1/aggregate/search' }],
+    auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['downstream_profile'],
+    option_schema: {
+      type: 'object', properties: { downstream_profile: { type: 'string', minLength: 1, maxLength: 256 } },
+      additionalProperties: false,
+    },
+  },
+  validate: validateGatewayInstance,
+  create(context) {
+    const credential = requireCredential(context);
+    return {
+      retrieval: new SearchGatewayProvider({
+        apiKey: credential.value,
+        transport: context.transports.http,
+        ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
+        ...(typeof context.instance.options['downstream_profile'] === 'string'
+          ? { downstreamProfile: context.instance.options['downstream_profile'] } : {}),
+        providerInstanceId: context.instance_id,
+        credentialSlotId: credential.credential_slot_id,
+        clock: context.clock,
+      }),
+    };
+  },
+};
+
+function validateRelayInstance(instanceId: string, instance: ProviderInstanceConfig): void {
+  validateKnownOptions(instanceId, instance, ['search_path']);
+  if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url);
+  const path = instance.options['search_path'];
+  if (path !== undefined) {
+    if (typeof path !== 'string') throw invalidOption(instanceId);
+    validateSearchPath(path);
+  }
+}
+
+function validateGatewayInstance(instanceId: string, instance: ProviderInstanceConfig): void {
+  validateKnownOptions(instanceId, instance, ['downstream_profile']);
+  if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url);
+  const profile = instance.options['downstream_profile'];
+  if (profile !== undefined && (typeof profile !== 'string' || profile.trim() === '' || profile !== profile.trim() || profile.length > 256)) {
+    throw invalidOption(instanceId);
+  }
+}
+
+function validateKnownOptions(instanceId: string, instance: ProviderInstanceConfig, keys: readonly string[]): void {
+  if (Object.keys(instance.options).some((key) => !keys.includes(key))) throw invalidOption(instanceId);
+}
+
+function invalidOption(instanceId: string): NbSearchError {
+  return new NbSearchError('CONFIGURATION_ERROR', `Provider instance ${instanceId} has invalid options.`);
+}
 
 function requireCredential(context: ProviderFactoryContext): SecretBinding {
   if (context.credential === undefined) {

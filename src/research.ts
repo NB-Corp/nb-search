@@ -412,6 +412,8 @@ function boundItem(item: unknown, budget: number): BoundedItem {
   let bounded: unknown;
   if (typeof item === 'string') {
     bounded = truncateUtf8(item, Math.max(32, budget - 2));
+  } else if (isRecord(item) && item['kind'] === 'bounded_evidence_report') {
+    bounded = compactSummaryItem(item, budget);
   } else if (isRecord(item) && ('url' in item || 'provenance' in item)) {
     bounded = compactSourceItem(item, budget);
   } else {
@@ -429,19 +431,100 @@ function boundItem(item: unknown, budget: number): BoundedItem {
   return { item: bounded, truncated: true, originalBytes, boundedBytes: jsonBytes(bounded) };
 }
 
+function compactSummaryItem(record: Record<string, unknown>, budget: number): Record<string, unknown> {
+  const projected: Record<string, unknown> = {
+    kind: 'bounded_evidence_report',
+    ...(typeof record['query'] === 'string' ? { query: truncateUtf8(record['query'], 2048) } : {}),
+    ...(typeof record['state'] === 'string' ? { state: record['state'] } : {}),
+    ...(typeof record['source_count'] === 'number' ? { source_count: record['source_count'] } : {}),
+    ...(typeof record['synthesis_claimed'] === 'boolean' ? { synthesis_claimed: record['synthesis_claimed'] } : {}),
+    warnings: Array.isArray(record['warnings']) ? record['warnings'].slice(0, 16).map((item) => truncateUtf8(String(item), 512)) : [],
+    provider_attempts: Array.isArray(record['provider_attempts'])
+      ? record['provider_attempts'].map((item) => compactAttempt(item)) : [],
+  };
+  while (jsonBytes(projected) > budget) {
+    const attempts = projected['provider_attempts'] as Record<string, unknown>[];
+    const withMessages = attempts.flatMap((outer) => Array.isArray(outer['upstream_attempts']) ? outer['upstream_attempts'] as Record<string, unknown>[] : [])
+      .find((nested) => isRecord(nested['error']) && typeof nested['error']['message'] === 'string' && nested['error']['message'].length > 32);
+    if (withMessages !== undefined && isRecord(withMessages['error']) && typeof withMessages['error']['message'] === 'string') {
+      withMessages['error']['message'] = truncateUtf8(withMessages['error']['message'], Math.max(32, Math.floor(withMessages['error']['message'].length / 2)));
+      continue;
+    }
+    const outer = [...attempts].reverse().find((item) => Array.isArray(item['upstream_attempts']) && item['upstream_attempts'].length > 0);
+    if (outer !== undefined && Array.isArray(outer['upstream_attempts'])) {
+      outer['upstream_attempts'].pop();
+      outer['upstream_attempts_omitted'] = Number(outer['upstream_attempts_omitted'] ?? 0) + 1;
+      continue;
+    }
+    const withOuterMessage = attempts.find((item) => isRecord(item['error']) && typeof item['error']['message'] === 'string');
+    if (withOuterMessage !== undefined && isRecord(withOuterMessage['error'])) {
+      delete withOuterMessage['error']['message'];
+      continue;
+    }
+    const optionalKey = ['credential_slot_id', 'capability', 'role', 'trigger', 'duration_ms']
+      .find((key) => attempts.some((item) => item[key] !== undefined));
+    if (optionalKey !== undefined) {
+      attempts.forEach((item) => delete item[optionalKey]);
+      continue;
+    }
+    if (Array.isArray(projected['warnings']) && projected['warnings'].length > 0) {
+      projected['warnings'].pop();
+      continue;
+    }
+    if (typeof projected['query'] === 'string' && projected['query'].length > 64) {
+      projected['query'] = truncateUtf8(projected['query'], Math.max(64, Math.floor(projected['query'].length / 2)));
+      continue;
+    }
+    break;
+  }
+  return projected;
+}
+
+function compactAttempt(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return { provider: 'unknown', attempt: 1, state: 'failed', duration_ms: 0, result_count: 0 };
+  const projected: Record<string, unknown> = {};
+  for (const key of ['provider', 'provider_instance_id', 'credential_slot_id', 'invocation_id', 'capability', 'role', 'trigger', 'attempt', 'state', 'duration_ms', 'result_count'] as const) {
+    if (value[key] !== undefined) projected[key] = structuredClone(value[key]);
+  }
+  if (isRecord(value['error'])) projected['error'] = {
+    ...(value['error']['code'] === undefined ? {} : { code: value['error']['code'] }),
+    ...(typeof value['error']['message'] === 'string' ? { message: truncateUtf8(value['error']['message'], 512) } : {}),
+    ...(typeof value['error']['retryable'] === 'boolean' ? { retryable: value['error']['retryable'] } : {}),
+  };
+  if (Array.isArray(value['upstream_attempts'])) projected['upstream_attempts'] = value['upstream_attempts'].map((item) => {
+    if (!isRecord(item)) return { provider: 'unknown', state: 'unknown', duration_ms: 0, result_count: 0 };
+    const nested = structuredClone(item);
+    if (isRecord(nested['error']) && typeof nested['error']['message'] === 'string') nested['error']['message'] = truncateUtf8(nested['error']['message'], 512);
+    return nested;
+  });
+  if (typeof value['upstream_attempts_omitted'] === 'number') projected['upstream_attempts_omitted'] = value['upstream_attempts_omitted'];
+  return projected;
+}
+
 function compactSourceItem(record: Record<string, unknown>, budget: number): Record<string, unknown> {
   let textLimit = 4096;
   let arrayLimit = 8;
-  let candidate = sourceProjection(record, textLimit, arrayLimit);
+  let includeOptional = true;
+  let candidate = sourceProjection(record, textLimit, arrayLimit, includeOptional);
   while (jsonBytes(candidate) > budget && (textLimit > 32 || arrayLimit > 1)) {
+    if (includeOptional) {
+      includeOptional = false;
+      candidate = sourceProjection(record, textLimit, arrayLimit, includeOptional);
+      continue;
+    }
     textLimit = Math.max(32, Math.floor(textLimit / 2));
     arrayLimit = Math.max(1, Math.floor(arrayLimit / 2));
-    candidate = sourceProjection(record, textLimit, arrayLimit);
+    candidate = sourceProjection(record, textLimit, arrayLimit, includeOptional);
   }
   return candidate;
 }
 
-function sourceProjection(record: Record<string, unknown>, textLimit: number, arrayLimit: number): Record<string, unknown> {
+function sourceProjection(
+  record: Record<string, unknown>,
+  textLimit: number,
+  arrayLimit: number,
+  includeOptional: boolean,
+): Record<string, unknown> {
   const projected: Record<string, unknown> = {};
   for (const key of ['title', 'url', 'snippet', 'published_at', 'site_name'] as const) {
     if (typeof record[key] === 'string') projected[key] = truncateUtf8(record[key], textLimit);
@@ -455,8 +538,19 @@ function sourceProjection(record: Record<string, unknown>, textLimit: number, ar
       if (!isRecord(value)) return { value: truncateUtf8(String(value), Math.min(256, textLimit)) };
       return {
         ...(value['provider'] === undefined ? {} : { provider: truncateUtf8(String(value['provider']), Math.min(256, textLimit)) }),
+        ...(!includeOptional || value['provider_instance_id'] === undefined ? {} : { provider_instance_id: truncateUtf8(String(value['provider_instance_id']), Math.min(256, textLimit)) }),
+        ...(!includeOptional || value['credential_slot_id'] === undefined ? {} : { credential_slot_id: truncateUtf8(String(value['credential_slot_id']), Math.min(256, textLimit)) }),
+        ...(!includeOptional || value['invocation_id'] === undefined ? {} : { invocation_id: truncateUtf8(String(value['invocation_id']), Math.min(256, textLimit)) }),
+        ...(!includeOptional || value['capability'] === undefined ? {} : { capability: truncateUtf8(String(value['capability']), Math.min(128, textLimit)) }),
+        ...(!includeOptional || value['role'] === undefined ? {} : { role: truncateUtf8(String(value['role']), Math.min(128, textLimit)) }),
+        ...(!includeOptional || value['trigger'] === undefined ? {} : { trigger: truncateUtf8(String(value['trigger']), Math.min(128, textLimit)) }),
         ...(typeof value['rank'] === 'number' ? { rank: value['rank'] } : {}),
         ...(value['original_url'] === undefined ? {} : { original_url: truncateUtf8(String(value['original_url']), textLimit) }),
+        ...(Array.isArray(value['upstream']) ? {
+          upstream: value['upstream'].slice(0, arrayLimit).flatMap((item) => isRecord(item) && typeof item['provider'] === 'string'
+            ? [{ provider: truncateUtf8(item['provider'], Math.min(128, textLimit)) }] : []),
+          upstream_omitted: Number(value['upstream_omitted'] ?? 0) + Math.max(0, value['upstream'].length - arrayLimit),
+        } : {}),
       };
     });
   }

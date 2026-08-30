@@ -34,15 +34,17 @@ export class JobStore {
   async createOrReuse(request: ResearchRequest, idempotencyKey?: string, snapshot?: ExecutionSnapshot): Promise<CreateJobResult> {
     await this.initialize();
     const normalized: ResearchRequest = { ...request, query: request.query.trim() };
-    const requestHash = hash(JSON.stringify(snapshot === undefined ? normalized : {
-      request: normalized,
-      plan_fingerprint: snapshot.plan_fingerprint,
-      config_revision: snapshot.config_revision,
-      config_fingerprint: snapshot.config_fingerprint,
-      registry_revision: snapshot.registry_revision,
-      artifact_contract_version: snapshot.artifact_contract_version,
-      credential_slot_ids: snapshot.credential_bindings.map((item) => item.credential_slot_id),
-    }));
+    const requestHash = hash(JSON.stringify(snapshot === undefined ? normalized : snapshot.snapshot_version === '2'
+      ? { request: normalized, snapshot_fingerprint: snapshot.snapshot_fingerprint }
+      : {
+          request: normalized,
+          plan_fingerprint: snapshot.plan_fingerprint,
+          config_revision: snapshot.config_revision,
+          config_fingerprint: snapshot.config_fingerprint,
+          registry_revision: snapshot.registry_revision,
+          artifact_contract_version: snapshot.artifact_contract_version,
+          credential_slot_ids: snapshot.credential_bindings.map((item) => item.credential_slot_id),
+        }));
     const idempotencyHash = idempotencyKey === undefined ? undefined : hash(idempotencyKey);
     return await this.withLock(resolve(this.root, '.idempotency-lock'), async () => {
       if (idempotencyHash !== undefined) {

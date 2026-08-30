@@ -6,7 +6,7 @@ import type { CanonicalConfigPatch } from './config-schema.ts';
 import { loadConfiguration, type AppConfiguration } from './config.ts';
 import { SearchService } from './core.ts';
 import {
-  createExecutionSnapshot, resolveSnapshotBindings, type ExecutionSnapshot,
+  assertSnapshotRegistry, createExecutionSnapshot, resolveSnapshotBindings, type ExecutionSnapshot,
 } from './execution-snapshot.ts';
 import { NbSearchError } from './errors.ts';
 import { JobStore } from './job-store.ts';
@@ -120,7 +120,9 @@ export function createRuntimeComposition(
     profiles,
     configurationDiagnostics: [
       ...config.diagnostics.map((item) => ({
-        code: item.code, source: item.source, ...(item.path === undefined ? {} : { path: item.path }), message: item.message,
+        code: item.code, source: item.source,
+        ...(item.path !== undefined && /^(provider_instances|credential_slots|profiles)(\.|$)/.test(item.path) ? { path: item.path } : {}),
+        message: item.message,
       })),
       ...profileDiagnostics,
     ],
@@ -137,9 +139,7 @@ export function createSearchFromSnapshot(
     ...builtInProviderRegistrations(),
     ...(options.provider_registrations ?? []),
   ]);
-  if (registry.fingerprint() !== snapshot.registry_fingerprint || registry.revision() !== snapshot.registry_revision) {
-    throw new NbSearchError('CONFIGURATION_ERROR', 'Worker provider registry does not match the execution snapshot.');
-  }
+  assertSnapshotRegistry(snapshot, registry);
   const bindings = resolveSnapshotBindings(snapshot, env);
   const transport = options.transport ?? new FetchJsonTransport();
   const providers: SearchProvider[] = [];

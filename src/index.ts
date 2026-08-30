@@ -94,6 +94,9 @@ export {
   ARTIFACT_CONTRACT_VERSION,
   createExecutionSnapshot,
   EXECUTION_SNAPSHOT_VERSION,
+  LEGACY_EXECUTION_SNAPSHOT_VERSION,
+  M1_REGISTRY_FINGERPRINT,
+  M1_REGISTRY_REVISION,
   resolveSnapshotBindings,
   validateExecutionSnapshot,
 } from './execution-snapshot.ts';
@@ -123,6 +126,9 @@ export type {
   SearchIntent,
   Freshness,
   ProviderCapability,
+  ProviderSearchResponse,
+  ProviderSearchReturn,
+  ProviderResult,
   PublicError,
   PublicErrorCode,
   ResearchArtifact,
@@ -136,6 +142,10 @@ export type {
   SearchEnvelope,
   SearchResult,
   SearchState,
+  UpstreamAttempt,
+  UpstreamAttemptState,
+  UpstreamError,
+  UpstreamResultAttribution,
   TerminalJobState,
 } from './types.ts';
 

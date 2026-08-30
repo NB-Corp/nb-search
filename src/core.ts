@@ -135,7 +135,11 @@ function mergeResults(outcomes: readonly InvocationOutcome[], limit: number): Se
         role: invocation.role,
         trigger: invocation.trigger,
         rank, original_url: item.url,
-        ...(item.metadata === undefined ? {} : { metadata: item.metadata }) };
+        ...(item.metadata === undefined ? {} : { metadata: item.metadata }),
+        ...(item.upstream_attribution === undefined || item.upstream_attribution.length === 0
+          ? {} : { upstream: structuredClone(item.upstream_attribution) }),
+        ...(item.upstream_attribution_omitted === undefined || item.upstream_attribution_omitted === 0
+          ? {} : { upstream_omitted: item.upstream_attribution_omitted }) };
       const existing = merged.get(url);
       if (existing !== undefined) {
         if (!existing.providers.includes(invocation.provider_id)) existing.providers.push(invocation.provider_id);
@@ -174,18 +178,48 @@ function deriveState(
 function compactEnvelope(envelope: SearchEnvelope): SearchEnvelope {
   const originalCount = envelope.results.length;
   let shortened = 0;
+  let nestedCompacted = false;
+  let metadataCompacted = false;
   while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES) {
     const result = envelope.results.find((item) => item.snippet.length > 512);
     if (result === undefined) break;
     result.snippet = `${result.snippet.slice(0, Math.max(256, Math.floor(result.snippet.length * 0.65))).trimEnd()}…`;
     shortened += 1;
   }
-  while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES && envelope.results.length > 0) envelope.results.pop();
   if (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES) {
-    for (const result of envelope.results) for (const provenance of result.provenance) delete provenance.metadata;
+    for (const result of envelope.results) for (const provenance of result.provenance) {
+      if (provenance.metadata !== undefined) { delete provenance.metadata; metadataCompacted = true; }
+    }
   }
+  while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES) {
+    const nestedError = envelope.attempts.flatMap((attempt) => attempt.upstream_attempts ?? [])
+      .find((attempt) => (attempt.error?.message?.length ?? 0) > 64);
+    if (nestedError?.error?.message === undefined) break;
+    nestedError.error.message = `${nestedError.error.message.slice(0, Math.max(32, Math.floor(nestedError.error.message.length * 0.6))).trimEnd()}…`;
+    nestedCompacted = true;
+  }
+  while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES) {
+    const outer = [...envelope.attempts].reverse().find((attempt) => (attempt.upstream_attempts?.length ?? 0) > 0);
+    if (outer?.upstream_attempts === undefined) break;
+    const mutable = [...outer.upstream_attempts];
+    mutable.pop();
+    outer.upstream_attempts = mutable;
+    outer.upstream_attempts_omitted = (outer.upstream_attempts_omitted ?? 0) + 1;
+    nestedCompacted = true;
+  }
+  while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES) {
+    const provenance = envelope.results.flatMap((result) => result.provenance)
+      .findLast((item) => (item.upstream?.length ?? 0) > 0);
+    if (provenance?.upstream === undefined) break;
+    const mutable = [...provenance.upstream];
+    mutable.pop();
+    provenance.upstream = mutable;
+    provenance.upstream_omitted = (provenance.upstream_omitted ?? 0) + 1;
+    nestedCompacted = true;
+  }
+  while (byteLength(envelope) > SEARCH_TEXT_MAX_BYTES && envelope.results.length > 0) envelope.results.pop();
   envelope.compaction = {
-    applied: shortened > 0 || envelope.results.length < originalCount,
+    applied: shortened > 0 || metadataCompacted || nestedCompacted || envelope.results.length < originalCount,
     snippets_shortened: shortened,
     results_omitted: originalCount - envelope.results.length,
     max_bytes: SEARCH_TEXT_MAX_BYTES,
