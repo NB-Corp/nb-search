@@ -80,7 +80,8 @@ describe('L2 gateway migration', () => {
     });
     for (const profileId of ['default', 'fast', 'deep']) {
       const invocations = resolved.config.profiles[profileId]?.stages.flatMap((stage) => stage.invocations);
-      expect(invocations).toEqual([expect.objectContaining({ provider_instance_id: 'search-gateway.aggregate' })]);
+      expect(invocations?.[0]).toEqual(expect.objectContaining({ provider_instance_id: 'search-gateway.aggregate' }));
+      if (profileId !== 'fast') expect(invocations).toContainEqual(expect.objectContaining({ provider_instance_id: 'tavily.default', capability: 'answer' }));
     }
     expect(JSON.stringify({ config: resolved.config, diagnostics: resolved.diagnostics, provenance: resolved.provenance }))
       .not.toContain('legacy-token-sentinel');
@@ -97,7 +98,7 @@ describe('L2 gateway migration', () => {
       message: 'Aggregate cutover is enabled but its endpoint or credential is unavailable; direct compatibility profiles remain selected.',
     });
     expect(incomplete.config.profiles['default']?.stages[0]?.invocations.map((item) => item.provider_instance_id))
-      .toEqual(['exa.default', 'tavily.default']);
+      .toEqual(['exa.default', 'tavily.default', 'tavily.default']);
 
     const explicitDeep = {
       stages: [{ kind: 'parallel' as const, invocations: [{
@@ -112,7 +113,7 @@ describe('L2 gateway migration', () => {
       config: { profiles: { deep: explicitDeep } }, cwd: root, homeDirectory: root,
     });
     expect(complete.config.profiles['deep']).toEqual(explicitDeep);
-    expect(complete.config.profiles['default']?.stages[0]?.invocations).toHaveLength(1);
+    expect(complete.config.profiles['default']?.stages[0]?.invocations).toHaveLength(2);
     expect(complete.config.profiles['fast']?.stages[0]?.invocations).toHaveLength(1);
   });
 
@@ -271,7 +272,7 @@ describe('L2 gateway migration', () => {
     const capabilities = await composition.runtime.capabilities();
     expect(capabilities.providers.instances).toContainEqual({
       provider_id: 'search-gateway', provider_instance_id: 'search-gateway.aggregate',
-      credential_slot_id: 'search-gateway.aggregate', enabled: true, ready: true, capabilities: ['retrieval'],
+      credential_slot_id: 'search-gateway.aggregate', enabled: true, ready: true, capabilities: ['retrieval'], ready_capabilities: ['retrieval'],
     });
     expect(JSON.stringify(capabilities)).not.toMatch(/gateway\.test|private-profile|"token"|Authorization|search_path/);
     const result = await composition.runtime.search({ query: 'q' });

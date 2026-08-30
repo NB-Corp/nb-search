@@ -23,6 +23,7 @@ describe('JobStore', () => {
 
     const running = await store.claim(created.job.job_id, 'worker-token');
     expect(running).toMatchObject({ state: 'running', lease: { owner_token: 'worker-token' } });
+    await expect(store.claim(created.job.job_id, 'competing-worker')).rejects.toMatchObject({ code: 'JOB_CONFLICT' });
     await expect(store.heartbeat(created.job.job_id, 'other-token')).rejects.toMatchObject({ code: 'JOB_STORE_ERROR' });
     now = new Date('2026-01-01T00:00:05.000Z');
     await store.heartbeat(created.job.job_id, 'worker-token');
@@ -41,13 +42,13 @@ describe('JobStore', () => {
     await store.writeArtifacts(job.job_id, 'checkpoint', {
       summary: { source_count: 1 }, report: 'checkpoint report', sources: [{ url: 'https://example.test' }],
     });
-    expect(await store.readArtifact(job.job_id, 'summary')).toEqual({ state: 'checkpoint', items: [{ source_count: 1 }] });
-    expect(await store.readArtifact(job.job_id, 'report')).toEqual({ state: 'checkpoint', items: ['checkpoint report'] });
+    expect(await store.readArtifact(job.job_id, 'summary')).toEqual({ state: 'checkpoint', revision: 1, items: [{ source_count: 1 }] });
+    expect(await store.readArtifact(job.job_id, 'report')).toEqual({ state: 'checkpoint', revision: 1, items: ['checkpoint report'] });
     await store.writeArtifacts(job.job_id, 'final', {
       summary: { source_count: 2 }, report: 'final report', sources: [{ url: 'https://one.test' }, { url: 'https://two.test' }],
     });
     expect(await store.readArtifact(job.job_id, 'sources')).toEqual({
-      state: 'final', items: [{ url: 'https://one.test' }, { url: 'https://two.test' }],
+      state: 'final', revision: 2, items: [{ url: 'https://one.test' }, { url: 'https://two.test' }],
     });
     expect((await readdir(join(store.root, job.job_id, 'artifacts'))).some((name) => name.endsWith('.tmp'))).toBe(false);
   });

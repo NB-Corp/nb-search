@@ -96,6 +96,7 @@ export class ResearchService {
       ...(job.started_at === undefined ? {} : { started_at: job.started_at }),
       ...(job.completed_at === undefined ? {} : { completed_at: job.completed_at }),
       progress: job.progress, artifacts: job.artifacts, ...(job.error === undefined ? {} : { error: job.error }),
+      artifact_revision: job.artifact_revision,
       ...(isTerminalState(job.state) ? {} : { poll_after_ms: 1000 }),
     };
   }
@@ -108,26 +109,26 @@ export class ResearchService {
     const pageSize = boundedInteger(input.page_size ?? 10, 1, 100, 'page_size');
     const job = await this.store.reconcileStale(input.job_id);
     const content = await this.store.readArtifact(input.job_id, artifact);
-    const offset = decodeCursor(input.cursor, artifact, content.state);
+    const offset = decodeCursor(input.cursor, artifact, content.state, content.revision);
     const selected = content.items.slice(offset, offset + pageSize);
     let bounded = selected.map((item) => boundItem(item, RESEARCH_PAGE_MAX_BYTES - 2048));
     let envelope = researchReadEnvelope(
-      operationRequestId ?? this.requestId(), job, artifact, content.state, offset, content.items.length, bounded,
+      operationRequestId ?? this.requestId(), job, artifact, content.state, content.revision, offset, content.items.length, bounded,
     );
     while (jsonBytes(envelope) > RESEARCH_PAGE_MAX_BYTES && bounded.length > 1) {
       bounded = bounded.slice(0, -1);
       envelope = researchReadEnvelope(
-        envelope.request_id, job, artifact, content.state, offset, content.items.length, bounded,
+        envelope.request_id, job, artifact, content.state, content.revision, offset, content.items.length, bounded,
       );
     }
     if (jsonBytes(envelope) > RESEARCH_PAGE_MAX_BYTES && bounded.length === 1) {
       const empty = researchReadEnvelope(
-        envelope.request_id, job, artifact, content.state, offset, content.items.length, [],
+        envelope.request_id, job, artifact, content.state, content.revision, offset, content.items.length, [],
       );
       const itemBudget = Math.max(512, RESEARCH_PAGE_MAX_BYTES - jsonBytes(empty) - 64);
       bounded = [boundItem(selected[0], itemBudget)];
       envelope = researchReadEnvelope(
-        envelope.request_id, job, artifact, content.state, offset, content.items.length, bounded,
+        envelope.request_id, job, artifact, content.state, content.revision, offset, content.items.length, bounded,
       );
     }
     if (jsonBytes(envelope) > RESEARCH_PAGE_MAX_BYTES) {
@@ -145,7 +146,7 @@ export class ResearchService {
     const offset = decodeListCursor(input.cursor);
     const records = await this.store.listRecords(input.states);
     const selected = records.slice(offset, offset + limit);
-    let items = selected.map((job) => ({ job_id: job.job_id, state: job.state, created_at: job.created_at, updated_at: job.updated_at, artifacts: job.artifacts }));
+    let items = selected.map((job) => ({ job_id: job.job_id, state: job.state, created_at: job.created_at, updated_at: job.updated_at, artifacts: job.artifacts, artifact_revision: job.artifact_revision }));
     let envelope: ResearchListEnvelope = {
       schema_version: SCHEMA_VERSION, request_id: operationRequestId ?? this.requestId(), mode: 'research_list', items,
       ...(offset + items.length < records.length ? { next_cursor: encodeListCursor(offset + items.length) } : {}),
@@ -182,6 +183,7 @@ export class ResearchRunner {
       const deadline = started + job.request.max_duration_ms;
       const operationLimit = Math.max(1, Math.ceil(job.request.max_sources / 20));
       const operations: SearchEnvelope[] = [];
+      const completedOnce = new Set<string>();
       const collected = new Map<string, SearchResult>();
       let deadlineReached = false;
 
@@ -189,15 +191,20 @@ export class ResearchRunner {
         if (await this.store.cancelRequested(jobId)) return await this.finishCancelled(jobId);
         const remainingMs = Math.floor(deadline - this.monotonicNow());
         if (remainingMs < 1000) { deadlineReached = true; break; }
+        let retainedAugmentations: SearchEnvelope['augmentations'];
         const result = await this.searcher.search({
           query: researchOperationQuery(job.request.query, operation),
           max_results: Math.min(20, job.request.max_sources - collected.size),
-          timeout_ms: Math.min(45_000, remainingMs),
+          timeout_ms: Math.min(operation === 0 && hasCapabilityRoute(job.request) ? 120_000 : 45_000, remainingMs),
           signal: controller.signal,
           ...(job.request.profile === undefined ? {} : { profile: job.request.profile }),
           ...(job.request.intent === undefined ? {} : { intent: job.request.intent }),
           ...(job.request.freshness === undefined ? {} : { freshness: job.request.freshness }),
+        }, undefined, {
+          scope: 'research-job', completed_once_per_job_invocation_ids: completedOnce,
+          capture_augmentations: (items) => { retainedAugmentations = [...structuredClone(items)]; },
         });
+        if (retainedAugmentations !== undefined && retainedAugmentations.length > 0) result.augmentations = retainedAugmentations;
         operations.push(result);
         mergeResearchResults(collected, result.results, job.request.max_sources);
         deadlineReached = this.monotonicNow() >= deadline;
@@ -280,6 +287,11 @@ function researchOperationQuery(query: string, operation: number): string {
   return `${query.slice(0, headLength)}${separator}${query.slice(-tailLength)}${suffix}`;
 }
 
+function hasCapabilityRoute(request: ResearchRequest): boolean {
+  return ((request.profile === 'default' || request.profile === 'deep') && (request.intent === 'factual' || request.intent === 'tutorial'))
+    || (request.profile === 'deep' && (request.intent === 'status' || request.intent === 'comparison' || request.intent === 'exploratory' || request.intent === 'news'));
+}
+
 function collectionEnvelope(
   job: JobRecord,
   operations: readonly SearchEnvelope[],
@@ -289,6 +301,8 @@ function collectionEnvelope(
   deadlineReached: boolean,
 ): SearchEnvelope {
   const attempts = operations.flatMap((operation) => operation.attempts);
+  const augmentations = operations.flatMap((operation) => operation.augmentations ?? [])
+    .filter((item, index, array) => array.findIndex((candidate) => candidate.invocation_id === item.invocation_id) === index);
   const operationStates = operations.map((operation) => operation.state);
   let state: SearchEnvelope['state'];
   if (results.length > 0) {
@@ -296,6 +310,7 @@ function collectionEnvelope(
       ? 'partial'
       : 'succeeded';
   } else if (operationStates.includes('cancelled')) state = 'cancelled';
+  else if (operationStates.includes('partial')) state = 'partial';
   else if (deadlineReached || operationStates.includes('timed_out')) state = 'timed_out';
   else if (operationStates.length > 0 && operationStates.every((value) => value === 'empty')) state = 'empty';
   else state = 'failed';
@@ -321,6 +336,7 @@ function collectionEnvelope(
     attempts,
     warnings,
     ...(error === undefined ? {} : { error }),
+    ...(augmentations.length === 0 ? {} : { augmentations }),
     timing: {
       started_at: startedAt.toISOString(),
       completed_at: completedAt.toISOString(),
@@ -340,6 +356,8 @@ function evidenceArtifacts(job: JobRecord, result: SearchEnvelope) {
   const summary = {
     kind: 'bounded_evidence_report', query: job.request.query, state: result.state,
     source_count: result.results.length, provider_attempts: result.attempts, warnings: result.warnings,
+    capability_outcomes: (result.augmentations ?? []).map((item) => ({ capability: item.capability, state: item.state, provider_id: item.provider_id, provider_instance_id: item.provider_instance_id, invocation_id: item.invocation_id, failure_policy: item.failure_policy })),
+    provider_synthesis_available: (result.augmentations ?? []).some((item) => item.state === 'succeeded'),
     synthesis_claimed: false,
   };
   const lines = [
@@ -347,7 +365,7 @@ function evidenceArtifacts(job: JobRecord, result: SearchEnvelope) {
     'This is a deterministic evidence collection report. Inspect the cited sources before relying on material claims.', '',
     ...result.results.flatMap((item, index) => [`## ${String(index + 1)}. ${item.title || item.url}`, item.url, item.snippet, '']),
   ];
-  return { summary, report: lines.join('\n'), sources: result.results };
+  return { summary, report: lines.join('\n'), sources: result.results, capabilities: result.augmentations ?? [] };
 }
 function researchTerminal(result: SearchEnvelope): Extract<JobState, 'succeeded' | 'partial' | 'failed' | 'timed_out' | 'cancelled'> {
   if (result.state === 'succeeded' || result.state === 'empty') return 'succeeded';
@@ -357,12 +375,12 @@ function boundedInteger(value: number, min: number, max: number, field: string):
   if (!Number.isSafeInteger(value) || value < min || value > max) throw invalidInput(`${field} must be an integer from ${String(min)} to ${String(max)}.`);
   return value;
 }
-function encodeCursor(offset: number, artifact: ResearchArtifact, state: string): string { return Buffer.from(JSON.stringify({ v: 1, offset, artifact, state })).toString('base64url') }
-function decodeCursor(cursor: string | undefined, artifact: ResearchArtifact, state: string): number {
+function encodeCursor(offset: number, artifact: ResearchArtifact, state: string, revision: number): string { return Buffer.from(JSON.stringify({ v: 2, offset, artifact, state, revision })).toString('base64url') }
+function decodeCursor(cursor: string | undefined, artifact: ResearchArtifact, state: string, revision: number): number {
   if (cursor === undefined) return 0;
   try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { v?: unknown; offset?: unknown; artifact?: unknown; state?: unknown };
-    if (parsed.v !== 1 || parsed.artifact !== artifact || parsed.state !== state || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0) throw new Error();
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { v?: unknown; offset?: unknown; artifact?: unknown; state?: unknown; revision?: unknown };
+    if (parsed.v !== 2 || parsed.artifact !== artifact || parsed.state !== state || parsed.revision !== revision || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0) throw new Error();
     return Number(parsed.offset);
   } catch { throw invalidInput('cursor is invalid for this artifact revision.'); }
 }
@@ -380,6 +398,7 @@ function researchReadEnvelope(
   job: JobRecord,
   artifact: ResearchArtifact,
   artifactState: ArtifactState,
+  artifactRevision: number,
   offset: number,
   totalItems: number,
   bounded: readonly BoundedItem[],
@@ -394,8 +413,9 @@ function researchReadEnvelope(
     job_state: job.state,
     artifact,
     artifact_state: artifactState,
+    artifact_revision: artifactRevision,
     items,
-    ...(offset + items.length < totalItems ? { next_cursor: encodeCursor(offset + items.length, artifact, artifactState) } : {}),
+    ...(offset + items.length < totalItems ? { next_cursor: encodeCursor(offset + items.length, artifact, artifactState, artifactRevision) } : {}),
     compaction: {
       applied: bounded.some((item) => item.truncated),
       items_truncated: bounded.filter((item) => item.truncated).length,
@@ -414,6 +434,8 @@ function boundItem(item: unknown, budget: number): BoundedItem {
     bounded = truncateUtf8(item, Math.max(32, budget - 2));
   } else if (isRecord(item) && item['kind'] === 'bounded_evidence_report') {
     bounded = compactSummaryItem(item, budget);
+  } else if (isRecord(item) && (item['capability'] === 'answer' || item['capability'] === 'research-light')) {
+    bounded = compactCapabilityItem(item, budget);
   } else if (isRecord(item) && ('url' in item || 'provenance' in item)) {
     bounded = compactSourceItem(item, budget);
   } else {
@@ -431,6 +453,20 @@ function boundItem(item: unknown, budget: number): BoundedItem {
   return { item: bounded, truncated: true, originalBytes, boundedBytes: jsonBytes(bounded) };
 }
 
+function compactCapabilityItem(record: Record<string, unknown>, budget: number): Record<string, unknown> {
+  const projected = structuredClone(record);
+  const value = isRecord(projected['result']) && isRecord(projected['result']['value']) ? projected['result']['value'] : undefined;
+  const urls = value !== undefined && Array.isArray(value['supporting_urls']) ? value['supporting_urls'] : undefined;
+  if (urls !== undefined) for (const item of urls) if (isRecord(item)) delete item['title'];
+  while (jsonBytes(projected) > budget && urls !== undefined && urls.length > 0) {
+    urls.pop();
+    if (value !== undefined) value['supporting_urls_omitted'] = Number(value['supporting_urls_omitted'] ?? 0) + 1;
+  }
+  if (jsonBytes(projected) > budget && isRecord(projected['error'])) delete projected['error']['message'];
+  if (jsonBytes(projected) > budget) throw new NbSearchError('INTERNAL', 'Capability artifact item exceeds the page bound.');
+  return projected;
+}
+
 function compactSummaryItem(record: Record<string, unknown>, budget: number): Record<string, unknown> {
   const projected: Record<string, unknown> = {
     kind: 'bounded_evidence_report',
@@ -438,6 +474,14 @@ function compactSummaryItem(record: Record<string, unknown>, budget: number): Re
     ...(typeof record['state'] === 'string' ? { state: record['state'] } : {}),
     ...(typeof record['source_count'] === 'number' ? { source_count: record['source_count'] } : {}),
     ...(typeof record['synthesis_claimed'] === 'boolean' ? { synthesis_claimed: record['synthesis_claimed'] } : {}),
+    ...(typeof record['provider_synthesis_available'] === 'boolean' ? { provider_synthesis_available: record['provider_synthesis_available'] } : {}),
+    capability_outcomes: Array.isArray(record['capability_outcomes']) ? record['capability_outcomes'].slice(0, 16).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      return [{
+        capability: item['capability'], state: item['state'], provider_id: item['provider_id'],
+        provider_instance_id: item['provider_instance_id'], invocation_id: item['invocation_id'], failure_policy: item['failure_policy'],
+      }];
+    }) : [],
     warnings: Array.isArray(record['warnings']) ? record['warnings'].slice(0, 16).map((item) => truncateUtf8(String(item), 512)) : [],
     provider_attempts: Array.isArray(record['provider_attempts'])
       ? record['provider_attempts'].map((item) => compactAttempt(item)) : [],

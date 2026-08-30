@@ -60,11 +60,42 @@ describe('durable execution snapshots', () => {
     const second = snapshotFixture(root, 'https://snapshot.example/v1', 'second-secret');
     const fullFingerprint = first.registry.fingerprint();
 
-    expect(first.snapshot).toMatchObject({ snapshot_version: '2' });
+    expect(first.snapshot).toMatchObject({ snapshot_version: '3', artifact_contract_version: '2' });
     expect(first.snapshot.registry_fingerprint).not.toBe(fullFingerprint);
     expect(first.snapshot.registry_fingerprint).toBe(second.snapshot.registry_fingerprint);
     expect(first.snapshot.snapshot_fingerprint).toBe(second.snapshot.snapshot_fingerprint);
     expect(JSON.stringify(first.snapshot)).not.toMatch(/first-secret|second-secret/);
+  });
+
+  it('replays only the frozen retrieval-only L3 version 2 descriptor identity', async () => {
+    const root = await temporaryRoot();
+    const fixture = snapshotFixture(root, 'https://snapshot.example/v1', 'start-secret');
+    const stages = fixture.snapshot.plan.stages.map((stage) => ({ ...stage, invocations: stage.invocations.map((item) => {
+      const { failure_policy: _failure, execution_scope: _scope, ...legacy } = item; return legacy;
+    }) }));
+    const planBase = { plan_version: '1' as const, profile_id: fixture.snapshot.plan.profile_id, stages };
+    const plan = { ...planBase, plan_fingerprint: stableFingerprint(planBase) };
+    const descriptor = {
+      provider_id: 'exa', adapter_version: 'l2', capabilities: ['retrieval'], activation: { kind: 'credential', required: true },
+      operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }],
+      auth: { kind: 'api-key-header', name: 'x-api-key' }, option_keys: ['search_path'],
+      option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
+    };
+    const registryFingerprint = stableFingerprint({ schema_version: '1', descriptors: [descriptor] });
+    const base = {
+      ...structuredClone(fixture.snapshot), snapshot_version: '2' as const, artifact_contract_version: '1' as const,
+      plan, plan_fingerprint: plan.plan_fingerprint, registry_fingerprint: registryFingerprint,
+      registry_revision: `registry-1-${registryFingerprint.slice(0, 16)}`, selected_provider_descriptors: undefined,
+      provider_instances: fixture.snapshot.provider_instances.map((item) => ({ ...item, config: { ...item.config, capability_policies: undefined } })),
+    };
+    const { snapshot_fingerprint: _fingerprint, ...withoutFingerprint } = base;
+    const snapshot = validateExecutionSnapshot({ ...withoutFingerprint, snapshot_fingerprint: stableFingerprint(withoutFingerprint) });
+    const transport = new CaptureTransport();
+    expect((await createSearchFromSnapshot(snapshot, { NB_SEARCH_EXA_API_KEY: 'worker-secret' }, { transport }).search({ query: 'q' })).state).toBe('empty');
+
+    const invalidBase = { ...withoutFingerprint, registry_fingerprint: '0'.repeat(64) };
+    const invalid = validateExecutionSnapshot({ ...invalidBase, snapshot_fingerprint: stableFingerprint(invalidBase) });
+    expect(() => createSearchFromSnapshot(invalid, { NB_SEARCH_EXA_API_KEY: 'worker-secret' }, { transport })).toThrow(expect.objectContaining({ code: 'CONFIGURATION_ERROR' }));
   });
 
   it('replays only the exact bounded M1 direct registry identity', async () => {
@@ -73,8 +104,13 @@ describe('durable execution snapshots', () => {
     const legacyBase = {
       ...structuredClone(fixture.snapshot),
       snapshot_version: '1' as const,
+      artifact_contract_version: '1' as const,
       registry_revision: M1_REGISTRY_REVISION,
       registry_fingerprint: M1_REGISTRY_FINGERPRINT,
+      selected_provider_descriptors: undefined,
+      provider_instances: fixture.snapshot.provider_instances.map((item) => ({
+        ...item, config: { ...item.config, capability_policies: undefined },
+      })),
     };
     const { snapshot_fingerprint: _oldFingerprint, ...withoutFingerprint } = legacyBase;
     const legacy = validateExecutionSnapshot({ ...withoutFingerprint, snapshot_fingerprint: stableFingerprint(withoutFingerprint) });

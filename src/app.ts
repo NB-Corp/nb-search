@@ -54,8 +54,9 @@ export function createRuntimeComposition(
       config: config.resolved.config,
       registry: config.registry,
       readiness: config.provider_readiness,
+      capability_readiness: config.capability_readiness,
       health: healthSnapshot,
-      profile_id: profileId,
+      routing: { profile: profileId },
     }),
   ]));
   const plan = profilePlans.get(config.resolved.config.default_profile_id);
@@ -64,6 +65,11 @@ export function createRuntimeComposition(
     providers: config.providers, plan,
     plans: profilePlans as ReadonlyMap<ProfileId, typeof plan>,
     defaultProfileId: config.resolved.config.default_profile_id,
+    portsByInstance: config.ports_by_instance,
+    planFactory: (routing) => compileSearchPlan({
+      config: config.resolved.config, registry: config.registry, readiness: config.provider_readiness,
+      capability_readiness: config.capability_readiness, health: health.snapshot(), routing,
+    }),
     requestId, now: options.now,
   });
   const store = new JobStore(config.jobs_root, options.now);
@@ -75,8 +81,12 @@ export function createRuntimeComposition(
     requestId,
     (request) => {
       const profile = request.profile ?? config.resolved.config.default_profile_id;
-      const selectedPlan = profilePlans.get(profile);
-      if (selectedPlan === undefined) throw new NbSearchError('INVALID_INPUT', `Search profile ${profile} is not configured.`);
+      if (!profilePlans.has(profile)) throw new NbSearchError('INVALID_INPUT', `Search profile ${profile} is not configured.`);
+      const selectedPlan = compileSearchPlan({
+        config: config.resolved.config, registry: config.registry, readiness: config.provider_readiness,
+        capability_readiness: config.capability_readiness, health: health.snapshot(),
+        routing: { profile, ...(request.intent === undefined ? {} : { intent: request.intent }), ...(request.freshness === undefined ? {} : { freshness: request.freshness }) },
+      });
       return createExecutionSnapshot(selectedPlan, config.resolved, config.registry, {
         profile,
         ...(request.intent === undefined ? {} : { intent: request.intent }),
@@ -94,14 +104,18 @@ export function createRuntimeComposition(
       enabled: instance.enabled,
       ready: config.provider_readiness[instanceId] === true,
       capabilities: config.registry.descriptor(instance.provider_id)?.capabilities ?? [],
+      ready_capabilities: (config.registry.descriptor(instance.provider_id)?.capabilities ?? [])
+        .filter((capability) => config.capability_readiness[instanceId]?.[capability] === true),
     }));
   const profileIds = [...new Set(['default', 'fast', 'deep', ...Object.keys(config.resolved.config.profiles)])].sort();
   const profiles = profileIds.map((profileId) => {
     const profile = config.resolved.config.profiles[profileId];
+    const specialized = profilePlans.get(profileId);
     return {
       profile_id: profileId,
-      ready: profilePlans.get(profileId) !== undefined && isSearchPlanExecutable(profilePlans.get(profileId)!),
-      stage_count: profile?.stages.length ?? 0,
+      ready: specialized !== undefined && isSearchPlanExecutable(specialized),
+      stage_count: specialized === undefined ? profile?.stages.length ?? 0
+        : new Set([...specialized.stages.map((stage) => stage.stage_id), ...(specialized.omissions ?? []).map((item) => item.stage_id)]).size,
     };
   });
   const profileDiagnostics = profiles.filter((profile) => !profile.ready).map((profile) => ({
@@ -110,6 +124,10 @@ export function createRuntimeComposition(
     path: `profiles.${profile.profile_id}`,
     message: 'Profile has no executable invocations for the resolved provider capabilities and readiness.',
   }));
+  const profileOwner = (profileId: string): string | undefined => config.resolved.provenance.find((item) => item.path === `profiles.${profileId}`)?.source;
+  const compatibilityOwned = (profileId: string): boolean => {
+    const owner = profileOwner(profileId); return owner === 'defaults' || owner?.startsWith('compatibility:') === true;
+  };
   const runtime = new NbSearchRuntimeImpl({
     search,
     research,
@@ -118,6 +136,10 @@ export function createRuntimeComposition(
     retentionHours: config.retention_hours,
     providerInstances,
     profiles,
+    capabilityRoutes: [
+      ...((['default', 'deep'] as const).filter(compatibilityOwned).length === 0 || config.resolved.config.provider_instances['tavily.default'] === undefined ? [] : [{ capability: 'answer' as const, provider_instance_id: 'tavily.default', profile_ids: (['default', 'deep'] as const).filter(compatibilityOwned), intent_in: ['factual', 'tutorial'] as const, failure_policy: 'affects-state' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['tavily.default']?.answer === true }]),
+      ...(compatibilityOwned('deep') && config.resolved.config.provider_instances['exa.default'] !== undefined ? [{ capability: 'research-light' as const, provider_instance_id: 'exa.default', profile_ids: ['deep'] as const, intent_in: ['status', 'comparison', 'exploratory', 'news'] as const, failure_policy: 'report-only' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['exa.default']?.['research-light'] === true }] : []),
+    ],
     configurationDiagnostics: [
       ...config.diagnostics.map((item) => ({
         code: item.code, source: item.source,
@@ -143,17 +165,22 @@ export function createSearchFromSnapshot(
   const bindings = resolveSnapshotBindings(snapshot, env);
   const transport = options.transport ?? new FetchJsonTransport();
   const providers: SearchProvider[] = [];
+  const portsByInstance = new Map<string, import('./provider-registry.ts').ProviderPorts>();
+  const executableInstanceIds = new Set(snapshot.plan.stages.flatMap((stage) => stage.invocations.map((item) => item.provider_instance_id)));
   for (const item of snapshot.provider_instances) {
+    if (!executableInstanceIds.has(item.provider_instance_id)) continue;
     const credential = item.config.credential_slot_id === undefined ? undefined : bindings.get(item.config.credential_slot_id);
     const ports = registry.create(item.provider_instance_id, item.config, {
       ...(credential === undefined ? {} : { credential }),
       transports: { http: transport },
       clock: options.now ?? (() => new Date()),
     });
+    portsByInstance.set(item.provider_instance_id, ports);
     if (ports.retrieval !== undefined) providers.push(ports.retrieval);
   }
   return new SearchService({
     providers,
+    portsByInstance,
     plan: snapshot.plan,
     plans: new Map([[snapshot.routing.profile, snapshot.plan]]),
     defaultProfileId: snapshot.routing.profile,

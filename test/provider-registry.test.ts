@@ -14,8 +14,8 @@ describe('static provider registry', () => {
     const registry = new ProviderRegistry(builtInProviderRegistrations());
     expect(registry.descriptors()).toMatchObject([
       {
-        provider_id: 'exa', adapter_version: 'l2', capabilities: ['retrieval'],
-        operations: [{ method: 'POST', response_type: 'json', path: '/search' }],
+        provider_id: 'exa', adapter_version: 'l4', capabilities: ['retrieval', 'research-light'],
+        operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }, { capability: 'research-light', method: 'POST', response_type: 'json', path: '/search' }],
         auth: { kind: 'api-key-header', name: 'x-api-key' },
       },
       {
@@ -29,12 +29,12 @@ describe('static provider registry', () => {
         auth: { kind: 'bearer-header', name: 'Authorization' },
       },
       {
-        provider_id: 'tavily', adapter_version: 'l2', capabilities: ['retrieval'],
-        operations: [{ method: 'POST', response_type: 'json', path: '/search' }],
+        provider_id: 'tavily', adapter_version: 'l4', capabilities: ['retrieval', 'answer'],
+        operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }, { capability: 'answer', method: 'POST', response_type: 'json', path: '/search' }],
         auth: { kind: 'api-key-body', name: 'api_key' },
       },
     ]);
-    expect(registry.revision()).toMatch(/^registry-1-/);
+    expect(registry.revision()).toMatch(/^registry-2-/);
   });
 
   it('creates distinct instances of one provider family and rejects unsafe registration/binding ambiguity', () => {

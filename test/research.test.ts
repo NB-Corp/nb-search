@@ -50,6 +50,47 @@ describe('research lifecycle', () => {
     await expect(store.transition(job.job_id, 'running')).rejects.toMatchObject({ code: 'JOB_STORE_ERROR' });
   });
 
+  it('admits exactly one runner claim before any provider call', async () => {
+    const store = new JobStore(await jobsRoot());
+    const { job } = await store.createOrReuse({ query: 'claim race', max_sources: 5, max_duration_ms: 60_000 });
+    let primaryCalls = 0;
+    let competitorCalls = 0;
+    let releasePrimary!: () => void;
+    let primaryEntered!: () => void;
+    const release = new Promise<void>((resolve) => { releasePrimary = resolve; });
+    const entered = new Promise<void>((resolve) => { primaryEntered = resolve; });
+    const primary: Searcher = { async search() { primaryCalls += 1; primaryEntered(); await release; return searchEnvelope('succeeded'); } };
+    const competitor: Searcher = { async search() { competitorCalls += 1; return searchEnvelope('succeeded'); } };
+
+    const first = new ResearchRunner(store, primary).run(job.job_id);
+    await entered;
+    await expect(new ResearchRunner(store, competitor).run(job.job_id)).rejects.toMatchObject({ code: 'JOB_CONFLICT' });
+    releasePrimary();
+    const completed = await first;
+
+    expect(primaryCalls).toBe(1);
+    expect(competitorCalls).toBe(0);
+    expect(completed.state).toBe('succeeded');
+    expect((await store.read(job.job_id)).state).toBe('succeeded');
+  });
+
+  it('preserves an answer-only partial state and aligned capability artifact with zero URLs', async () => {
+    const store = new JobStore(await jobsRoot());
+    const { job } = await store.createOrReuse({
+      query: 'answer only', max_sources: 5, max_duration_ms: 60_000, profile: 'default', intent: 'factual',
+    });
+    const searcher: Searcher = { async search() { return answerOnlyPartialEnvelope(); } };
+
+    const completed = await new ResearchRunner(store, searcher).run(job.job_id);
+    const capabilities = await store.readArtifact(job.job_id, 'capabilities');
+
+    expect(completed).toMatchObject({ state: 'partial', phase: 'complete', progress: { completed_units: 0 } });
+    expect(capabilities).toMatchObject({
+      state: 'final', items: [{ capability: 'answer', state: 'succeeded', result: { delivery: 'inline', value: { text: 'answer without URLs' } } }],
+    });
+    expect((await store.read(job.job_id)).state).toBe('partial');
+  });
+
   it('pages checkpoint artifacts and invalidates cursors after final replacement', async () => {
     const store = new JobStore(await jobsRoot());
     const { job } = await store.createOrReuse({ query: 'page', max_sources: 5, max_duration_ms: 60_000 });
@@ -256,6 +297,28 @@ function searchEnvelope(state: SearchEnvelope['state']): SearchEnvelope {
       started_at: '2026-01-01T00:00:00.000Z', completed_at: '2026-01-01T00:00:00.001Z',
       duration_ms: 1, budget_ms: 20_000,
     },
+    compaction: { applied: false, snippets_shortened: 0, results_omitted: 0, max_bytes: 32 * 1024 },
+  };
+}
+
+function answerOnlyPartialEnvelope(): SearchEnvelope {
+  return {
+    schema_version: '1.0', request_id: 'answer-search', mode: 'search', state: 'partial', query: 'answer only',
+    results: [],
+    attempts: [{
+      provider: 'tavily', provider_instance_id: 'tavily.default', invocation_id: 'answer-invocation', capability: 'answer',
+      role: 'answer', trigger: 'routing:answer-intent', execution_scope: 'once-per-job',
+      attempt: 1, state: 'succeeded', duration_ms: 1, result_count: 1,
+    }],
+    augmentations: [{
+      capability: 'answer', provider_id: 'tavily', provider_instance_id: 'tavily.default', invocation_id: 'answer-invocation',
+      failure_policy: 'affects-state', attempt_count: 1, state: 'succeeded', result: { delivery: 'inline', value: {
+        capability: 'answer', text: 'answer without URLs', supporting_urls: [], supporting_urls_omitted: 0,
+        citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false },
+      } },
+    }],
+    warnings: ['The generated answer has no same-operation supporting URL.'],
+    timing: { started_at: '2026-01-01T00:00:00.000Z', completed_at: '2026-01-01T00:00:00.001Z', duration_ms: 1, budget_ms: 20_000 },
     compaction: { applied: false, snippets_shortened: 0, results_omitted: 0, max_bytes: 32 * 1024 },
   };
 }

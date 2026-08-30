@@ -27,7 +27,7 @@ describe('L3 Grok retrieval migration', () => {
   it('registers a retrieval-only static descriptor and validates the model-only option', () => {
     const registry = new ProviderRegistry(builtInProviderRegistrations());
     expect(registry.requireDescriptor('grok')).toEqual({
-      provider_id: 'grok', adapter_version: 'l3', capabilities: ['retrieval'],
+      provider_id: 'grok', adapter_version: 'l3', capabilities: ['retrieval'], capability_versions: { retrieval: 'l3' },
       activation: { kind: 'credential', required: true, endpoint: 'required' },
       operations: [{ capability: 'retrieval', method: 'POST', response_type: 'text', path: '/chat/completions' }],
       auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['model'],
@@ -349,7 +349,7 @@ describe('L3 Grok retrieval migration', () => {
     const snapshot = createExecutionSnapshot(plan, config.resolved, config.registry, { profile: 'default', freshness: 'pm' });
     const serialized = JSON.stringify(snapshot);
     expect(snapshot).toMatchObject({
-      snapshot_version: '2', routing: { profile: 'default', freshness: 'pm' },
+      snapshot_version: '3', artifact_contract_version: '2', routing: { profile: 'default', freshness: 'pm' },
       provider_instances: [{ provider_instance_id: 'grok.default', config: {
         provider_id: 'grok', base_url: 'https://snapshot.test/v1', options: { model: 'model-A' }, timeout_ms: 30_000,
       } }],
@@ -377,7 +377,7 @@ describe('L3 Grok retrieval migration', () => {
     expect(capabilities.providers.grok).toEqual({ configured: true });
     expect(capabilities.providers.instances).toContainEqual({
       provider_id: 'grok', provider_instance_id: 'grok.default', credential_slot_id: 'grok.default',
-      enabled: true, ready: true, capabilities: ['retrieval'],
+      enabled: true, ready: true, capabilities: ['retrieval'], ready_capabilities: ['retrieval'],
     });
     expect(transport.requests).toHaveLength(0);
     expect(JSON.stringify(capabilities)).not.toMatch(/private-relay|private-secret|private-model|NB_SEARCH_GROK|chat\/completions/);

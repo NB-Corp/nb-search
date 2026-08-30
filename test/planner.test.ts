@@ -52,7 +52,7 @@ describe('profile compiler and plan executor', () => {
     expect(response.results.map((item) => item.provenance[0]?.provider_instance_id)).toEqual(['exa.default', 'exa.secondary']);
   });
 
-  it('executes fallback sequentially and does not duplicate a multi-agent brief slot', async () => {
+  it('executes fallback sequentially while retaining one multi-agent brief slot', async () => {
     const fakeRegistration: ProviderRegistration = {
       descriptor: {
         provider_id: 'fake-gma', adapter_version: 'test', capabilities: ['multi-agent-research'],
@@ -80,7 +80,6 @@ describe('profile compiler and plan executor', () => {
             ] },
             { kind: 'augmentation', invocations: [
               { provider_instance_id: 'fake.one', capability: 'multi-agent-research', role: 'brief', trigger: 'complex' },
-              { provider_instance_id: 'fake.one', capability: 'multi-agent-research', role: 'brief', trigger: 'complex' },
             ] },
           ] },
         },
@@ -101,6 +100,21 @@ describe('profile compiler and plan executor', () => {
     const execution = await new PlanExecutor({ providers }).execute(fallbackOnly, { query: 'q', limit: 3 }, 5_000);
     expect(calls).toEqual(['exa.default', 'tavily.default']);
     expect(execution.outcomes).toHaveLength(2);
+  });
+
+  it('rejects duplicate selected operation keys before unready invocations become omissions', () => {
+    const registry = new ProviderRegistry(builtInProviderRegistrations());
+    const resolved = resolveConfiguration({
+      env: {},
+      config: { profiles: { default: { stages: [{ kind: 'parallel', invocations: [
+        { provider_instance_id: 'tavily.default', capability: 'answer', role: 'answer-one', trigger: 'always' },
+        { provider_instance_id: 'tavily.default', capability: 'answer', role: 'answer-two', trigger: 'always' },
+      ] }] } } },
+    });
+    expect(() => compileSearchPlan({
+      config: resolved.config, registry, readiness: { 'tavily.default': false },
+      capability_readiness: { 'tavily.default': { answer: false } },
+    })).toThrow(expect.objectContaining({ code: 'CONFIGURATION_ERROR', message: expect.stringContaining('duplicate provider operation') }));
   });
 
   it('owns retry-after and records only terminal rate-limit health without treating auth as transient', async () => {

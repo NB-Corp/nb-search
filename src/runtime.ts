@@ -33,6 +33,7 @@ interface RuntimeDependencies {
   retentionHours: number;
   providerInstances?: CapabilityEnvelope['providers']['instances'];
   profiles?: CapabilityEnvelope['profiles'];
+  capabilityRoutes?: CapabilityEnvelope['capability_routes'];
   configurationDiagnostics?: NonNullable<CapabilityEnvelope['diagnostics']['configuration']>;
 }
 
@@ -83,12 +84,14 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
       request_id: context.requestId ?? this.dependencies.requestId(),
       mode: 'capabilities',
       version: '0.1.0',
-      search: { max_results: 20, max_timeout_ms: 45_000 },
+      search: { max_results: 20, default_timeout_ms: 20_000, max_timeout_ms: 120_000 },
       research: {
         max_sources: 100,
         max_duration_ms: 3_600_000,
         detached_worker: true,
         guaranteed_process_survival: false,
+        artifacts: ['summary', 'report', 'sources', 'capabilities'],
+        capability_once_per_job: true,
       },
       providers: {
         exa: { configured: this.dependencies.providerConfigured.exa },
@@ -97,6 +100,7 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
         ...(this.dependencies.providerInstances === undefined ? {} : { instances: this.dependencies.providerInstances }),
       },
       ...(this.dependencies.profiles === undefined ? {} : { profiles: this.dependencies.profiles }),
+      ...(this.dependencies.capabilityRoutes === undefined ? {} : { capability_routes: this.dependencies.capabilityRoutes }),
       persistence: {
         durable_jobs: true,
         cancellation_markers: true,

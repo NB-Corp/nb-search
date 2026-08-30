@@ -165,6 +165,9 @@ describe('L1 legacy configuration and direct routing', () => {
 
     const foundation = structuredClone(snapshot) as Omit<ExecutionSnapshot, 'routing'> & { routing?: ExecutionSnapshot['routing'] };
     delete foundation.routing;
+    foundation.snapshot_version = '2';
+    foundation.artifact_contract_version = '1';
+    foundation.selected_provider_descriptors = undefined;
     const { snapshot_fingerprint: _oldFingerprint, ...foundationBase } = foundation;
     foundation.snapshot_fingerprint = stableFingerprint(foundationBase);
     expect(validateExecutionSnapshot(foundation)).toMatchObject({ routing: { profile: 'custom-canonical' } });

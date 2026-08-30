@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import { NbSearchError } from './errors.ts';
-import type { ProviderCapability } from './types.ts';
+import { SEARCH_INTENTS, type ProviderCapability, type SearchIntent } from './types.ts';
 
 export const CONFIG_SCHEMA_VERSION = '1' as const;
 export const DEFAULT_PROFILE_ID = 'default';
@@ -13,6 +13,7 @@ export interface RetryPolicyConfig {
   backoff_ms: number;
   max_backoff_ms: number;
 }
+export interface CapabilityPolicyConfig { timeout_ms?: number; retry?: Partial<RetryPolicyConfig> }
 
 export interface ProviderInstanceConfig {
   provider_id: string;
@@ -22,6 +23,7 @@ export interface ProviderInstanceConfig {
   timeout_ms: number;
   retry: RetryPolicyConfig;
   options: Readonly<Record<string, unknown>>;
+  capability_policies?: Partial<Record<ProviderCapability, CapabilityPolicyConfig>>;
 }
 
 export interface CredentialSlotConfig {
@@ -37,6 +39,9 @@ export interface ProfileInvocationConfig {
   trigger: string;
   timeout_ms?: number;
   retry?: Partial<RetryPolicyConfig>;
+  when?: { intent_in?: readonly SearchIntent[]; intent_not_in?: readonly SearchIntent[] };
+  failure_policy?: 'affects-state' | 'report-only';
+  execution_scope?: 'per-operation' | 'once-per-job';
 }
 
 export interface ProfileStageConfig {
@@ -72,9 +77,10 @@ export interface CanonicalConfigPatch {
   default_profile_id?: string | null;
 }
 
-export type ProviderInstancePatch = Partial<Omit<ProviderInstanceConfig, 'retry' | 'options'>> & {
+export type ProviderInstancePatch = Partial<Omit<ProviderInstanceConfig, 'retry' | 'options' | 'capability_policies'>> & {
   retry?: Partial<RetryPolicyConfig> | null;
   options?: Readonly<Record<string, unknown>> | null;
+  capability_policies?: Readonly<Partial<Record<ProviderCapability, CapabilityPolicyConfig | null>>> | null;
 };
 
 const retrySchema = z.object({
@@ -84,6 +90,16 @@ const retrySchema = z.object({
 }).strict();
 
 const retryPatchSchema = retrySchema.partial().strict();
+const capabilityPolicySchema = z.object({
+  timeout_ms: z.number().int().min(100).max(3_600_000).optional(),
+  retry: retryPatchSchema.optional(),
+}).strict();
+const capabilityPoliciesSchema = z.object({
+  retrieval: capabilityPolicySchema.optional(),
+  answer: capabilityPolicySchema.optional(),
+  'research-light': capabilityPolicySchema.optional(),
+  'multi-agent-research': capabilityPolicySchema.optional(),
+}).strict();
 const providerInstanceSchema = z.object({
   provider_id: z.string().trim().min(1).max(128),
   enabled: z.boolean(),
@@ -92,11 +108,18 @@ const providerInstanceSchema = z.object({
   timeout_ms: z.number().int().min(100).max(3_600_000),
   retry: retrySchema,
   options: z.record(z.string(), z.unknown()),
+  capability_policies: capabilityPoliciesSchema.optional(),
 }).strict();
 
 const providerInstancePatchSchema = providerInstanceSchema.partial().extend({
   retry: retryPatchSchema.nullable().optional(),
   options: z.record(z.string(), z.unknown()).nullable().optional(),
+  capability_policies: z.object({
+    retrieval: capabilityPolicySchema.nullable().optional(),
+    answer: capabilityPolicySchema.nullable().optional(),
+    'research-light': capabilityPolicySchema.nullable().optional(),
+    'multi-agent-research': capabilityPolicySchema.nullable().optional(),
+  }).strict().nullable().optional(),
 }).strict();
 
 const credentialSlotSchema = z.object({
@@ -114,6 +137,16 @@ const invocationSchema = z.object({
   trigger: z.string().trim().min(1).max(128),
   timeout_ms: z.number().int().min(100).max(3_600_000).optional(),
   retry: retryPatchSchema.optional(),
+  when: z.object({
+    intent_in: z.array(z.enum(SEARCH_INTENTS)).min(1).max(7).optional(),
+    intent_not_in: z.array(z.enum(SEARCH_INTENTS)).min(1).max(7).optional(),
+  }).strict().superRefine((value, context) => {
+    if (value.intent_in !== undefined && value.intent_not_in !== undefined) context.addIssue({ code: 'custom', message: 'only one intent condition may be set' });
+    const values = value.intent_in ?? value.intent_not_in;
+    if (values !== undefined && new Set(values).size !== values.length) context.addIssue({ code: 'custom', message: 'intent condition values must be unique' });
+  }).optional(),
+  failure_policy: z.enum(['affects-state', 'report-only']).optional(),
+  execution_scope: z.enum(['per-operation', 'once-per-job']).optional(),
 }).strict();
 
 const profileSchema = z.object({
@@ -179,7 +212,12 @@ export function parseConfigPatch(value: unknown, source: string): CanonicalConfi
 export function parseResolvedConfig(value: unknown): CanonicalConfig {
   const parsed = configSchema.safeParse(value);
   if (!parsed.success) throw configurationError('resolved configuration', parsed.error.issues);
-  return parsed.data as CanonicalConfig;
+  const config = parsed.data as CanonicalConfig;
+  for (const profile of Object.values(config.profiles)) for (const stage of profile.stages) for (const invocation of stage.invocations) {
+    if (invocation.when?.intent_in !== undefined) invocation.when.intent_in = canonicalIntents(invocation.when.intent_in);
+    if (invocation.when?.intent_not_in !== undefined) invocation.when.intent_not_in = canonicalIntents(invocation.when.intent_not_in);
+  }
+  return config;
 }
 
 export function stableFingerprint(value: unknown): string {
@@ -200,4 +238,9 @@ export function stableJson(value: unknown): string {
 function configurationError(source: string, issues: readonly z.core.$ZodIssue[]): NbSearchError {
   const details = issues.slice(0, 3).map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`).join('; ');
   return new NbSearchError('CONFIGURATION_ERROR', `${source} is invalid: ${details}.`);
+}
+
+function canonicalIntents(values: readonly SearchIntent[]): SearchIntent[] {
+  const selected = new Set(values);
+  return SEARCH_INTENTS.filter((item) => selected.has(item));
 }

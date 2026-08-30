@@ -15,7 +15,7 @@ const routingInputShape = {
 export const searchInputSchema = z.object({
   query: z.string().trim().min(1).max(4000),
   max_results: z.number().int().min(1).max(20).optional(),
-  timeout_ms: z.number().int().min(1000).max(45_000).optional(),
+  timeout_ms: z.number().int().min(1000).max(120_000).optional(),
   ...routingInputShape,
 }).strict();
 
@@ -30,7 +30,7 @@ export const researchStartInputSchema = z.object({
 export const researchStatusInputSchema = z.object({ job_id: z.string().uuid() }).strict();
 
 export const researchReadInputSchema = researchStatusInputSchema.extend({
-  artifact: z.enum(['summary', 'report', 'sources']).optional(),
+  artifact: z.enum(['summary', 'report', 'sources', 'capabilities']).optional(),
   cursor: z.string().min(1).max(2048).optional(),
   page_size: z.number().int().min(1).max(100).optional(),
 }).strict();

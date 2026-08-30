@@ -36,6 +36,7 @@ export {
 } from './config-schema.ts';
 export type {
   CanonicalConfig,
+  CapabilityPolicyConfig,
   CanonicalConfigPatch,
   CredentialSlotConfig,
   ProfileConfig,
@@ -86,7 +87,9 @@ export type {
   HealthStore,
   InvocationOutcome,
   PlanExecution,
+  PlanExecutionContext,
   PlanInvocation,
+  PlanOmission,
   PlanStage,
   SearchPlan,
 } from './planner.ts';
@@ -94,6 +97,7 @@ export {
   ARTIFACT_CONTRACT_VERSION,
   createExecutionSnapshot,
   EXECUTION_SNAPSHOT_VERSION,
+  PREVIOUS_EXECUTION_SNAPSHOT_VERSION,
   LEGACY_EXECUTION_SNAPSHOT_VERSION,
   M1_REGISTRY_FINGERPRINT,
   M1_REGISTRY_REVISION,
@@ -102,6 +106,7 @@ export {
 } from './execution-snapshot.ts';
 export type {
   ExecutionSnapshot,
+  SelectedProviderDescriptor,
   SnapshotCredentialBinding,
   SnapshotProviderInstance,
 } from './execution-snapshot.ts';
@@ -111,6 +116,10 @@ export type {
   ArtifactState,
   AttemptState,
   CapabilityEnvelope,
+  CapabilityAugmentation,
+  CapabilityDelivery,
+  CapabilityOutcomeState,
+  CitationStatus,
   ErrorEnvelope,
   JobArtifacts,
   JobProgress,
@@ -127,6 +136,13 @@ export type {
   SearchIntent,
   Freshness,
   ProviderCapability,
+  ProviderCapabilityResult,
+  ProviderAnswerCapabilityRequest,
+  ProviderAnswerCapabilityResult,
+  ProviderResearchLightCapabilityRequest,
+  ProviderResearchLightCapabilityResult,
+  ProviderRetrievalCapabilityRequest,
+  ProviderRetrievalCapabilityResult,
   ProviderSearchResponse,
   ProviderSearchReturn,
   ProviderResult,
@@ -143,6 +159,7 @@ export type {
   SearchEnvelope,
   SearchResult,
   SearchState,
+  SupportingUrl,
   UpstreamAttempt,
   UpstreamAttemptState,
   UpstreamError,

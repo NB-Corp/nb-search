@@ -3,17 +3,20 @@ import { stableFingerprint } from './config-schema.ts';
 import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
 import {
-  ExaProvider, GrokProvider, SearchGatewayProvider, TavilyProvider, validateGrokBaseUrl, validateGrokModel,
+  ExaProvider, ExaResearchLightProvider, GrokProvider, SearchGatewayProvider, TavilyAnswerProvider, TavilyProvider, validateGrokBaseUrl, validateGrokModel,
   validateProviderBaseUrl, validateSearchPath,
 } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
-import type { ProviderCapability, ProviderId, SearchProvider } from './types.ts';
+import type { AnswerProvider, ProviderCapability, ProviderId, ResearchLightProvider, SearchProvider } from './types.ts';
+export type { AnswerProvider, ResearchLightProvider, ProviderCapabilityRequest } from './types.ts';
+export type ProviderAnswerResult = import('./types.ts').ProviderAnswerCapabilityResult;
 
-export const REGISTRY_SCHEMA_VERSION = '1' as const;
+export const REGISTRY_SCHEMA_VERSION = '2' as const;
 
 export interface ProviderDescriptor {
   provider_id: ProviderId;
   adapter_version: string;
+  capability_versions?: Readonly<Partial<Record<ProviderCapability, string>>>;
   capabilities: readonly ProviderCapability[];
   activation: { kind: 'credential' | 'explicit'; required: boolean; endpoint?: 'required' };
   operations: ReadonlyArray<{ capability: ProviderCapability; method: 'GET' | 'POST'; response_type: 'json' | 'text'; path: string }>;
@@ -31,11 +34,7 @@ export interface ProviderFactoryContext {
   clock: () => Date;
 }
 
-export interface ProviderCapabilityRequest { query: string; signal: AbortSignal }
-export interface ProviderAnswerResult { text: string; metadata?: Readonly<Record<string, unknown>> }
-export interface AnswerProvider { answer(request: ProviderCapabilityRequest): Promise<ProviderAnswerResult> }
-export interface ResearchLightProvider { researchLight(request: ProviderCapabilityRequest): Promise<unknown> }
-export interface MultiAgentResearchProvider { research(request: ProviderCapabilityRequest): Promise<unknown> }
+export interface MultiAgentResearchProvider { research(request: { query: string; signal: AbortSignal }): Promise<unknown> }
 
 export interface ProviderPorts {
   retrieval?: SearchProvider;
@@ -113,46 +112,64 @@ export function builtInProviderRegistrations(): readonly ProviderRegistration[] 
 
 const exaRegistration: ProviderRegistration = {
   descriptor: {
-    provider_id: 'exa', adapter_version: 'l2', capabilities: ['retrieval'],
+    provider_id: 'exa', adapter_version: 'l4', capabilities: ['retrieval', 'research-light'],
+    capability_versions: { retrieval: 'l2', 'research-light': 'l4' },
     activation: { kind: 'credential', required: true },
-    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }],
-    auth: { kind: 'api-key-header', name: 'x-api-key' }, option_keys: ['search_path'],
-    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
+    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }, { capability: 'research-light', method: 'POST', response_type: 'json', path: '/search' }],
+    auth: { kind: 'api-key-header', name: 'x-api-key' }, option_keys: ['search_path', 'research_light_path'],
+    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 }, research_light_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
   },
   validate: validateRelayInstance,
   create(context) {
     const credential = requireCredential(context);
+    const searchPath = typeof context.instance.options['search_path'] === 'string' ? context.instance.options['search_path'] : undefined;
+    const researchPath = typeof context.instance.options['research_light_path'] === 'string' ? context.instance.options['research_light_path'] : undefined;
     return {
       retrieval: new ExaProvider({
         apiKey: credential.value, transport: context.transports.http,
         ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
-        ...(typeof context.instance.options['search_path'] === 'string' ? { searchPath: context.instance.options['search_path'] } : {}),
+        ...(searchPath === undefined ? {} : { searchPath }),
         providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id,
         clock: context.clock,
       }),
+      ...(searchPath !== undefined && researchPath === undefined ? {} : { research_light: new ExaResearchLightProvider({
+        apiKey: credential.value, transport: context.transports.http,
+        ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
+        ...(researchPath === undefined ? {} : { operationPath: researchPath }),
+        providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id, clock: context.clock,
+      }) }),
     };
   },
 };
 
 const tavilyRegistration: ProviderRegistration = {
   descriptor: {
-    provider_id: 'tavily', adapter_version: 'l2', capabilities: ['retrieval'],
+    provider_id: 'tavily', adapter_version: 'l4', capabilities: ['retrieval', 'answer'],
+    capability_versions: { retrieval: 'l2', answer: 'l4' },
     activation: { kind: 'credential', required: true },
-    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }],
-    auth: { kind: 'api-key-body', name: 'api_key' }, option_keys: ['search_path'],
-    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
+    operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/search' }, { capability: 'answer', method: 'POST', response_type: 'json', path: '/search' }],
+    auth: { kind: 'api-key-body', name: 'api_key' }, option_keys: ['search_path', 'answer_path'],
+    option_schema: { type: 'object', properties: { search_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 }, answer_path: { type: 'string', format: 'nb-search-operation-path', maxLength: 512 } }, additionalProperties: false },
   },
   validate: validateRelayInstance,
   create(context) {
     const credential = requireCredential(context);
+    const searchPath = typeof context.instance.options['search_path'] === 'string' ? context.instance.options['search_path'] : undefined;
+    const answerPath = typeof context.instance.options['answer_path'] === 'string' ? context.instance.options['answer_path'] : undefined;
     return {
       retrieval: new TavilyProvider({
         apiKey: credential.value, transport: context.transports.http,
         ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
-        ...(typeof context.instance.options['search_path'] === 'string' ? { searchPath: context.instance.options['search_path'] } : {}),
+        ...(searchPath === undefined ? {} : { searchPath }),
         providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id,
         clock: context.clock,
       }),
+      ...(searchPath !== undefined && answerPath === undefined ? {} : { answer: new TavilyAnswerProvider({
+        apiKey: credential.value, transport: context.transports.http,
+        ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }),
+        ...(answerPath === undefined ? {} : { operationPath: answerPath }),
+        providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id, clock: context.clock,
+      }) }),
     };
   },
 };
@@ -160,6 +177,7 @@ const tavilyRegistration: ProviderRegistration = {
 const grokRegistration: ProviderRegistration = {
   descriptor: {
     provider_id: 'grok', adapter_version: 'l3', capabilities: ['retrieval'],
+    capability_versions: { retrieval: 'l3' },
     activation: { kind: 'credential', required: true, endpoint: 'required' },
     operations: [{ capability: 'retrieval', method: 'POST', response_type: 'text', path: '/chat/completions' }],
     auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['model'],
@@ -192,6 +210,7 @@ const grokRegistration: ProviderRegistration = {
 const searchGatewayRegistration: ProviderRegistration = {
   descriptor: {
     provider_id: 'search-gateway', adapter_version: 'l2', capabilities: ['retrieval'],
+    capability_versions: { retrieval: 'l2' },
     activation: { kind: 'credential', required: true, endpoint: 'required' },
     operations: [{ capability: 'retrieval', method: 'POST', response_type: 'json', path: '/v1/aggregate/search' }],
     auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['downstream_profile'],
@@ -219,10 +238,10 @@ const searchGatewayRegistration: ProviderRegistration = {
 };
 
 function validateRelayInstance(instanceId: string, instance: ProviderInstanceConfig): void {
-  validateKnownOptions(instanceId, instance, ['search_path']);
+  const keys = instance.provider_id === 'exa' ? ['search_path', 'research_light_path'] : ['search_path', 'answer_path'];
+  validateKnownOptions(instanceId, instance, keys);
   if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url);
-  const path = instance.options['search_path'];
-  if (path !== undefined) {
+  for (const path of keys.map((key) => instance.options[key]).filter((value) => value !== undefined)) {
     if (typeof path !== 'string') throw invalidOption(instanceId);
     validateSearchPath(path);
   }

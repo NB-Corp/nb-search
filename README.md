@@ -41,6 +41,7 @@ Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search 
 | `NB_SEARCH_EXA_BASE_URL` | Exa endpoint base | Falls back to `EXA_API_BASE`, then `EXA_API_URL` |
 | `NB_SEARCH_TAVILY_BASE_URL` | Tavily endpoint base | Falls back to `TAVILY_API_BASE`, then `TAVILY_API_URL` |
 | `NB_SEARCH_EXA_TIMEOUT_MS` | Per-attempt Exa timeout | Resolved instance policy |
+| `NB_SEARCH_EXA_RESEARCH_LIGHT_TIMEOUT_MS` | Per-attempt Exa research-light timeout | `60000`, clamped by the outer request or job budget |
 | `NB_SEARCH_TAVILY_TIMEOUT_MS` | Per-attempt Tavily timeout | Resolved instance policy |
 | `NB_SEARCH_GROK_BASE_URL` | Grok-compatible Chat Completions base or full endpoint | No endpoint; Grok remains unready |
 | `NB_SEARCH_GROK_API_KEY` | Grok bearer credential | Falls back to `GROK_API_KEY` |
@@ -88,7 +89,7 @@ Once active, an aggregate error, timeout, cancellation, or empty response stays 
 
 Grok becomes ready after both `NB_SEARCH_GROK_BASE_URL` and `NB_SEARCH_GROK_API_KEY` resolve. The endpoint may be a base URL or already end in `/chat/completions`. Grok sends a fixed retrieval prompt and projects only bounded HTTP(S) result rows; it does not expose assistant answers or configurable chat messages, temperature, token limits, streaming, or authentication fields. Custom Grok instances may set only `options.model`.
 
-Exa and Tavily can also use a vendor-compatible relay. Define explicit provider instances with `options.search_path` and provider-bound credential slots. Exa keeps `x-api-key` authentication, Tavily keeps body `api_key`, and both slots may name the same downstream token environment variable.
+Exa and Tavily can also use a vendor-compatible relay. Define explicit provider instances with `options.search_path` and provider-bound credential slots. Exa keeps `x-api-key` authentication, Tavily keeps body `api_key`, and both slots may name the same downstream token environment variable. A relay instance with `search_path` exposes retrieval only until it also declares `research_light_path` for Exa or `answer_path` for Tavily.
 
 ```json
 {
@@ -109,7 +110,7 @@ Exa and Tavily can also use a vendor-compatible relay. Define explicit provider 
 }
 ```
 
-`search_path` must be an absolute operation path without query text, fragments, traversal segments, empty segments, backslashes, or a trailing slash. Unknown instance options stop configuration before a request is sent.
+`search_path`, `research_light_path`, and `answer_path` must be absolute operation paths without query text, fragments, traversal segments, empty segments, backslashes, or a trailing slash. Unknown instance options stop configuration before a request is sent.
 
 Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order. A legacy object-valued `grok` entry maps only `apiUrl`, `apiKey`, and `model`; string shorthand, `baseUrl`, `apiBase`, and `grokMultiAgent` fields do not configure direct Grok.
 
@@ -119,7 +120,7 @@ A legacy `searchLayer` object maps `requestTimeoutSeconds`, provider timeouts, a
 
 Legacy gateway aliases remain available: `SEARCH_GATEWAY_BASE_URL`, `SEARCH_GATEWAY_TOKEN`, `SEARCH_GATEWAY_AGGREGATE`, `SEARCH_GATEWAY_PROFILE`, and `SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS`.
 
-Direct Grok aliases remain `GROK_API_URL`, `GROK_API_KEY`, `GROK_MODEL`, and `SEARCH_LAYER_GROK_TIMEOUT_SECONDS`. Other direct-provider timeout aliases remain `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, and `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`.
+Direct Grok aliases remain `GROK_API_URL`, `GROK_API_KEY`, `GROK_MODEL`, and `SEARCH_LAYER_GROK_TIMEOUT_SECONDS`. Other direct-provider timeout aliases remain `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`, and `SEARCH_LAYER_EXA_RESEARCH_LIGHT_TIMEOUT_SECONDS`.
 
 Provider attempts use the smaller applicable provider/request budget. The synchronous request timeout and research deadline remain the outer bound for every attempt and retry sleep.
 
@@ -135,11 +136,15 @@ nb-search search "query" --max-results 8 --timeout-ms 20000
 nb-search search "query" --profile fast --intent status --freshness pd
 ```
 
-Search accepts 1–20 results and a 1,000–45,000 ms total budget. A provider failure preserves useful results from other providers and marks the result `partial`.
+Search accepts 1–20 results and a 1,000–120,000 ms total budget; the default remains 20,000 ms. A required provider failure preserves useful results from other providers and marks the result `partial`.
 
-Routing fields are optional. With the aggregate cutover inactive, `default` and `deep` run ready Exa, Tavily, and Grok retrieval lanes in parallel, while `fast` uses Exa, Tavily, then Grok as ordered fallbacks. With the cutover active, aggregate replaces the Exa/Tavily subplan while ready Grok remains independent: `default` and `deep` run aggregate and Grok in parallel, and `fast` tries aggregate before Grok.
+Routing fields are optional. Calls without `intent` preserve the retrieval routes: with aggregate cutover inactive, `default` and `deep` run ready Exa, Tavily, and Grok lanes in parallel, while `fast` uses them as ordered fallbacks. With cutover active, aggregate replaces direct Exa/Tavily retrieval and ready Grok remains independent.
 
-Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. `status` and `news` select Exa fast search; `exploratory` with `deep` selects Exa deep search. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Grok receives the same value as a prompt hint rather than a hard date filter. Tavily retrieval always sends `include_answer:false`.
+`default|deep` with `factual|tutorial` runs Exa or aggregate retrieval beside one Tavily advanced-answer operation. The generated text appears only in `augmentations`; genuine Tavily rows from that same operation remain ordinary results. `deep` with `status|comparison|exploratory|news` runs one Exa research-light augmentation after retrieval. Research-light failure is reported without downgrading successful retrieval. `fast`, missing intent, and all other combinations stay retrieval-only.
+
+Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Grok receives the same value as a prompt hint rather than a hard date filter. Ordinary Tavily retrieval sends `include_answer:false`; the selected answer route sends `include_answer:"advanced"` once.
+
+Answer and research-light supporting URLs are bounded provider proximity metadata. Their citation status always reports `claim_linked_citations:false`, `evidence_map_available:false`, and `semantic_verification:false`.
 
 Aggregate upstream attempts and source attribution are returned as bounded nested evidence; outer retry, state, ordering, health, and deduplication remain controlled by nb-search.
 
@@ -158,9 +163,9 @@ nb-search capabilities
 
 Reusing an idempotency key requires the same normalized request and complete execution snapshot fingerprint. Route, grant identity, plan, policy, or selected provider descriptor drift returns `JOB_CONFLICT`; changing only secret bytes under the same grant identity does not change the snapshot fingerprint.
 
-Research output is a bounded deterministic evidence report. It does not claim autonomous synthesis or semantic verification. `research read` labels artifacts as `checkpoint`, `final`, or `unavailable`; callers should not treat a checkpoint as a completed report.
+Research output has four revision-bound artifacts: `summary`, `report`, `sources`, and `capabilities`. Summary and report omit provider prose; `sources` contains retrieval evidence; `capabilities` contains the bounded typed answer or research-light outcome. `research read` labels artifacts as `checkpoint`, `final`, or `unavailable`, and its cursor is invalidated when a newer artifact revision becomes current.
 
-Research collection uses successive search operations of at most 20 results and 45 seconds each, with deterministic evidence-focus suffixes after the first batch to broaden source discovery. The runner checkpoints after every operation, deduplicates sources across operations, and stops when it reaches `max_sources`, exhausts `max_duration_ms`, or observes durable cancellation. This lets a job collect up to 100 sources without changing the synchronous search limits.
+Research collection uses successive operations of at most 20 results, with deterministic evidence-focus suffixes after the first batch. A capability-bearing first operation may use up to 120 seconds; later retrieval-only operations use at most 45 seconds. The selected non-retrieval capability runs once per claimed job, including empty or failed outcomes. The runner checkpoints after every operation, deduplicates sources, and stops when it reaches `max_sources`, exhausts `max_duration_ms`, or observes durable cancellation.
 
 ## Generic MCP
 
@@ -225,4 +230,4 @@ Jobs use local-user ownership through `NB_SEARCH_HOME`. Active work is not guara
 - status, list, and capabilities envelopes: 16 KiB
 - each research artifact page: 24 KiB
 
-Search compaction shortens snippets, bounds nested upstream messages and lists with explicit omission counts, and then omits the lowest-ranked results. Research-page compaction preserves typed outer attempts and source provenance, including bounded upstream attribution, before lower-priority metadata. It reports truncated item and omitted-byte counts in `compaction`. A `next_cursor` continues from the next complete artifact item.
+Search compaction shortens snippets, bounds nested and outer attempt detail, removes supporting-URL titles and tails with omission counts, and then omits the lowest-ranked results. It never prefix-truncates answer or research-light prose. Research-page compaction preserves complete typed capability items, outer attempts, and source provenance before lower-priority metadata. A `next_cursor` continues from the next complete item within the same artifact revision.

@@ -14,7 +14,7 @@ export function createNbSearchMcpServer(runtime: NbSearchRuntime = createNbSearc
     const payload = { error: { code: 'INVALID_INPUT', message: cleanValidation(message), retryable: false } };
     return { ...result(payload), isError: true };
   };
-  server.registerTool('search', { description: 'Run synchronous multi-provider search inside a maximum 45-second budget.', inputSchema: searchInputSchema },
+  server.registerTool('search', { description: 'Run synchronous multi-provider search inside a maximum 120-second budget.', inputSchema: searchInputSchema },
     async (input, extra) => toolResult(() => runtime.search(searchInputSchema.parse(input), { signal: extra.signal }), true));
   server.registerTool('research_start', { description: 'Create or reuse a durable asynchronous research evidence job.', inputSchema: researchStartInputSchema },
     async (input, extra) => toolResult(() => runtime.researchStart(researchStartInputSchema.parse(input), { signal: extra.signal })));

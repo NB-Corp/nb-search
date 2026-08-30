@@ -5,6 +5,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { NbSearchError, invalidInput } from './errors.ts';
+import { stableJson } from './config-schema.ts';
 import { validateExecutionSnapshot, type ExecutionSnapshot } from './execution-snapshot.ts';
 import type {
   ArtifactState, JobRecord, JobState, ResearchArtifact, ResearchRequest, TerminalJobState,
@@ -34,7 +35,7 @@ export class JobStore {
   async createOrReuse(request: ResearchRequest, idempotencyKey?: string, snapshot?: ExecutionSnapshot): Promise<CreateJobResult> {
     await this.initialize();
     const normalized: ResearchRequest = { ...request, query: request.query.trim() };
-    const requestHash = hash(JSON.stringify(snapshot === undefined ? normalized : snapshot.snapshot_version === '2'
+    const requestHash = hash(stableJson(snapshot === undefined ? normalized : snapshot.snapshot_version === '3'
       ? { request: normalized, snapshot_fingerprint: snapshot.snapshot_fingerprint }
       : {
           request: normalized,
@@ -56,14 +57,15 @@ export class JobStore {
       }
       const jobId = randomUUID();
       const dir = this.jobDir(jobId);
-      await mkdir(resolve(dir, 'artifacts'), { recursive: true });
+      await mkdir(resolve(dir, 'artifacts', 'revisions'), { recursive: true });
       try {
         const now = this.now().toISOString();
         const job: JobRecord = {
           schema_version: SCHEMA_VERSION, job_id: jobId, state: 'queued', phase: 'queued', request: normalized,
           request_hash: requestHash, ...(idempotencyHash === undefined ? {} : { idempotency_hash: idempotencyHash }),
           created_at: now, updated_at: now, progress: { completed_units: 0 },
-          artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable' },
+          artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable', capabilities: 'unavailable' },
+          artifact_revision: 0,
         };
         if (snapshot !== undefined) await this.atomicWrite(resolve(dir, 'execution.json'), JSON.stringify(snapshot, null, 2));
         await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(job, null, 2));
@@ -98,7 +100,15 @@ export class JobStore {
     let job: JobRecord;
     try { job = JSON.parse(raw) as JobRecord; } catch (error) { throw storeError('Research job metadata is invalid.', error); }
     if (job.job_id !== jobId || !UUID_V4_PATTERN.test(job.job_id)) throw storeError('Research job identity does not match its directory.');
-    return job;
+    const rawRevision = (job as unknown as { artifact_revision?: unknown }).artifact_revision;
+    if (rawRevision !== undefined && (!Number.isSafeInteger(rawRevision) || Number(rawRevision) < 0)) throw storeError('Research artifact revision is invalid.');
+    const rawCapabilityState = (job.artifacts as unknown as { capabilities?: unknown })?.capabilities;
+    if (rawCapabilityState !== undefined && rawCapabilityState !== 'unavailable' && rawCapabilityState !== 'checkpoint' && rawCapabilityState !== 'final') throw storeError('Research capability artifact state is invalid.');
+    return {
+      ...job,
+      artifacts: { ...job.artifacts, capabilities: job.artifacts?.capabilities ?? 'unavailable' },
+      artifact_revision: rawRevision === undefined ? 0 : Number(rawRevision),
+    };
   }
 
   async transition(jobId: string, next: JobState, patch: Partial<JobRecord> = {}): Promise<JobRecord> {
@@ -127,7 +137,19 @@ export class JobStore {
 
   async claim(jobId: string, ownerToken: string): Promise<JobRecord> {
     const at = this.now().toISOString();
-    return await this.transition(jobId, 'running', { phase: 'collecting', started_at: at, lease: { owner_token: ownerToken, heartbeat_at: at } });
+    return await this.mutate(jobId, (job) => {
+      if (job.state !== 'queued') {
+        throw new NbSearchError('JOB_CONFLICT', 'Research job has already been claimed.');
+      }
+      return {
+        ...job,
+        state: 'running',
+        phase: 'collecting',
+        started_at: at,
+        updated_at: at,
+        lease: { owner_token: ownerToken, heartbeat_at: at },
+      };
+    });
   }
 
   async heartbeat(jobId: string, ownerToken: string): Promise<JobRecord> {
@@ -171,31 +193,52 @@ export class JobStore {
   async writeArtifacts(
     jobId: string,
     state: Exclude<ArtifactState, 'unavailable'>,
-    artifacts: { summary: unknown; report: string; sources: readonly unknown[] },
+    artifacts: { summary: unknown; report: string; sources: readonly unknown[]; capabilities?: readonly unknown[] },
     checkpoint?: { phase: string; progress: JobRecord['progress'] },
   ): Promise<JobRecord> {
-    const dir = await this.safeArtifactDir(jobId);
-    await this.atomicWrite(resolve(dir, 'summary.json'), JSON.stringify(artifacts.summary, null, 2));
-    await this.atomicWrite(resolve(dir, 'report.md'), artifacts.report);
-    await this.atomicWrite(resolve(dir, 'sources.jsonl'), artifacts.sources.map((item) => JSON.stringify(item)).join('\n') + (artifacts.sources.length > 0 ? '\n' : ''));
-    return await this.mutate(jobId, (job) => ({
-      ...job,
-      ...(checkpoint === undefined ? {} : checkpoint),
-      updated_at: this.now().toISOString(),
-      artifacts: { summary: state, report: state, sources: state },
-    }));
+    const artifactDir = await this.safeArtifactDir(jobId);
+    const jobDir = dirname(artifactDir);
+    return await this.withLock(resolve(jobDir, '.lock'), async () => {
+      const job = await this.read(jobId);
+      const revision = job.artifact_revision + 1;
+      const revisionsDir = resolve(artifactDir, 'revisions');
+      const revisionsInfo = await lstat(revisionsDir).catch((error) => { throw storeError('Research artifact revision directory is missing.', error); });
+      if (revisionsInfo.isSymbolicLink() || !revisionsInfo.isDirectory()) throw storeError('Research artifact revision directory must be a real directory.');
+      const temporary = resolve(revisionsDir, `.${String(revision)}.${randomBytes(8).toString('hex')}.tmp`);
+      const published = resolve(revisionsDir, String(revision));
+      await mkdir(temporary);
+      try {
+        await this.atomicWrite(resolve(temporary, 'summary.json'), JSON.stringify(artifacts.summary, null, 2));
+        await this.atomicWrite(resolve(temporary, 'report.md'), artifacts.report);
+        await this.atomicWrite(resolve(temporary, 'sources.jsonl'), jsonLines(artifacts.sources));
+        await this.atomicWrite(resolve(temporary, 'capabilities.jsonl'), jsonLines(artifacts.capabilities ?? []));
+        try { const handle = await open(temporary, 'r'); try { await handle.sync(); } finally { await handle.close(); } } catch {}
+        await rename(temporary, published);
+      } catch (error) {
+        await rm(temporary, { recursive: true, force: true });
+        throw storeError('Atomic research artifact publication failed.', error);
+      }
+      const next: JobRecord = {
+        ...job, ...(checkpoint === undefined ? {} : checkpoint), updated_at: this.now().toISOString(), artifact_revision: revision,
+        artifacts: { summary: state, report: state, sources: state, capabilities: state },
+      };
+      await this.atomicWrite(resolve(jobDir, 'job.json'), JSON.stringify(next, null, 2));
+      await this.appendEvent(jobId, { type: 'artifacts', revision, state, at: next.updated_at });
+      return next;
+    });
   }
 
-  async readArtifact(jobId: string, artifact: ResearchArtifact): Promise<{ state: ArtifactState; items: unknown[] }> {
+  async readArtifact(jobId: string, artifact: ResearchArtifact): Promise<{ state: ArtifactState; revision: number; items: unknown[] }> {
     const job = await this.read(jobId);
     const state = job.artifacts[artifact];
-    if (state === 'unavailable') return { state, items: [] };
+    if (state === 'unavailable') return { state, revision: job.artifact_revision, items: [] };
     const artifactDir = await this.safeArtifactDir(jobId);
-    const path = resolve(artifactDir, artifact === 'summary' ? 'summary.json' : artifact === 'report' ? 'report.md' : 'sources.jsonl');
+    const selectedDir = job.artifact_revision === 0 ? artifactDir : await this.safeRevisionDir(jobId, job.artifact_revision);
+    const path = resolve(selectedDir, artifact === 'summary' ? 'summary.json' : artifact === 'report' ? 'report.md' : artifact === 'sources' ? 'sources.jsonl' : 'capabilities.jsonl');
     const raw = await readFile(path, 'utf8');
-    if (artifact === 'summary') return { state, items: [JSON.parse(raw) as unknown] };
-    if (artifact === 'report') return { state, items: chunkText(raw, 4000) };
-    return { state, items: raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as unknown) };
+    if (artifact === 'summary') return { state, revision: job.artifact_revision, items: [JSON.parse(raw) as unknown] };
+    if (artifact === 'report') return { state, revision: job.artifact_revision, items: chunkText(raw, 4000) };
+    return { state, revision: job.artifact_revision, items: raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as unknown) };
   }
 
   async reconcileStale(jobId: string, staleAfterMs = 30_000): Promise<JobRecord> {
@@ -274,6 +317,19 @@ export class JobStore {
     return artifactDir;
   }
 
+  private async safeRevisionDir(jobId: string, revision: number): Promise<string> {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw storeError('Research artifact revision is invalid.');
+    const artifactDir = await this.safeArtifactDir(jobId);
+    const revisionsDir = resolve(artifactDir, 'revisions');
+    const revisionDir = resolve(revisionsDir, String(revision));
+    for (const path of [revisionsDir, revisionDir]) {
+      const info = await lstat(path).catch((error) => { throw storeError('Research artifact revision is missing.', error); });
+      if (info.isSymbolicLink() || !info.isDirectory()) throw storeError('Research artifact revision must be a real directory.');
+    }
+    if (relative(revisionsDir, revisionDir) !== String(revision)) throw storeError('Research artifact revision path is invalid.');
+    return revisionDir;
+  }
+
   private async atomicWrite(path: string, value: string): Promise<void> {
     const token = randomBytes(8).toString('hex');
     const temporary = resolve(dirname(path), `.${basename(path)}.${token}.tmp`);
@@ -319,4 +375,5 @@ export class JobStore {
 export function isTerminalState(state: JobState): state is TerminalJobState { return TERMINAL.has(state) }
 function hash(value: string): string { return createHash('sha256').update(value).digest('hex') }
 function chunkText(value: string, size: number): string[] { const chunks: string[] = []; for (let i = 0; i < value.length; i += size) chunks.push(value.slice(i, i + size)); return chunks }
+function jsonLines(items: readonly unknown[]): string { return items.map((item) => JSON.stringify(item)).join('\n') + (items.length > 0 ? '\n' : '') }
 function storeError(message: string, cause?: unknown): NbSearchError { return new NbSearchError('JOB_STORE_ERROR', message, false, undefined, cause === undefined ? undefined : { cause }) }

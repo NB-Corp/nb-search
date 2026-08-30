@@ -5,7 +5,7 @@ import {
   resolveConfiguration, type ConfigurationDiagnostic, type ResolvedConfiguration,
 } from './config-sources.ts';
 import {
-  builtInProviderRegistrations, ProviderRegistry, type ProviderRegistration,
+  builtInProviderRegistrations, ProviderRegistry, type ProviderPorts, type ProviderRegistration,
 } from './provider-registry.ts';
 import { NbSearchError } from './errors.ts';
 import { FetchJsonTransport, type JsonTransport } from './transport.ts';
@@ -18,8 +18,10 @@ export interface AppConfiguration {
   log_level: 'error' | 'warn' | 'info' | 'debug';
   providers: SearchProvider[];
   providers_by_instance: ReadonlyMap<string, SearchProvider>;
+  ports_by_instance: ReadonlyMap<string, ProviderPorts>;
   provider_configured: Record<'exa' | 'tavily' | 'grok', boolean>;
   provider_readiness: Readonly<Record<string, boolean>>;
+  capability_readiness: Readonly<Record<string, Readonly<Partial<Record<import('./types.ts').ProviderCapability, boolean>>>>>;
   resolved: ResolvedConfiguration;
   registry: ProviderRegistry;
   diagnostics: readonly ConfigurationDiagnostic[];
@@ -52,7 +54,9 @@ export function loadConfiguration(
   ]);
   const providers: SearchProvider[] = [];
   const providersByInstance = new Map<string, SearchProvider>();
+  const portsByInstance = new Map<string, ProviderPorts>();
   const readiness: Record<string, boolean> = {};
+  const capabilityReadiness: Record<string, Partial<Record<import('./types.ts').ProviderCapability, boolean>>> = {};
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances).sort(([left], [right]) => left.localeCompare(right))) {
     const descriptor = registry.descriptor(instance.provider_id);
     if (instance.enabled && descriptor === undefined) {
@@ -64,12 +68,23 @@ export function loadConfiguration(
       && (!descriptor.activation.required || credential !== undefined)
       && (descriptor.activation.endpoint !== 'required' || instance.base_url !== undefined);
     readiness[instanceId] = ready;
-    if (!ready) continue;
+    capabilityReadiness[instanceId] = {};
+    if (!ready) {
+      for (const capability of descriptor?.capabilities ?? []) capabilityReadiness[instanceId]![capability] = false;
+      continue;
+    }
     const ports = registry.create(instanceId, instance, {
       ...(credential === undefined ? {} : { credential }),
       transports: { http: transport },
       clock: options.now ?? (() => new Date()),
     });
+    portsByInstance.set(instanceId, ports);
+    for (const capability of descriptor.capabilities) {
+      capabilityReadiness[instanceId]![capability] = capability === 'retrieval' ? ports.retrieval !== undefined
+        : capability === 'answer' ? ports.answer !== undefined
+          : capability === 'research-light' ? ports.research_light !== undefined
+            : ports.multi_agent_research !== undefined;
+    }
     if (ports.retrieval !== undefined) {
       providers.push(ports.retrieval);
       providersByInstance.set(instanceId, ports.retrieval);
@@ -84,8 +99,10 @@ export function loadConfiguration(
     log_level: resolved.config.log_level,
     providers,
     providers_by_instance: providersByInstance,
+    ports_by_instance: portsByInstance,
     provider_configured: { exa: configured('exa'), tavily: configured('tavily'), grok: configured('grok') },
     provider_readiness: readiness,
+    capability_readiness: capabilityReadiness,
     resolved,
     registry,
     diagnostics: resolved.diagnostics,

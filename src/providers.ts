@@ -3,8 +3,10 @@ import { redactText } from './redaction.ts';
 import { ResponseLimitError, type JsonTransport } from './transport.ts';
 import { normalizeUrl } from './url.ts';
 import type {
-  CredentialSlotId, ProfileId, ProviderInstanceId, ProviderName, ProviderResult, ProviderSearchRequest,
-  ProviderSearchResponse, SearchProvider, UpstreamAttempt, UpstreamAttemptState, UpstreamResultAttribution,
+  AnswerProvider, CredentialSlotId, ProfileId, ProviderAnswerCapabilityRequest, ProviderAnswerCapabilityResult,
+  ProviderInstanceId, ProviderName, ProviderResearchLightCapabilityRequest, ProviderResearchLightCapabilityResult,
+  ProviderResult, ProviderSearchRequest, ProviderSearchResponse, ResearchLightProvider, SearchProvider, SupportingUrl,
+  UpstreamAttempt, UpstreamAttemptState, UpstreamResultAttribution,
 } from './types.ts';
 
 export const EXA_SEARCH_URL = 'https://api.exa.ai/search';
@@ -20,6 +22,7 @@ export interface ProviderOptions {
   providerInstanceId?: ProviderInstanceId; credentialSlotId?: CredentialSlotId;
   clock?: () => Date;
 }
+export interface CapabilityProviderOptions extends ProviderOptions { operationPath?: string }
 
 export interface GrokProviderOptions extends Omit<ProviderOptions, 'searchPath'> {
   baseUrl: string;
@@ -176,6 +179,88 @@ export class TavilyProvider implements SearchProvider {
       });
     } catch (error) {
       if (request.signal.aborted) throw error;
+      throw safeProviderError(error, this.name, this.redactions);
+    }
+  }
+}
+
+export class TavilyAnswerProvider implements AnswerProvider {
+  readonly name = 'tavily' as const;
+  readonly provider_id = 'tavily' as const;
+  readonly provider_instance_id: string;
+  readonly credential_slot_id?: string;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  constructor(private readonly options: CapabilityProviderOptions) {
+    this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
+    this.credential_slot_id = options.credentialSlotId;
+    this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL, options.operationPath);
+    this.redactions = [options.apiKey, this.endpoint];
+  }
+  async answer(request: ProviderAnswerCapabilityRequest): Promise<ProviderAnswerCapabilityResult> {
+    try {
+      const body: Record<string, unknown> = {
+        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: 'advanced',
+      };
+      const days = freshnessDays(request.freshness);
+      if (days !== undefined) body['days'] = days;
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
+      });
+      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
+      if (!isRecord(response.body)) throw malformedCapabilityError('tavily');
+      const answer = semanticText(response.body['answer'], 'tavily answer');
+      const rows = projectTavilyRows(response.body['results'], request.limit);
+      return { capability: 'answer', ...(answer === undefined ? {} : { text: answer }), supporting_results: rows };
+    } catch (error) {
+      if (request.signal.aborted) throw error;
+      if (error instanceof ResponseLimitError) throw malformedCapabilityError('tavily', error);
+      throw safeProviderError(error, this.name, this.redactions);
+    }
+  }
+}
+
+export class ExaResearchLightProvider implements ResearchLightProvider {
+  readonly name = 'exa' as const;
+  readonly provider_id = 'exa' as const;
+  readonly provider_instance_id: string;
+  readonly credential_slot_id?: string;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  constructor(private readonly options: CapabilityProviderOptions) {
+    this.provider_instance_id = options.providerInstanceId ?? 'exa.default';
+    this.credential_slot_id = options.credentialSlotId;
+    this.endpoint = resolveSearchUrl(options.baseUrl ?? EXA_SEARCH_URL, options.operationPath);
+    this.redactions = [options.apiKey, this.endpoint];
+  }
+  async researchLight(request: ProviderResearchLightCapabilityRequest): Promise<ProviderResearchLightCapabilityResult> {
+    try {
+      const body: Record<string, unknown> = {
+        query: request.query,
+        numResults: Math.max(3, Math.min(5, request.retrieval_result_count || 5)),
+        type: 'deep', contents: { highlights: { maxCharacters: 800 } },
+      };
+      const anchor = new Date(request.request_time_utc);
+      const publishedAfter = freshnessStart(request.freshness, () => anchor);
+      if (publishedAfter !== undefined) body['startPublishedDate'] = publishedAfter;
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': this.options.apiKey },
+        body, response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
+      });
+      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
+      if (!isRecord(response.body)) throw malformedCapabilityError('exa');
+      const rawOutput = response.body['output'];
+      if (rawOutput !== undefined && rawOutput !== null && !isRecord(rawOutput)) throw malformedCapabilityError('exa');
+      const output = isRecord(rawOutput) ? rawOutput : {};
+      const synthesis = semanticText(output['content'], 'exa research-light synthesis');
+      const resolved = safeLabel(response.body['resolvedSearchType']) ?? 'deep';
+      const grounding = supportingUrlsFromGrounding(output['grounding']);
+      const supporting = grounding.length > 0 ? grounding : supportingUrlsFromResults(response.body['results']);
+      return { capability: 'research-light', ...(synthesis === undefined ? {} : { synthesis }), supporting_urls: supporting, resolved_type: resolved };
+    } catch (error) {
+      if (request.signal.aborted) throw error;
+      if (error instanceof ResponseLimitError) throw malformedCapabilityError('exa', error);
       throw safeProviderError(error, this.name, this.redactions);
     }
   }
@@ -551,9 +636,85 @@ function resolveDownstreamProfile(
 ): string {
   if (configured !== undefined) return configured;
   if (intent === 'resource') return 'fast';
-  if (intent === 'factual' || intent === 'tutorial') return 'answer';
+  if (intent === 'factual' || intent === 'tutorial') return profile === 'fast' ? 'fast' : 'deep';
   if (intent !== undefined) return 'deep';
   return profile === 'fast' ? 'fast' : 'deep';
+}
+
+function semanticText(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new NbSearchError('PROVIDER_UNAVAILABLE', `${label} was malformed.`, false);
+  const text = value.trim();
+  if (text === '') return undefined;
+  if (Buffer.byteLength(text, 'utf8') > 8192) throw new NbSearchError('PROVIDER_UNAVAILABLE', `${label} exceeded the semantic text limit.`, false);
+  return text;
+}
+
+function malformedCapabilityError(provider: 'exa' | 'tavily', cause?: unknown): NbSearchError {
+  return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} returned malformed capability content.`, false, provider, { cause });
+}
+
+function projectTavilyRows(value: unknown, limit: number): ProviderResult[] {
+  if (!Array.isArray(value)) return [];
+  const rows: ProviderResult[] = [];
+  for (const item of value.slice(0, 100)) {
+    if (!isRecord(item)) continue;
+    const url = stringValue(item['url']);
+    if (url === '' || Buffer.byteLength(url, 'utf8') > 2048 || normalizeUrl(url) === undefined) continue;
+    rows.push({
+      title: stringValue(item['title']), url, snippet: stringValue(item['content']),
+      ...(stringValue(item['published_date']) === '' ? {} : { published_at: stringValue(item['published_date']) }),
+      ...(numberValue(item['score']) === undefined ? {} : { score: numberValue(item['score']) }),
+    });
+    if (rows.length >= limit) break;
+  }
+  return rows;
+}
+
+function safeLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const label = value.trim();
+  return label.length >= 1 && label.length <= 64 && /^[A-Za-z0-9._:/ -]+$/.test(label) ? label : undefined;
+}
+
+function supportingUrlsFromGrounding(value: unknown): SupportingUrl[] {
+  if (!Array.isArray(value)) return [];
+  const candidates: Array<{ url: unknown; title?: unknown }> = [];
+  for (const entry of value.slice(0, 100)) {
+    if (!isRecord(entry) || !Array.isArray(entry['citations'])) continue;
+    for (const citation of entry['citations'].slice(0, 20)) if (isRecord(citation)) candidates.push({ url: citation['url'], title: citation['title'] });
+  }
+  return normalizeSupportingUrls(candidates, 'provider-grounding');
+}
+
+function supportingUrlsFromResults(value: unknown): SupportingUrl[] {
+  if (!Array.isArray(value)) return [];
+  return normalizeSupportingUrls(value.slice(0, 100).flatMap((item) => isRecord(item) ? [{ url: item['url'], title: item['title'] }] : []), 'provider-result');
+}
+
+function normalizeSupportingUrls(
+  candidates: readonly { url: unknown; title?: unknown }[],
+  source: SupportingUrl['source'],
+): SupportingUrl[] {
+  const result: SupportingUrl[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (typeof candidate.url !== 'string' || Buffer.byteLength(candidate.url, 'utf8') > 2048) continue;
+    const url = normalizeUrl(candidate.url);
+    if (url === undefined || seen.has(url)) continue;
+    seen.add(url);
+    const title = typeof candidate.title === 'string' ? candidate.title.replace(/\s+/gu, ' ').trim() : '';
+    result.push({ url, ...(title === '' ? {} : { title: truncateBytes(title, 512) }), source });
+    if (result.length >= 5) break;
+  }
+  return result;
+}
+
+function truncateBytes(value: string, maximum: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maximum) return value;
+  let end = value.length;
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), 'utf8') > maximum) end -= 1;
+  return value.slice(0, end);
 }
 
 function projectGatewayResult(

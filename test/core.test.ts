@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SearchService } from '../src/core.ts';
 import { NbSearchError } from '../src/errors.ts';
+import type { SearchPlan } from '../src/planner.ts';
+import type { ProviderPorts } from '../src/provider-registry.ts';
 import type { ProviderSearchRequest, ProviderResult, SearchProvider } from '../src/types.ts';
 
 describe('SearchService', () => {
@@ -32,6 +34,7 @@ describe('SearchService', () => {
     expect(response.results[0]?.provenance.map((item) => [item.provider, item.rank])).toEqual([
       ['exa', 0], ['tavily', 0],
     ]);
+    expect(response.attempts.map((attempt) => attempt.result_count)).toEqual([1, 2]);
   });
 
   it('preserves useful results and typed attempts when another provider degrades', async () => {
@@ -124,6 +127,42 @@ describe('SearchService', () => {
       expect(response).toMatchObject({ state: 'timed_out', error: { code: 'DEADLINE_EXCEEDED' } });
       expect(response.attempts[0]).toMatchObject({ state: 'failed', error: { code: 'PROVIDER_UNAVAILABLE' } });
       expect(providerCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a successful answer as partial output when the outer deadline yields no URL results', async () => {
+    vi.useFakeTimers();
+    try {
+      const plan: SearchPlan = {
+        plan_version: '1', profile_id: 'default', plan_fingerprint: 'answer-deadline',
+        stages: [{ stage_id: 'stage-1', kind: 'parallel', invocations: [{
+          invocation_id: 'retrieval', provider_id: 'exa', provider_instance_id: 'exa.default', capability: 'retrieval',
+          role: 'primary', trigger: 'always', timeout_ms: 5_000, retry: { max_attempts: 1, backoff_ms: 0, max_backoff_ms: 0 },
+        }, {
+          invocation_id: 'answer', provider_id: 'tavily', provider_instance_id: 'tavily.default', capability: 'answer',
+          role: 'answer', trigger: 'routing:answer-intent', timeout_ms: 5_000, retry: { max_attempts: 1, backoff_ms: 0, max_backoff_ms: 0 },
+          failure_policy: 'affects-state', execution_scope: 'once-per-job',
+        }] }],
+      };
+      const ports = new Map<string, ProviderPorts>([
+        ['exa.default', { retrieval: provider('exa', async ({ signal }) => await untilAborted(signal)) }],
+        ['tavily.default', { answer: {
+          name: 'tavily', provider_id: 'tavily', provider_instance_id: 'tavily.default',
+          async answer() { return { capability: 'answer', text: 'useful answer', supporting_results: [] }; },
+        } }],
+      ]);
+      const pending = new SearchService({ providers: [], plan, portsByInstance: ports }).search({
+        query: 'q', profile: 'default', intent: 'factual', timeout_ms: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const response = await pending;
+
+      expect(response).toMatchObject({
+        state: 'partial', results: [], error: { code: 'DEADLINE_EXCEEDED' },
+        augmentations: [{ capability: 'answer', state: 'succeeded', result: { delivery: 'inline', value: { text: 'useful answer' } } }],
+      });
     } finally {
       vi.useRealTimers();
     }

@@ -133,6 +133,7 @@ export function defaultConfiguration(home: string): CanonicalConfigPatch {
       'exa.default': {
         provider_id: 'exa', enabled: true, credential_slot_id: 'exa.default',
         base_url: 'https://api.exa.ai/search', timeout_ms: 45_000, retry, options: {},
+        capability_policies: { 'research-light': { timeout_ms: 60_000 } },
       },
       'tavily.default': {
         provider_id: 'tavily', enabled: true, credential_slot_id: 'tavily.default',
@@ -377,6 +378,17 @@ function mapLegacyPolicies(
       },
     };
   }
+  const researchLightTimeoutSeconds = legacyNumber(
+    providerTimeouts['exaResearchLight'], 60, 0.1,
+    path, 'searchLayer.providerTimeouts.exaResearchLight', diagnostics, 3_600,
+  );
+  instances['exa.default'] = {
+    ...instances['exa.default'],
+    capability_policies: {
+      ...instances['exa.default']?.capability_policies,
+      'research-light': { timeout_ms: Math.round(Math.min(requestTimeoutSeconds, researchLightTimeoutSeconds) * 1000) },
+    },
+  };
   const grokTimeoutSeconds = legacyNumber(
     providerTimeouts['grok'], LEGACY_GROK_TIMEOUT_SECONDS, 0.1,
     path, 'searchLayer.providerTimeouts.grok', diagnostics, 3_600,
@@ -439,12 +451,42 @@ function environmentPatch(
   mapEnvironmentEndpoint('tavily', 'NB_SEARCH_TAVILY_BASE_URL', ['TAVILY_API_BASE', 'TAVILY_API_URL'], env, instances);
   mapEnvironmentPolicy('exa', env, base, instances, diagnostics);
   mapEnvironmentPolicy('tavily', env, base, instances, diagnostics);
+  mapEnvironmentResearchLightPolicy(env, base, instances, diagnostics);
   mapEnvironmentGrok(env, base, instances, slots, diagnostics);
   mapEnvironmentGateway(env, base, instances, slots, diagnostics);
   mapEnvironmentRetry(env, instances);
   if (Object.keys(instances).length > 0) patch.provider_instances = instances;
   if (Object.keys(slots).length > 0) patch.credential_slots = slots;
   return patch;
+}
+
+function mapEnvironmentResearchLightPolicy(
+  env: NodeJS.ProcessEnv,
+  base: CanonicalConfig,
+  instances: Record<string, ProviderInstancePatch>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const primary = nonempty(env['NB_SEARCH_EXA_RESEARCH_LIGHT_TIMEOUT_MS']);
+  const alias = nonempty(env['SEARCH_LAYER_EXA_RESEARCH_LIGHT_TIMEOUT_SECONDS']);
+  const request = nonempty(env['SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS']);
+  let timeoutMs: number | undefined;
+  if (primary !== undefined) timeoutMs = strictEnvironmentInteger(primary, 'NB_SEARCH_EXA_RESEARCH_LIGHT_TIMEOUT_MS', 100, 3_600_000);
+  else if (alias !== undefined || request !== undefined) {
+    const capabilitySeconds = legacyEnvironmentNumber(alias, 0.1, 'SEARCH_LAYER_EXA_RESEARCH_LIGHT_TIMEOUT_SECONDS', diagnostics, 3_600);
+    const requestSeconds = legacyEnvironmentNumber(request, 0.1, 'SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS', diagnostics, 3_600);
+    const inherited = base.provider_instances['exa.default']?.capability_policies?.['research-light']?.timeout_ms ?? 60_000;
+    timeoutMs = capabilitySeconds === undefined
+      ? requestSeconds === undefined ? inherited : Math.min(inherited, Math.round(requestSeconds * 1000))
+      : Math.round(Math.min(capabilitySeconds, requestSeconds ?? Number.POSITIVE_INFINITY) * 1000);
+  }
+  if (timeoutMs === undefined) return;
+  instances['exa.default'] = {
+    ...instances['exa.default'],
+    capability_policies: {
+      ...instances['exa.default']?.capability_policies,
+      'research-light': { ...instances['exa.default']?.capability_policies?.['research-light'], timeout_ms: timeoutMs },
+    },
+  };
 }
 
 function mapEnvironmentGrok(
@@ -738,17 +780,21 @@ function addCompatibilityProfiles(
     const owner = provenance.get(`profiles.${profileId}`);
     if (owner !== undefined && owner !== 'defaults' && !owner.startsWith('compatibility')) continue;
     if (active) {
-      const invocations = ['search-gateway.aggregate', ...(grokReady ? ['grok.default'] : [])];
-      profiles[profileId] = {
-        stages: [{
-          kind: profileId === 'fast' ? 'fallback' : 'parallel',
-          invocations: invocations.map((instanceId, index) => ({
-            provider_instance_id: instanceId, capability: 'retrieval',
-            role: profileId === 'fast' && index > 0 ? 'fallback' : 'primary',
-            trigger: profileId === 'fast' && index > 0 ? 'empty_or_failure' : 'always',
-          })),
-        }],
-      };
+      const retrieval = ['search-gateway.aggregate', ...(grokReady ? ['grok.default'] : [])];
+      const stages: Array<Record<string, unknown>> = [{
+        kind: profileId === 'fast' ? 'fallback' : 'parallel',
+        invocations: profileId === 'fast'
+          ? retrieval.map((instanceId, index) => ({ provider_instance_id: instanceId, capability: 'retrieval', role: index > 0 ? 'fallback' : 'primary', trigger: index > 0 ? 'empty_or_failure' : 'always' }))
+          : [
+            { provider_instance_id: 'search-gateway.aggregate', capability: 'retrieval', role: 'primary', trigger: 'always' },
+            ...(grokReady ? [{ provider_instance_id: 'grok.default', capability: 'retrieval', role: 'primary', trigger: 'always', when: { intent_not_in: ['factual', 'tutorial'] } }] : []),
+            ...(isRecord(providerInstances['tavily.default']) ? [{ provider_instance_id: 'tavily.default', capability: 'answer', role: 'answer', trigger: 'routing:answer-intent', when: { intent_in: ['factual', 'tutorial'] }, failure_policy: 'affects-state', execution_scope: 'once-per-job' }] : []),
+          ],
+      }];
+      if (profileId === 'deep' && isRecord(providerInstances['exa.default'])) stages.push({
+        kind: 'augmentation', invocations: [{ provider_instance_id: 'exa.default', capability: 'research-light', role: 'augmentation', trigger: 'routing:deep-analysis-intent', when: { intent_in: ['status', 'comparison', 'exploratory', 'news'] }, failure_policy: 'report-only', execution_scope: 'once-per-job' }],
+      });
+      profiles[profileId] = { stages };
       provenance.set(`profiles.${profileId}`, grokReady ? 'compatibility:search-gateway-grok' : 'compatibility:search-gateway');
     } else if (direct.length > 0) {
       const invocations = [...direct, ...(grokReady ? ['grok.default'] : [])];
@@ -758,17 +804,23 @@ function addCompatibilityProfiles(
           providerInstances[instanceId], instanceId === 'exa.default' ? 'exa' : 'tavily', secrets,
         ));
       const primaryIndex = firstExecutable < 0 ? 0 : firstExecutable;
-      profiles[profileId] = {
-        stages: [{
-          kind: profileId === 'fast' ? 'fallback' : 'parallel',
-          invocations: invocations.map((instanceId, index) => ({
-            provider_instance_id: instanceId,
-            capability: 'retrieval',
-            role: profileId === 'fast' && index !== primaryIndex ? 'fallback' : 'primary',
-            trigger: profileId === 'fast' && index !== primaryIndex ? 'empty_or_failure' : 'always',
-          })),
-        }],
-      };
+      const stages: Array<Record<string, unknown>> = [{
+        kind: profileId === 'fast' ? 'fallback' : 'parallel',
+        invocations: profileId === 'fast'
+          ? invocations.map((instanceId, index) => ({ provider_instance_id: instanceId, capability: 'retrieval', role: index !== primaryIndex ? 'fallback' : 'primary', trigger: index !== primaryIndex ? 'empty_or_failure' : 'always' }))
+          : [
+            ...(isRecord(providerInstances['exa.default']) ? [{ provider_instance_id: 'exa.default', capability: 'retrieval', role: 'primary', trigger: 'always' }] : []),
+            ...(isRecord(providerInstances['tavily.default']) ? [
+              { provider_instance_id: 'tavily.default', capability: 'retrieval', role: 'primary', trigger: 'always', when: { intent_not_in: ['factual', 'tutorial'] } },
+            ] : []),
+            ...(grokReady ? [{ provider_instance_id: 'grok.default', capability: 'retrieval', role: 'primary', trigger: 'always', when: { intent_not_in: ['factual', 'tutorial'] } }] : []),
+            ...(isRecord(providerInstances['tavily.default']) ? [{ provider_instance_id: 'tavily.default', capability: 'answer', role: 'answer', trigger: 'routing:answer-intent', when: { intent_in: ['factual', 'tutorial'] }, failure_policy: 'affects-state', execution_scope: 'once-per-job' }] : []),
+          ],
+      }];
+      if (profileId === 'deep' && isRecord(providerInstances['exa.default'])) stages.push({
+        kind: 'augmentation', invocations: [{ provider_instance_id: 'exa.default', capability: 'research-light', role: 'augmentation', trigger: 'routing:deep-analysis-intent', when: { intent_in: ['status', 'comparison', 'exploratory', 'news'] }, failure_policy: 'report-only', execution_scope: 'once-per-job' }],
+      });
+      profiles[profileId] = { stages };
       provenance.set(`profiles.${profileId}`, grokReady ? 'compatibility:direct-grok' : 'compatibility:direct');
     }
   }

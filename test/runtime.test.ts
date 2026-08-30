@@ -45,7 +45,7 @@ describe('NbSearchRuntime contract', () => {
     });
     expect(capabilities.providers.instances).toContainEqual(expect.objectContaining({
       provider_id: 'exa', provider_instance_id: 'exa.default', credential_slot_id: 'exa.default',
-      ready: true, capabilities: ['retrieval'],
+      ready: true, capabilities: ['retrieval', 'research-light'], ready_capabilities: ['retrieval', 'research-light'],
     }));
     expect(capabilities.profiles).toContainEqual(expect.objectContaining({ profile_id: 'default', ready: true }));
     expect(transportCalls).toBe(0);
@@ -130,7 +130,7 @@ describe('NbSearchRuntime contract', () => {
     expect(reused).toMatchObject({ reused: true, job: { job_id: first.job.job_id } });
     expect(launched).toEqual([first.job.job_id]);
     expect(JSON.parse(await readFile(join(home, 'jobs', first.job.job_id, 'execution.json'), 'utf8')))
-      .toMatchObject({ snapshot_version: '2', plan: { profile_id: 'default' } });
+      .toMatchObject({ snapshot_version: '3', artifact_contract_version: '2', plan: { profile_id: 'default' } });
     const status = await runtime.researchStatus({ job_id: first.job.job_id });
     expect(status).toMatchObject({ state: 'queued', artifacts: { report: 'unavailable' } });
     const cancelled = await runtime.researchCancel({ job_id: first.job.job_id });

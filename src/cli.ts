@@ -55,7 +55,7 @@ async function runResearch(runtime: NbSearchRuntime, argv: readonly string[]): P
     const parsed = parse(argv.slice(1), new Set(['--artifact', '--cursor', '--page-size']));
     if (parsed.positionals.length !== 1) throw invalidInput('research read requires one job_id.');
     const artifact = parsed.options['--artifact'];
-    if (artifact !== undefined && artifact !== 'summary' && artifact !== 'report' && artifact !== 'sources') throw invalidInput('--artifact must be summary, report, or sources.');
+    if (artifact !== undefined && artifact !== 'summary' && artifact !== 'report' && artifact !== 'sources' && artifact !== 'capabilities') throw invalidInput('--artifact must be summary, report, sources, or capabilities.');
     return await runtime.researchRead({ job_id: parsed.positionals[0]!, ...(artifact === undefined ? {} : { artifact: artifact as ResearchArtifact }),
       ...(parsed.options['--cursor'] === undefined ? {} : { cursor: parsed.options['--cursor'] }),
       ...(parsed.options['--page-size'] === undefined ? {} : { page_size: integer(parsed.options['--page-size'], '--page-size') }) });
@@ -110,5 +110,5 @@ function isFailure(value: unknown): boolean {
   const envelope = value as { mode?: unknown; state?: unknown };
   return envelope.mode === 'search' && (envelope.state === 'failed' || envelope.state === 'timed_out' || envelope.state === 'cancelled');
 }
-const HELP = `nb-search 0.1.0\n\nUsage:\n  nb-search "<query>" [--max-results N] [--timeout-ms N] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search search "<query>" [--max-results N] [--timeout-ms N] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search research start "<query>" [--max-sources N] [--max-duration-ms N] [--idempotency-key KEY] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search research status <job_id>\n  nb-search research read <job_id> [--artifact summary|report|sources] [--cursor CURSOR] [--page-size N]\n  nb-search research list [--states state,state] [--cursor CURSOR] [--limit N]\n  nb-search research cancel <job_id>\n  nb-search capabilities\n`;
+const HELP = `nb-search 0.1.0\n\nUsage:\n  nb-search "<query>" [--max-results N] [--timeout-ms N] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search search "<query>" [--max-results N] [--timeout-ms N] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search research start "<query>" [--max-sources N] [--max-duration-ms N] [--idempotency-key KEY] [--profile default|fast|deep] [--intent INTENT] [--freshness pd|pw|pm|py]\n  nb-search research status <job_id>\n  nb-search research read <job_id> [--artifact summary|report|sources|capabilities] [--cursor CURSOR] [--page-size N]\n  nb-search research list [--states state,state] [--cursor CURSOR] [--limit N]\n  nb-search research cancel <job_id>\n  nb-search capabilities\n`;
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await runCli(process.argv.slice(2));
