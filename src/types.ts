@@ -2,6 +2,13 @@ export const SCHEMA_VERSION = '1.0' as const;
 export const SEARCH_TEXT_MAX_BYTES = 32 * 1024;
 export const MANAGEMENT_TEXT_MAX_BYTES = 16 * 1024;
 export const RESEARCH_PAGE_MAX_BYTES = 24 * 1024;
+export const SEARCH_PROFILE_IDS = ['default', 'fast', 'deep'] as const;
+export const SEARCH_INTENTS = ['factual', 'status', 'comparison', 'tutorial', 'exploratory', 'news', 'resource'] as const;
+export const FRESHNESS_VALUES = ['pd', 'pw', 'pm', 'py'] as const;
+
+export type SearchProfileId = typeof SEARCH_PROFILE_IDS[number];
+export type SearchIntent = typeof SEARCH_INTENTS[number];
+export type Freshness = typeof FRESHNESS_VALUES[number];
 
 export type ProviderName = 'exa' | 'tavily' | (string & {});
 export type ProviderId = ProviderName;
@@ -29,7 +36,10 @@ export type PublicErrorCode =
 export interface PublicError {
   code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName; retry_after_ms?: number;
 }
-export interface ProviderSearchRequest { query: string; limit: number; signal: AbortSignal }
+export interface ProviderSearchRequest {
+  query: string; limit: number; signal: AbortSignal;
+  profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness;
+}
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
   metadata?: Readonly<Record<string, unknown>>;
@@ -57,7 +67,10 @@ export interface SearchResult {
   providers: ProviderName[]; provenance: ResultProvenance[];
 }
 export type SearchState = 'succeeded' | 'empty' | 'partial' | 'failed' | 'timed_out' | 'cancelled';
-export interface SearchRequest { query: string; max_results?: number; timeout_ms?: number; signal?: AbortSignal }
+export interface SearchRequest {
+  query: string; max_results?: number; timeout_ms?: number; signal?: AbortSignal;
+  profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness;
+}
 export interface SearchEnvelope {
   schema_version: typeof SCHEMA_VERSION; request_id: string; mode: 'search'; state: SearchState; query: string;
   results: SearchResult[]; attempts: SearchAttempt[]; warnings: string[]; error?: PublicError;
@@ -70,7 +83,10 @@ export type JobState = 'queued' | 'running' | 'cancelling' | 'succeeded' | 'part
 export type TerminalJobState = Extract<JobState, 'succeeded' | 'partial' | 'failed' | 'timed_out' | 'cancelled'>;
 export type ResearchArtifact = 'summary' | 'report' | 'sources';
 export type ArtifactState = 'unavailable' | 'checkpoint' | 'final';
-export interface ResearchRequest { query: string; max_sources: number; max_duration_ms: number }
+export interface ResearchRequest {
+  query: string; max_sources: number; max_duration_ms: number;
+  profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness;
+}
 export interface JobProgress { completed_units: number; total_units?: number }
 export interface JobArtifacts { summary: ArtifactState; report: ArtifactState; sources: ArtifactState }
 export interface JobRecord {

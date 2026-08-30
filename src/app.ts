@@ -17,7 +17,7 @@ import {
 import { DetachedWorkerLauncher, ResearchService, type WorkerLauncher } from './research.ts';
 import { NbSearchRuntimeImpl } from './runtime.ts';
 import { FetchJsonTransport, type JsonTransport } from './transport.ts';
-import type { SearchProvider } from './types.ts';
+import type { ProfileId, SearchProvider } from './types.ts';
 
 export interface RuntimeComposition {
   config: AppConfiguration;
@@ -60,7 +60,12 @@ export function createRuntimeComposition(
   ]));
   const plan = profilePlans.get(config.resolved.config.default_profile_id);
   if (plan === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The default search profile could not be compiled.');
-  const search = new SearchService({ providers: config.providers, plan, requestId, now: options.now });
+  const search = new SearchService({
+    providers: config.providers, plan,
+    plans: profilePlans as ReadonlyMap<ProfileId, typeof plan>,
+    defaultProfileId: config.resolved.config.default_profile_id,
+    requestId, now: options.now,
+  });
   const store = new JobStore(config.jobs_root, options.now);
   const workerPath = resolve(dirname(fileURLToPath(import.meta.url)), 'worker.mjs');
   const launcher = options.launcher ?? new DetachedWorkerLauncher(workerPath, env);
@@ -68,7 +73,17 @@ export function createRuntimeComposition(
     store,
     launcher,
     requestId,
-    () => createExecutionSnapshot(plan, config.resolved, config.registry),
+    (request) => {
+      const profile = request.profile ?? config.resolved.config.default_profile_id;
+      const selectedPlan = profilePlans.get(profile);
+      if (selectedPlan === undefined) throw new NbSearchError('INVALID_INPUT', `Search profile ${profile} is not configured.`);
+      return createExecutionSnapshot(selectedPlan, config.resolved, config.registry, {
+        profile,
+        ...(request.intent === undefined ? {} : { intent: request.intent }),
+        ...(request.freshness === undefined ? {} : { freshness: request.freshness }),
+      });
+    },
+    config.resolved.config.default_profile_id,
   );
   const providerInstances = Object.entries(config.resolved.config.provider_instances)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -80,13 +95,15 @@ export function createRuntimeComposition(
       ready: config.provider_readiness[instanceId] === true,
       capabilities: config.registry.descriptor(instance.provider_id)?.capabilities ?? [],
     }));
-  const profiles = Object.entries(config.resolved.config.profiles)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([profileId, profile]) => ({
+  const profileIds = [...new Set(['default', 'fast', 'deep', ...Object.keys(config.resolved.config.profiles)])].sort();
+  const profiles = profileIds.map((profileId) => {
+    const profile = config.resolved.config.profiles[profileId];
+    return {
       profile_id: profileId,
-      ready: isSearchPlanExecutable(profilePlans.get(profileId)!),
-      stage_count: profile.stages.length,
-    }));
+      ready: profilePlans.get(profileId) !== undefined && isSearchPlanExecutable(profilePlans.get(profileId)!),
+      stage_count: profile?.stages.length ?? 0,
+    };
+  });
   const profileDiagnostics = profiles.filter((profile) => !profile.ready).map((profile) => ({
     code: 'PROFILE_UNREADY',
     source: 'profile',
@@ -138,6 +155,10 @@ export function createSearchFromSnapshot(
   return new SearchService({
     providers,
     plan: snapshot.plan,
+    plans: new Map([[snapshot.routing.profile, snapshot.plan]]),
+    defaultProfileId: snapshot.routing.profile,
+    routing: snapshot.routing,
+    routingLocked: true,
     requestId: options.requestId,
     now: options.now,
   });

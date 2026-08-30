@@ -6,6 +6,7 @@ import type { ResolvedConfiguration, SecretBinding, WorkerGrant } from './config
 import { NbSearchError } from './errors.ts';
 import type { SearchPlan } from './planner.ts';
 import type { ProviderRegistry } from './provider-registry.ts';
+import { FRESHNESS_VALUES, SEARCH_INTENTS, type Freshness, type ProfileId, type SearchIntent } from './types.ts';
 
 export const EXECUTION_SNAPSHOT_VERSION = '1' as const;
 export const ARTIFACT_CONTRACT_VERSION = '1' as const;
@@ -30,6 +31,7 @@ export interface ExecutionSnapshot {
   config_fingerprint: string;
   registry_revision: string;
   registry_fingerprint: string;
+  routing: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness };
   provider_instances: readonly SnapshotProviderInstance[];
   credential_bindings: readonly SnapshotCredentialBinding[];
   snapshot_fingerprint: string;
@@ -39,6 +41,7 @@ export function createExecutionSnapshot(
   plan: SearchPlan,
   resolved: ResolvedConfiguration,
   registry: ProviderRegistry,
+  routing: { profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness } = {},
 ): ExecutionSnapshot {
   const selectedIds = new Set(plan.stages.flatMap((stage) => stage.invocations.map((item) => item.provider_instance_id)));
   const providerInstances = [...selectedIds].sort().map((instanceId): SnapshotProviderInstance => {
@@ -68,6 +71,11 @@ export function createExecutionSnapshot(
     config_fingerprint: resolved.config_fingerprint,
     registry_revision: registry.revision(),
     registry_fingerprint: registry.fingerprint(),
+    routing: {
+      profile: routing.profile ?? plan.profile_id,
+      ...(routing.intent === undefined ? {} : { intent: routing.intent }),
+      ...(routing.freshness === undefined ? {} : { freshness: routing.freshness }),
+    },
     provider_instances: providerInstances,
     credential_bindings: bindings,
   };
@@ -82,11 +90,23 @@ export function validateExecutionSnapshot(value: unknown): ExecutionSnapshot {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot is invalid.');
   }
   const candidate = value as unknown as ExecutionSnapshot;
+  if (value['routing'] !== undefined && (!isRecord(value['routing'])
+    || typeof value['routing']['profile'] !== 'string' || value['routing']['profile'].trim() === ''
+    || value['routing']['profile'].length > 256
+    || value['routing']['profile'] !== value['plan']['profile_id']
+    || (value['routing']['intent'] !== undefined && !(SEARCH_INTENTS as readonly unknown[]).includes(value['routing']['intent']))
+    || (value['routing']['freshness'] !== undefined && !(FRESHNESS_VALUES as readonly unknown[]).includes(value['routing']['freshness'])))) {
+    throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot routing is invalid.');
+  }
   const { snapshot_fingerprint: fingerprint, ...base } = candidate;
   if (stableFingerprint(base) !== fingerprint || candidate.plan.plan_fingerprint !== candidate.plan_fingerprint) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot fingerprint does not match.');
   }
-  return deepFreeze(structuredClone(candidate));
+  const cloned = structuredClone(candidate);
+  if (value['routing'] === undefined) {
+    cloned.routing = { profile: candidate.plan.profile_id };
+  }
+  return deepFreeze(cloned);
 }
 
 export function resolveSnapshotBindings(
@@ -135,4 +155,3 @@ function deepFreeze<T>(value: T): T {
   }
   return value;
 }
-

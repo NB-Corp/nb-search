@@ -171,6 +171,7 @@ export class PlanExecutor {
     budgetMs: number,
     callerSignal?: AbortSignal,
   ): Promise<PlanExecution> {
+    const deadlineAt = this.monotonicNow() + budgetMs;
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true)), budgetMs);
     const signal = callerSignal === undefined ? deadline.signal : AbortSignal.any([callerSignal, deadline.signal]);
@@ -180,14 +181,14 @@ export class PlanExecutor {
         if (signal.aborted) break;
         if (stage.kind === 'fallback') {
           for (const invocation of stage.invocations) {
-            const outcome = await this.runInvocation(invocation, request, signal, callerSignal, deadline.signal);
+            const outcome = await this.runInvocation(invocation, request, signal, callerSignal, deadline, deadlineAt);
             outcomes.push(outcome);
             if (outcome.results.length > 0) break;
             if (signal.aborted) break;
           }
         } else {
           const stageOutcomes = await Promise.all(stage.invocations.map(async (invocation) =>
-            await this.runInvocation(invocation, request, signal, callerSignal, deadline.signal)));
+            await this.runInvocation(invocation, request, signal, callerSignal, deadline, deadlineAt)));
           outcomes.push(...stageOutcomes);
         }
       }
@@ -204,19 +205,35 @@ export class PlanExecutor {
     request: Omit<ProviderSearchRequest, 'signal'>,
     outerSignal: AbortSignal,
     callerSignal: AbortSignal | undefined,
-    overallDeadlineSignal: AbortSignal,
+    overallDeadline: AbortController,
+    deadlineAt: number,
   ): Promise<InvocationOutcome> {
     const provider = this.options.providers.get(invocation.provider_instance_id);
     if (provider === undefined) {
       const error = new NbSearchError('CONFIGURATION_ERROR', `Provider instance ${invocation.provider_instance_id} is unavailable.`, false, invocation.provider_id);
       return { invocation, results: [], attempts: [attemptRecord(invocation, 1, 'failed', 0, 0, error.toPublic())] };
     }
-    const invocationDeadline = new AbortController();
-    const timer = setTimeout(() => invocationDeadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Provider invocation deadline was exceeded.', true)), invocation.timeout_ms);
-    const signal = AbortSignal.any([outerSignal, invocationDeadline.signal]);
     const attempts: SearchAttempt[] = [];
-    try {
-      for (let attempt = 1; attempt <= invocation.retry.max_attempts; attempt += 1) {
+    for (let attempt = 1; attempt <= invocation.retry.max_attempts; attempt += 1) {
+      const remainingMs = Math.floor(deadlineAt - this.monotonicNow());
+      if (remainingMs <= 0) {
+        if (!overallDeadline.signal.aborted) {
+          overallDeadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true));
+        }
+        attempts.push(attemptRecord(
+          invocation, attempt, 'timed_out', 0, 0,
+          new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, invocation.provider_id).toPublic(),
+        ));
+        this.recordHealth(invocation, new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true), false, true, false);
+        return { invocation, attempts, results: [] };
+      }
+      const attemptDeadline = new AbortController();
+      const attemptBudget = Math.min(invocation.timeout_ms, remainingMs);
+      const timer = setTimeout(() => attemptDeadline.abort(
+        new NbSearchError('DEADLINE_EXCEEDED', 'Provider invocation deadline was exceeded.', true),
+      ), attemptBudget);
+      const signal = AbortSignal.any([outerSignal, attemptDeadline.signal]);
+      try {
         const started = this.monotonicNow();
         try {
           const results = await raceWithAbort(provider.search({ ...request, signal }), signal);
@@ -224,23 +241,25 @@ export class PlanExecutor {
           return { invocation, attempts, results };
         } catch (error) {
           const callerCancelled = callerSignal?.aborted === true;
-          const overallDeadline = !callerCancelled && overallDeadlineSignal.aborted;
-          const localDeadline = !callerCancelled && !overallDeadline && invocationDeadline.signal.aborted;
-          const safe = classifyError(error, provider, invocation, callerCancelled, overallDeadline || localDeadline);
-          const state: AttemptState = callerCancelled ? 'cancelled' : overallDeadline || localDeadline ? 'timed_out' : 'failed';
+          const overallDeadlineReached = !callerCancelled && overallDeadline.signal.aborted;
+          const localDeadline = !callerCancelled && !overallDeadlineReached && attemptDeadline.signal.aborted;
+          const safe = classifyError(error, provider, invocation, callerCancelled, overallDeadlineReached || localDeadline);
+          const state: AttemptState = callerCancelled ? 'cancelled' : overallDeadlineReached || localDeadline ? 'timed_out' : 'failed';
           attempts.push(attemptRecord(invocation, attempt, state, elapsed(started, this.monotonicNow()), 0, publicError(safe)));
-          const terminal = attempt >= invocation.retry.max_attempts || signal.aborted || !safe.retryable;
+          const terminal = attempt >= invocation.retry.max_attempts || outerSignal.aborted || !safe.retryable;
           if (terminal) {
-            this.recordHealth(invocation, safe, callerCancelled, overallDeadline, localDeadline);
+            this.recordHealth(invocation, safe, callerCancelled, overallDeadlineReached, localDeadline);
             return { invocation, attempts, results: [] };
           }
           const exponential = Math.min(invocation.retry.max_backoff_ms, invocation.retry.backoff_ms * (2 ** (attempt - 1)));
-          const backoff = safe.retryAfterMs ?? exponential;
-          try { await this.sleep(backoff, signal); } catch { return { invocation, attempts, results: [] }; }
+          const remainingBeforeSleep = Math.max(0, Math.floor(deadlineAt - this.monotonicNow()));
+          const backoff = Math.min(safe.retryAfterMs ?? exponential, remainingBeforeSleep);
+          if (backoff <= 0) continue;
+          try { await this.sleep(backoff, outerSignal); } catch { return { invocation, attempts, results: [] }; }
         }
-      }
-      return { invocation, attempts, results: [] };
-    } finally { clearTimeout(timer); }
+      } finally { clearTimeout(timer); }
+    }
+    return { invocation, attempts, results: [] };
   }
 
   private recordHealth(

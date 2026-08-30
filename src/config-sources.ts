@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -55,6 +55,11 @@ export interface ResolveConfigurationOptions {
 
 interface SourcePatch { label: string; patch: CanonicalConfigPatch }
 
+const LEGACY_REQUEST_TIMEOUT_SECONDS = 90;
+const LEGACY_PROVIDER_TIMEOUT_SECONDS = 20;
+const LEGACY_RETRY_MAX_ATTEMPTS = 2;
+const LEGACY_RETRY_BACKOFF_MS = 500;
+
 export function resolveConfiguration(options: ResolveConfigurationOptions = {}): ResolvedConfiguration {
   const env = options.env ?? process.env;
   const cwd = resolve(options.cwd ?? process.cwd());
@@ -79,7 +84,10 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
     throw new NbSearchError('CONFIGURATION_ERROR', `Canonical configuration file was not found: ${canonicalPath}.`);
   }
 
-  const environment = environmentPatch(env, cwd);
+  const preliminaryProvenance = new Map<string, string>();
+  let preliminary: unknown = {};
+  for (const source of sources) preliminary = mergeConfig(preliminary, source.patch, source.label, preliminaryProvenance);
+  const environment = environmentPatch(env, cwd, parseResolvedConfig(preliminary), diagnostics);
   if (Object.keys(environment).length > 0) sources.push({ label: 'environment', patch: environment });
   if (options.config !== undefined) sources.push({ label: 'host', patch: parseConfigPatch(options.config, 'host configuration') });
   if (options.overrides !== undefined) sources.push({ label: 'runtime', patch: parseConfigPatch(options.overrides, 'runtime overrides') });
@@ -87,6 +95,7 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
   const provenance = new Map<string, string>();
   let merged: unknown = {};
   for (const source of sources) merged = mergeConfig(merged, source.patch, source.label, provenance);
+  addCompatibilityProfiles(merged, provenance);
   const config = parseResolvedConfig(merged);
   const secrets = resolveConfiguredSecrets(config, env, legacySecrets, provenance);
   const safeConfig = {
@@ -151,7 +160,7 @@ function selectLegacyPath(env: NodeJS.ProcessEnv, cwd: string, userHome: string)
     resolve(userHome, '.openclaw', 'credentials', 'search.json'),
     resolve(cwd, 'credentials', 'search.json'),
   ].filter((value): value is string => value !== undefined).map((value) => resolve(value));
-  return candidates.find(existsSync);
+  return candidates.find(isFile);
 }
 
 function readLegacySource(
@@ -173,6 +182,7 @@ function readLegacySource(
   const credentialSlots: Record<string, CredentialSlotConfig> = {};
   mapLegacyProvider('exa', value, path, providerInstances, credentialSlots, secrets, diagnostics);
   mapLegacyProvider('tavily', value, path, providerInstances, credentialSlots, secrets, diagnostics);
+  mapLegacyPolicies(value, path, providerInstances, diagnostics);
   const patch: CanonicalConfigPatch = {};
   if (Object.keys(providerInstances).length > 0) patch.provider_instances = providerInstances;
   if (Object.keys(credentialSlots).length > 0) patch.credential_slots = credentialSlots;
@@ -193,10 +203,11 @@ function mapLegacyProvider(
   const legacyObject = isRecord(raw) ? raw : undefined;
   const key = nonempty(typeof raw === 'string' ? raw : stringValue(legacyObject?.['apiKey']));
   const title = providerId === 'exa' ? 'exa' : 'tavily';
-  const base = firstNonempty([
-    legacyObject?.['apiUrl'], legacyObject?.['baseUrl'], legacyObject?.['apiBase'],
+  const nestedBase = firstNonempty([legacyObject?.['apiUrl'], legacyObject?.['baseUrl'], legacyObject?.['apiBase']]);
+  const topLevelBase = firstNonempty([
     value[`${title}ApiUrl`], value[`${title}ApiBase`], value[`${title}BaseUrl`],
   ]);
+  const base = topLevelBase ?? nestedBase;
   if (base !== undefined) {
     if (isHttpUrl(base)) instances[instanceId] = { base_url: base };
     else diagnostics.push({
@@ -212,6 +223,54 @@ function mapLegacyProvider(
   });
 }
 
+function mapLegacyPolicies(
+  value: Record<string, unknown>,
+  path: string,
+  instances: Record<string, ProviderInstancePatch>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const rawSearchLayer = value['searchLayer'];
+  const searchLayer = isRecord(rawSearchLayer) ? rawSearchLayer : {};
+  if (rawSearchLayer !== undefined && !isRecord(rawSearchLayer)) legacyPolicyWarning(path, 'searchLayer', diagnostics);
+
+  const requestTimeoutSeconds = legacyNumber(
+    searchLayer['requestTimeoutSeconds'], LEGACY_REQUEST_TIMEOUT_SECONDS, 0.1,
+    path, 'searchLayer.requestTimeoutSeconds', diagnostics, 3_600,
+  );
+  const rawProviderTimeouts = searchLayer['providerTimeouts'];
+  const providerTimeouts = isRecord(rawProviderTimeouts) ? rawProviderTimeouts : {};
+  if (rawProviderTimeouts !== undefined && !isRecord(rawProviderTimeouts)) {
+    legacyPolicyWarning(path, 'searchLayer.providerTimeouts', diagnostics);
+  }
+  const rawRetry = searchLayer['retry'];
+  const retry = isRecord(rawRetry) ? rawRetry : {};
+  if (rawRetry !== undefined && !isRecord(rawRetry)) legacyPolicyWarning(path, 'searchLayer.retry', diagnostics);
+  const maxAttempts = legacyInteger(
+    retry['maxAttempts'], LEGACY_RETRY_MAX_ATTEMPTS, 1,
+    path, 'searchLayer.retry.maxAttempts', diagnostics, 10,
+  );
+  const backoffMs = legacyInteger(
+    retry['backoffMs'], LEGACY_RETRY_BACKOFF_MS, 0,
+    path, 'searchLayer.retry.backoffMs', diagnostics, 60_000,
+  );
+
+  for (const providerId of ['exa', 'tavily'] as const) {
+    const providerTimeoutSeconds = legacyNumber(
+      providerTimeouts[providerId], LEGACY_PROVIDER_TIMEOUT_SECONDS, 0.1,
+      path, `searchLayer.providerTimeouts.${providerId}`, diagnostics, 3_600,
+    );
+    const instanceId = `${providerId}.default`;
+    instances[instanceId] = {
+      ...instances[instanceId],
+      timeout_ms: Math.round(Math.min(requestTimeoutSeconds, providerTimeoutSeconds) * 1000),
+      retry: {
+        max_attempts: maxAttempts,
+        backoff_ms: Math.round(backoffMs),
+      },
+    };
+  }
+}
+
 function readExplicitSource(path: string, source: string): CanonicalConfigPatch {
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) as unknown; }
@@ -219,7 +278,12 @@ function readExplicitSource(path: string, source: string): CanonicalConfigPatch 
   return parseConfigPatch(value, source);
 }
 
-function environmentPatch(env: NodeJS.ProcessEnv, cwd: string): CanonicalConfigPatch {
+function environmentPatch(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  base: CanonicalConfig,
+  diagnostics: ConfigurationDiagnostic[],
+): CanonicalConfigPatch {
   const patch: CanonicalConfigPatch = {};
   const instances: Record<string, ProviderInstancePatch> = {};
   const slots: Record<string, CredentialSlotConfig> = {};
@@ -245,9 +309,77 @@ function environmentPatch(env: NodeJS.ProcessEnv, cwd: string): CanonicalConfigP
   }
   mapEnvironmentProvider('exa', 'NB_SEARCH_EXA_API_KEY', 'EXA_API_KEY', env, instances, slots);
   mapEnvironmentProvider('tavily', 'NB_SEARCH_TAVILY_API_KEY', 'TAVILY_API_KEY', env, instances, slots);
+  mapEnvironmentEndpoint('exa', 'NB_SEARCH_EXA_BASE_URL', ['EXA_API_BASE', 'EXA_API_URL'], env, instances);
+  mapEnvironmentEndpoint('tavily', 'NB_SEARCH_TAVILY_BASE_URL', ['TAVILY_API_BASE', 'TAVILY_API_URL'], env, instances);
+  mapEnvironmentPolicy('exa', env, base, instances, diagnostics);
+  mapEnvironmentPolicy('tavily', env, base, instances, diagnostics);
+  mapEnvironmentRetry(env, instances);
   if (Object.keys(instances).length > 0) patch.provider_instances = instances;
   if (Object.keys(slots).length > 0) patch.credential_slots = slots;
   return patch;
+}
+
+function mapEnvironmentEndpoint(
+  providerId: 'exa' | 'tavily',
+  primary: string,
+  aliases: readonly string[],
+  env: NodeJS.ProcessEnv,
+  instances: Record<string, ProviderInstancePatch>,
+): void {
+  const value = nonempty(env[primary]) ?? firstNonempty(aliases.map((name) => env[name]));
+  if (value === undefined) return;
+  if (!isHttpUrl(value)) throw new NbSearchError('CONFIGURATION_ERROR', `${primary} or its legacy alias must be an HTTP(S) URL.`);
+  const instanceId = `${providerId}.default`;
+  instances[instanceId] = { ...instances[instanceId], base_url: value };
+}
+
+function mapEnvironmentPolicy(
+  providerId: 'exa' | 'tavily',
+  env: NodeJS.ProcessEnv,
+  base: CanonicalConfig,
+  instances: Record<string, ProviderInstancePatch>,
+  diagnostics: ConfigurationDiagnostic[],
+): void {
+  const upper = providerId.toUpperCase();
+  const primaryName = `NB_SEARCH_${upper}_TIMEOUT_MS`;
+  const primary = nonempty(env[primaryName]);
+  const instanceId = `${providerId}.default`;
+  if (primary !== undefined) {
+    const timeoutMs = strictEnvironmentInteger(primary, primaryName, 100, 3_600_000);
+    instances[instanceId] = { ...instances[instanceId], timeout_ms: timeoutMs };
+    return;
+  }
+  const providerName = `SEARCH_LAYER_${upper}_TIMEOUT_SECONDS`;
+  const requestName = 'SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS';
+  const providerValue = nonempty(env[providerName]);
+  const requestValue = nonempty(env[requestName]);
+  if (providerValue === undefined && requestValue === undefined) return;
+  const providerSeconds = legacyEnvironmentNumber(providerValue, 0.1, providerName, diagnostics, 3_600);
+  const requestSeconds = legacyEnvironmentNumber(requestValue, 0.1, requestName, diagnostics, 3_600);
+  const inherited = base.provider_instances[instanceId]?.timeout_ms ?? 45_000;
+  const timeoutMs = providerSeconds === undefined
+    ? requestSeconds === undefined ? inherited : Math.min(inherited, Math.round(requestSeconds * 1000))
+    : Math.round(Math.min(providerSeconds, requestSeconds ?? Number.POSITIVE_INFINITY) * 1000);
+  instances[instanceId] = { ...instances[instanceId], timeout_ms: timeoutMs };
+}
+
+function mapEnvironmentRetry(
+  env: NodeJS.ProcessEnv,
+  instances: Record<string, ProviderInstancePatch>,
+): void {
+  const maxAttempts = nonempty(env['NB_SEARCH_RETRY_MAX_ATTEMPTS']);
+  const backoffMs = nonempty(env['NB_SEARCH_RETRY_BACKOFF_MS']);
+  const maxBackoffMs = nonempty(env['NB_SEARCH_RETRY_MAX_BACKOFF_MS']);
+  if (maxAttempts === undefined && backoffMs === undefined && maxBackoffMs === undefined) return;
+  const retry = {
+    ...(maxAttempts === undefined ? {} : { max_attempts: strictEnvironmentInteger(maxAttempts, 'NB_SEARCH_RETRY_MAX_ATTEMPTS', 1, 10) }),
+    ...(backoffMs === undefined ? {} : { backoff_ms: strictEnvironmentInteger(backoffMs, 'NB_SEARCH_RETRY_BACKOFF_MS', 0, 60_000) }),
+    ...(maxBackoffMs === undefined ? {} : { max_backoff_ms: strictEnvironmentInteger(maxBackoffMs, 'NB_SEARCH_RETRY_MAX_BACKOFF_MS', 0, 300_000) }),
+  };
+  for (const providerId of ['exa', 'tavily'] as const) {
+    const instanceId = `${providerId}.default`;
+    instances[instanceId] = { ...instances[instanceId], retry: { ...instances[instanceId]?.retry, ...retry } };
+  }
 }
 
 function mapEnvironmentProvider(
@@ -327,13 +459,107 @@ function mergeConfig(base: unknown, patch: unknown, source: string, provenance: 
   return current;
 }
 
+function addCompatibilityProfiles(value: unknown, provenance: Map<string, string>): void {
+  if (!isRecord(value) || !isRecord(value['profiles']) || !isRecord(value['provider_instances'])) return;
+  const profiles = value['profiles'];
+  const providerInstances = value['provider_instances'];
+  const direct = (['exa.default', 'tavily.default'] as const).filter((instanceId) => isRecord(providerInstances[instanceId]));
+  if (direct.length === 0) return;
+  if (profiles['deep'] === undefined && !provenance.has('profiles.deep')) {
+    profiles['deep'] = {
+      stages: [{
+        kind: 'parallel',
+        invocations: direct.map((instanceId) => ({
+          provider_instance_id: instanceId, capability: 'retrieval', role: 'primary', trigger: 'always',
+        })),
+      }],
+    };
+    provenance.set('profiles.deep', 'compatibility');
+  }
+  if (profiles['fast'] === undefined && !provenance.has('profiles.fast')) {
+    profiles['fast'] = {
+      stages: [{
+        kind: 'fallback',
+        invocations: direct.map((instanceId, index) => ({
+          provider_instance_id: instanceId,
+          capability: 'retrieval',
+          role: index === 0 ? 'primary' : 'fallback',
+          trigger: index === 0 ? 'always' : 'empty_or_failure',
+        })),
+      }],
+    };
+    provenance.set('profiles.fast', 'compatibility');
+  }
+}
+
 function nonempty(value: string | undefined): string | undefined { const item = value?.trim(); return item === '' ? undefined : item }
 function stringValue(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
 function firstNonempty(values: readonly unknown[]): string | undefined {
   for (const value of values) { const item = nonempty(stringValue(value)); if (item !== undefined) return item; }
   return undefined;
 }
+function legacyNumber(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  path: string,
+  field: string,
+  diagnostics: ConfigurationDiagnostic[],
+  maximum = Number.POSITIVE_INFINITY,
+): number {
+  if (value === undefined) return fallback;
+  const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : Number.NaN;
+  if (typeof value !== 'boolean' && Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum) return parsed;
+  legacyPolicyWarning(path, field, diagnostics);
+  return fallback;
+}
+function legacyInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  path: string,
+  field: string,
+  diagnostics: ConfigurationDiagnostic[],
+  maximum = Number.POSITIVE_INFINITY,
+): number {
+  const parsed = legacyNumber(value, fallback, minimum, path, field, diagnostics, maximum);
+  if (Number.isSafeInteger(parsed)) return parsed;
+  legacyPolicyWarning(path, field, diagnostics);
+  return fallback;
+}
+function legacyEnvironmentNumber(
+  value: string | undefined,
+  minimum: number,
+  name: string,
+  diagnostics: ConfigurationDiagnostic[],
+  maximum = Number.POSITIVE_INFINITY,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum) return parsed;
+  const message = `${name} was invalid and was ignored.`;
+  if (!diagnostics.some((item) => item.source === 'environment' && item.message === message)) {
+    diagnostics.push({ code: 'LEGACY_INVALID', source: 'environment', message });
+  }
+  return undefined;
+}
+function legacyPolicyWarning(path: string, field: string, diagnostics: ConfigurationDiagnostic[]): void {
+  diagnostics.push({
+    code: 'LEGACY_INVALID', source: 'legacy', path,
+    message: `Legacy ${field} was invalid and the legacy default was used.`,
+  });
+}
+function strictEnvironmentInteger(value: string, name: string, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new NbSearchError('CONFIGURATION_ERROR', `${name} must be an integer from ${String(minimum)} to ${String(maximum)}.`);
+  }
+  return parsed;
+}
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function isFile(path: string): boolean {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
 function isHttpUrl(value: string): boolean {
   try { const url = new URL(value); return url.protocol === 'https:' || url.protocol === 'http:'; } catch { return false; }
 }

@@ -27,10 +27,18 @@ export class ExaProvider implements SearchProvider {
   }
   async search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]> {
     try {
+      const body: Record<string, unknown> = {
+        query: request.query,
+        numResults: request.limit,
+        type: exaSearchType(request),
+        contents: { highlights: { maxCharacters: 1200 } },
+      };
+      const publishedAfter = freshnessStart(request.freshness, this.options.clock ?? (() => new Date()));
+      if (publishedAfter !== undefined) body['startPublishedDate'] = publishedAfter;
       const response = await this.options.transport.send<{ results?: unknown; resolvedSearchType?: unknown }>({
         url: this.endpoint, method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': this.options.apiKey },
-        body: { query: request.query, numResults: request.limit, type: 'auto', contents: { highlights: { maxCharacters: 1200 } } },
+        body,
         signal: request.signal,
       });
       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
@@ -68,9 +76,14 @@ export class TavilyProvider implements SearchProvider {
   }
   async search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]> {
     try {
+      const body: Record<string, unknown> = {
+        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: false,
+      };
+      const days = freshnessDays(request.freshness);
+      if (days !== undefined) body['days'] = days;
       const response = await this.options.transport.send<{ results?: unknown }>({
         url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: { api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: false },
+        body,
         signal: request.signal,
       });
       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
@@ -88,6 +101,25 @@ export class TavilyProvider implements SearchProvider {
       throw safeProviderError(error, this.name, this.redactions);
     }
   }
+}
+
+function exaSearchType(request: ProviderSearchRequest): 'auto' | 'fast' | 'deep' {
+  if (request.intent === 'status' || request.intent === 'news') return 'fast';
+  if (request.intent === 'exploratory' && request.profile === 'deep') return 'deep';
+  return 'auto';
+}
+
+function freshnessDays(value: ProviderSearchRequest['freshness']): number | undefined {
+  if (value === 'pd') return 1;
+  if (value === 'pw') return 7;
+  if (value === 'pm') return 30;
+  if (value === 'py') return 365;
+  return undefined;
+}
+
+function freshnessStart(value: ProviderSearchRequest['freshness'], clock: () => Date): string | undefined {
+  const days = freshnessDays(value);
+  return days === undefined ? undefined : new Date(clock().getTime() - days * 86_400_000).toISOString();
 }
 
 export function resolveSearchUrl(value: string): string {

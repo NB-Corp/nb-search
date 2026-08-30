@@ -38,6 +38,13 @@ Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search 
 | --- | --- | --- |
 | `NB_SEARCH_EXA_API_KEY` | Exa API key | Falls back to `EXA_API_KEY` |
 | `NB_SEARCH_TAVILY_API_KEY` | Tavily API key | Falls back to `TAVILY_API_KEY` |
+| `NB_SEARCH_EXA_BASE_URL` | Exa endpoint base | Falls back to `EXA_API_BASE`, then `EXA_API_URL` |
+| `NB_SEARCH_TAVILY_BASE_URL` | Tavily endpoint base | Falls back to `TAVILY_API_BASE`, then `TAVILY_API_URL` |
+| `NB_SEARCH_EXA_TIMEOUT_MS` | Per-attempt Exa timeout | Resolved instance policy |
+| `NB_SEARCH_TAVILY_TIMEOUT_MS` | Per-attempt Tavily timeout | Resolved instance policy |
+| `NB_SEARCH_RETRY_MAX_ATTEMPTS` | Provider attempt count | Resolved instance policy |
+| `NB_SEARCH_RETRY_BACKOFF_MS` | Initial retry backoff | Resolved instance policy |
+| `NB_SEARCH_RETRY_MAX_BACKOFF_MS` | Maximum exponential retry backoff | Resolved instance policy |
 | `NB_SEARCH_CONFIG` | Canonical nb-search JSON file | `$NB_SEARCH_HOME/config.json` |
 | `NB_SEARCH_HOME` | Trusted local state directory | `~/.nb-search` |
 | `NB_SEARCH_JOBS_ROOT` | Durable job directory | `$NB_SEARCH_HOME/jobs` |
@@ -66,6 +73,10 @@ The canonical file can define provider instances, credential slots, and determin
 
 Provider instances merge by instance ID. Ordinary nested objects merge recursively, arrays replace, each credential slot and profile replaces atomically, and `null` removes a lower-precedence entry. Setting `enabled` to `false` keeps an instance disabled even when its credential is available.
 
+Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order. A legacy `searchLayer` object maps `requestTimeoutSeconds`, `providerTimeouts.exa|tavily`, and `retry.maxAttempts|backoffMs` into instance policies. Numeric strings remain accepted for compatibility. Invalid optional legacy file values produce a safe diagnostic and use legacy defaults; invalid legacy timeout environment values are ignored so the inherited policy remains effective. Invalid `NB_SEARCH_*`, canonical, host, and runtime values stop configuration.
+
+Legacy timeout environment variables remain available: `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, and `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`. Provider attempts use the smaller applicable provider/request budget. The synchronous request timeout and research deadline remain the outer bound for every attempt and retry sleep.
+
 Queries, keys, configured endpoints, response bodies, and absolute artifact paths are omitted from logs. `capabilities` reports provider instances, profile readiness, and safe configuration diagnostics without making a network request.
 
 ## CLI
@@ -75,14 +86,17 @@ Run a one-step search or use the explicit command:
 ```sh
 nb-search "query"
 nb-search search "query" --max-results 8 --timeout-ms 20000
+nb-search search "query" --profile fast --intent status --freshness pd
 ```
 
 Search accepts 1–20 results and a 1,000–45,000 ms total budget. A provider failure preserves useful results from other providers and marks the result `partial`.
 
+Routing fields are optional. `default` and `deep` run configured Exa and Tavily retrieval in parallel. `fast` tries Exa first and then the next configured direct retrieval instance when the first attempt returns no results or fails. Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. `status` and `news` select Exa fast search; `exploratory` with `deep` selects Exa deep search. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Tavily retrieval always sends `include_answer:false`.
+
 Start and manage research jobs:
 
 ```sh
-nb-search research start "query" --max-sources 30 --max-duration-ms 900000 --idempotency-key my-run
+nb-search research start "query" --max-sources 30 --max-duration-ms 900000 --idempotency-key my-run --profile deep --intent exploratory --freshness pm
 nb-search research status <job_id>
 nb-search research read <job_id> --artifact report --page-size 10
 nb-search research list --states queued,running --limit 20
@@ -90,9 +104,9 @@ nb-search research cancel <job_id>
 nb-search capabilities
 ```
 
-`research start` returns a receipt without waiting for completion. Jobs use lowercase UUID v4 identifiers and live under `$NB_SEARCH_HOME/jobs` unless `NB_SEARCH_JOBS_ROOT` changes that location. New jobs save an `execution.json` snapshot beside `job.json`; detached workers replay its plan, provider instances, and safe credential-grant identities instead of rereading routing configuration. API-key bytes are excluded from the snapshot.
+`research start` returns a receipt without waiting for completion. Jobs use lowercase UUID v4 identifiers and live under `$NB_SEARCH_HOME/jobs` unless `NB_SEARCH_JOBS_ROOT` changes that location. New jobs save an `execution.json` snapshot beside `job.json`; detached workers replay its profile, intent, freshness, plan, provider instances, invocation policies, and safe credential-grant identities. API-key bytes are excluded from the snapshot.
 
-Reusing an idempotency key requires the same normalized request, plan, and configuration revision. A change returns `JOB_CONFLICT`.
+Reusing an idempotency key requires the same normalized request, routing fields, plan, and configuration revision. A change returns `JOB_CONFLICT`.
 
 Research output is a bounded deterministic evidence report. It does not claim autonomous synthesis or semantic verification. `research read` labels artifacts as `checkpoint`, `final`, or `unavailable`; callers should not treat a checkpoint as a completed report.
 

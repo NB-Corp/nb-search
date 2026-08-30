@@ -1,9 +1,22 @@
 import { z } from 'zod';
 
+import { FRESHNESS_VALUES, SEARCH_INTENTS, SEARCH_PROFILE_IDS } from './types.ts';
+
+export const searchProfileSchema = z.enum(SEARCH_PROFILE_IDS);
+export const searchIntentSchema = z.enum(SEARCH_INTENTS);
+export const freshnessSchema = z.enum(FRESHNESS_VALUES);
+
+const routingInputShape = {
+  profile: searchProfileSchema.optional(),
+  intent: searchIntentSchema.optional(),
+  freshness: freshnessSchema.optional(),
+};
+
 export const searchInputSchema = z.object({
   query: z.string().trim().min(1).max(4000),
   max_results: z.number().int().min(1).max(20).optional(),
   timeout_ms: z.number().int().min(1000).max(45_000).optional(),
+  ...routingInputShape,
 }).strict();
 
 export const researchStartInputSchema = z.object({
@@ -11,6 +24,7 @@ export const researchStartInputSchema = z.object({
   max_sources: z.number().int().min(5).max(100).optional(),
   max_duration_ms: z.number().int().min(60_000).max(3_600_000).optional(),
   idempotency_key: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional(),
+  ...routingInputShape,
 }).strict();
 
 export const researchStatusInputSchema = z.object({ job_id: z.string().uuid() }).strict();

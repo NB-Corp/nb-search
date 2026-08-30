@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { NbSearchError, invalidInput } from './errors.ts';
 import { PlanExecutor, type InvocationOutcome, type SearchPlan } from './planner.ts';
 import type {
-  ProviderResult, ResultProvenance, SearchAttempt, SearchEnvelope, SearchProvider, SearchRequest, SearchResult, SearchState,
+  Freshness, ProfileId, ProviderResult, ResultProvenance, SearchAttempt, SearchEnvelope, SearchIntent,
+  SearchProvider, SearchRequest, SearchResult, SearchState,
 } from './types.ts';
-import { SCHEMA_VERSION, SEARCH_TEXT_MAX_BYTES } from './types.ts';
+import { FRESHNESS_VALUES, SCHEMA_VERSION, SEARCH_INTENTS, SEARCH_PROFILE_IDS, SEARCH_TEXT_MAX_BYTES } from './types.ts';
 import { normalizeUrl } from './url.ts';
 
 export interface SearchServiceOptions {
@@ -13,6 +14,10 @@ export interface SearchServiceOptions {
   requestId?: () => string;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   plan?: SearchPlan;
+  plans?: ReadonlyMap<ProfileId, SearchPlan>;
+  defaultProfileId?: ProfileId;
+  routing?: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness };
+  routingLocked?: boolean;
   executor?: PlanExecutor;
 }
 
@@ -20,11 +25,13 @@ export class SearchService {
   private readonly now: () => Date;
   private readonly requestId: () => string;
   private readonly plan: SearchPlan;
+  private readonly plans: ReadonlyMap<ProfileId, SearchPlan>;
   private readonly executor: PlanExecutor;
   constructor(private readonly options: SearchServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.requestId = options.requestId ?? randomUUID;
     this.plan = options.plan ?? legacyPlan(options.providers);
+    this.plans = options.plans ?? new Map([['default', this.plan]]);
     const providers = new Map<string, SearchProvider>();
     options.providers.forEach((provider, index) => providers.set(instanceIdentity(provider, index), provider));
     this.executor = options.executor ?? new PlanExecutor({
@@ -41,12 +48,26 @@ export class SearchService {
     const budgetMs = boundedInteger(request.timeout_ms ?? 20_000, 1000, 45_000, 'timeout_ms');
     const requestId = operationRequestId ?? this.requestId();
     const startedAt = this.now();
-    if (this.plan.stages.length === 0) {
+    const locked = this.options.routingLocked === true;
+    const routedRequest = locked ? { ...request, ...this.options.routing } : { ...this.options.routing, ...request };
+    const profile = validatedRouting(
+      locked ? undefined : request.profile,
+      routedRequest.intent,
+      routedRequest.freshness,
+      routedRequest.profile ?? this.options.defaultProfileId ?? this.plan.profile_id,
+    );
+    const plan = this.plans.get(profile) ?? (profile === this.plan.profile_id ? this.plan : undefined);
+    if (plan === undefined) throw invalidInput(`profile ${profile} is not configured.`);
+    if (plan.stages.length === 0) {
       return compactEnvelope(baseEnvelope(requestId, query, 'failed', startedAt, this.now(), budgetMs, [], [], [],
         new NbSearchError('CONFIGURATION_ERROR', 'No search provider is configured.').toPublic()));
     }
 
-    const execution = await this.executor.execute(this.plan, { query, limit: maxResults }, budgetMs, request.signal);
+    const execution = await this.executor.execute(plan, {
+      query, limit: maxResults, profile,
+      ...(routedRequest.intent === undefined ? {} : { intent: routedRequest.intent }),
+      ...(routedRequest.freshness === undefined ? {} : { freshness: routedRequest.freshness }),
+    }, budgetMs, request.signal);
     const outcomes = execution.outcomes;
     const attempts = outcomes.flatMap((outcome) => outcome.attempts);
     const results = mergeResults(outcomes, maxResults);
@@ -66,6 +87,24 @@ export class SearchService {
     return compactEnvelope(baseEnvelope(requestId, query, state, startedAt, this.now(), budgetMs, results, attempts, warnings, terminalError));
   }
 
+}
+
+function validatedRouting(
+  explicitProfile: ProfileId | undefined,
+  intent: SearchRequest['intent'],
+  freshness: SearchRequest['freshness'],
+  resolvedProfile: ProfileId,
+): ProfileId {
+  if (explicitProfile !== undefined && !(SEARCH_PROFILE_IDS as readonly string[]).includes(explicitProfile)) {
+    throw invalidInput('profile must be default, fast, or deep.');
+  }
+  if (intent !== undefined && !(SEARCH_INTENTS as readonly string[]).includes(intent)) {
+    throw invalidInput('intent must be factual, status, comparison, tutorial, exploratory, news, or resource.');
+  }
+  if (freshness !== undefined && !(FRESHNESS_VALUES as readonly string[]).includes(freshness)) {
+    throw invalidInput('freshness must be pd, pw, pm, or py.');
+  }
+  return resolvedProfile;
 }
 
 function baseEnvelope(

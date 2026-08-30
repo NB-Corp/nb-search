@@ -9,7 +9,7 @@ import { isTerminalState, JobStore } from './job-store.ts';
 import { Logger, queryFingerprint } from './logging.ts';
 import type {
   ArtifactState, JobRecord, JobState, ResearchArtifact, ResearchCancelEnvelope, ResearchListEnvelope, ResearchReadEnvelope,
-  ResearchRequest, ResearchStartEnvelope, SearchEnvelope, Searcher, SearchResult,
+  Freshness, ProfileId, ResearchRequest, ResearchStartEnvelope, SearchEnvelope, SearchIntent, SearchProfileId, Searcher, SearchResult,
 } from './types.ts';
 import { MANAGEMENT_TEXT_MAX_BYTES, RESEARCH_PAGE_MAX_BYTES, SCHEMA_VERSION } from './types.ts';
 
@@ -40,10 +40,14 @@ export class ResearchService {
     private readonly launcher: WorkerLauncher,
     private readonly requestId: () => string = randomUUID,
     private readonly snapshotFactory?: ExecutionSnapshotFactory,
+    private readonly defaultProfileId: ProfileId = 'default',
   ) {}
 
   async start(
-    input: { query: string; max_sources?: number; max_duration_ms?: number; idempotency_key?: string },
+    input: {
+      query: string; max_sources?: number; max_duration_ms?: number; idempotency_key?: string;
+      profile?: SearchProfileId; intent?: SearchIntent; freshness?: Freshness;
+    },
     context: OperationContext = {},
   ): Promise<ResearchStartEnvelope> {
     const query = input.query.trim();
@@ -54,7 +58,11 @@ export class ResearchService {
       throw invalidInput('idempotency_key must match [A-Za-z0-9._:-]{1,128}.');
     }
     assertActive(context.signal);
-    const request = { query, max_sources: maxSources, max_duration_ms: maxDurationMs };
+    const request: ResearchRequest = {
+      query, max_sources: maxSources, max_duration_ms: maxDurationMs, profile: input.profile ?? this.defaultProfileId,
+      ...(input.intent === undefined ? {} : { intent: input.intent }),
+      ...(input.freshness === undefined ? {} : { freshness: input.freshness }),
+    };
     const snapshot = this.snapshotFactory?.(request);
     const created = await this.store.createOrReuse(request, input.idempotency_key, snapshot);
     if (!created.reused) {
@@ -186,6 +194,9 @@ export class ResearchRunner {
           max_results: Math.min(20, job.request.max_sources - collected.size),
           timeout_ms: Math.min(45_000, remainingMs),
           signal: controller.signal,
+          ...(job.request.profile === undefined ? {} : { profile: job.request.profile }),
+          ...(job.request.intent === undefined ? {} : { intent: job.request.intent }),
+          ...(job.request.freshness === undefined ? {} : { freshness: job.request.freshness }),
         });
         operations.push(result);
         mergeResearchResults(collected, result.results, job.request.max_sources);

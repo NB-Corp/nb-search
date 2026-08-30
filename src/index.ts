@@ -5,12 +5,15 @@ import type { NbSearchRuntime } from './runtime.ts';
 
 export {
   capabilitiesInputSchema,
+  freshnessSchema,
   researchCancelInputSchema,
   researchListInputSchema,
   researchReadInputSchema,
   researchStartInputSchema,
   researchStatusInputSchema,
   searchInputSchema,
+  searchIntentSchema,
+  searchProfileSchema,
 } from './contracts.ts';
 export type {
   CapabilitiesInput,
@@ -116,6 +119,9 @@ export type {
   CredentialSlotId,
   InvocationId,
   ProfileId,
+  SearchProfileId,
+  SearchIntent,
+  Freshness,
   ProviderCapability,
   PublicError,
   PublicErrorCode,

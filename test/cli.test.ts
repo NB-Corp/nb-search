@@ -36,6 +36,26 @@ describe('direct CLI', () => {
     expect(runtime.capabilities).toHaveBeenCalledWith();
   });
 
+  it('passes strict routing flags to search and research start', async () => {
+    const runtime = fakeRuntime();
+    expect(await runCli([
+      'search', 'query', '--profile', 'deep', '--intent', 'exploratory', '--freshness', 'pw',
+    ], captureIo(), () => runtime)).toBe(0);
+    expect(runtime.search).toHaveBeenCalledWith({
+      query: 'query', profile: 'deep', intent: 'exploratory', freshness: 'pw',
+    });
+    expect(await runCli([
+      'research', 'start', 'query', '--profile', 'fast', '--intent', 'news', '--freshness', 'pd',
+    ], captureIo(), () => runtime)).toBe(0);
+    expect(runtime.researchStart).toHaveBeenCalledWith({
+      query: 'query', profile: 'fast', intent: 'news', freshness: 'pd',
+    });
+
+    const invalid = captureIo();
+    expect(await runCli(['search', 'query', '--profile', 'custom'], invalid, () => runtime)).toBe(2);
+    expect(JSON.parse(invalid.stderr.value)).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+  });
+
   it('returns typed invalid-input diagnostics and does not construct a runtime for help', async () => {
     const helpIo = captureIo();
     const factory = vi.fn(() => fakeRuntime());
