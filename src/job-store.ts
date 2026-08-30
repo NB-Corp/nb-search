@@ -5,6 +5,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { NbSearchError, invalidInput } from './errors.ts';
+import { validateExecutionSnapshot, type ExecutionSnapshot } from './execution-snapshot.ts';
 import type {
   ArtifactState, JobRecord, JobState, ResearchArtifact, ResearchRequest, TerminalJobState,
 } from './types.ts';
@@ -30,10 +31,18 @@ export class JobStore {
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw storeError('The jobs root must be a real directory.');
   }
 
-  async createOrReuse(request: ResearchRequest, idempotencyKey?: string): Promise<CreateJobResult> {
+  async createOrReuse(request: ResearchRequest, idempotencyKey?: string, snapshot?: ExecutionSnapshot): Promise<CreateJobResult> {
     await this.initialize();
     const normalized: ResearchRequest = { ...request, query: request.query.trim() };
-    const requestHash = hash(JSON.stringify(normalized));
+    const requestHash = hash(JSON.stringify(snapshot === undefined ? normalized : {
+      request: normalized,
+      plan_fingerprint: snapshot.plan_fingerprint,
+      config_revision: snapshot.config_revision,
+      config_fingerprint: snapshot.config_fingerprint,
+      registry_revision: snapshot.registry_revision,
+      artifact_contract_version: snapshot.artifact_contract_version,
+      credential_slot_ids: snapshot.credential_bindings.map((item) => item.credential_slot_id),
+    }));
     const idempotencyHash = idempotencyKey === undefined ? undefined : hash(idempotencyKey);
     return await this.withLock(resolve(this.root, '.idempotency-lock'), async () => {
       if (idempotencyHash !== undefined) {
@@ -46,17 +55,37 @@ export class JobStore {
       const jobId = randomUUID();
       const dir = this.jobDir(jobId);
       await mkdir(resolve(dir, 'artifacts'), { recursive: true });
-      const now = this.now().toISOString();
-      const job: JobRecord = {
-        schema_version: SCHEMA_VERSION, job_id: jobId, state: 'queued', phase: 'queued', request: normalized,
-        request_hash: requestHash, ...(idempotencyHash === undefined ? {} : { idempotency_hash: idempotencyHash }),
-        created_at: now, updated_at: now, progress: { completed_units: 0 },
-        artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable' },
-      };
-      await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(job, null, 2));
-      await this.appendEvent(jobId, { type: 'created', state: 'queued', at: now });
-      return { job, reused: false };
+      try {
+        const now = this.now().toISOString();
+        const job: JobRecord = {
+          schema_version: SCHEMA_VERSION, job_id: jobId, state: 'queued', phase: 'queued', request: normalized,
+          request_hash: requestHash, ...(idempotencyHash === undefined ? {} : { idempotency_hash: idempotencyHash }),
+          created_at: now, updated_at: now, progress: { completed_units: 0 },
+          artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable' },
+        };
+        if (snapshot !== undefined) await this.atomicWrite(resolve(dir, 'execution.json'), JSON.stringify(snapshot, null, 2));
+        await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(job, null, 2));
+        await this.appendEvent(jobId, { type: 'created', state: 'queued', at: now });
+        return { job, reused: false };
+      } catch (error) {
+        await rm(dir, { recursive: true, force: true });
+        throw error;
+      }
     });
+  }
+
+  async readExecutionSnapshot(jobId: string): Promise<ExecutionSnapshot | undefined> {
+    const dir = await this.safeExistingJobDir(jobId);
+    let raw: string;
+    try { raw = await readFile(resolve(dir, 'execution.json'), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw storeError('Research execution snapshot could not be read.', error);
+    }
+    let value: unknown;
+    try { value = JSON.parse(raw) as unknown; }
+    catch (error) { throw storeError('Research execution snapshot is invalid.', error); }
+    return validateExecutionSnapshot(value);
   }
 
   async read(jobId: string): Promise<JobRecord> {

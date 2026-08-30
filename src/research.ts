@@ -3,16 +3,18 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 import { NbSearchError, invalidInput } from './errors.ts';
+import type { ExecutionSnapshot } from './execution-snapshot.ts';
 import type { OperationContext } from './contracts.ts';
 import { isTerminalState, JobStore } from './job-store.ts';
 import { Logger, queryFingerprint } from './logging.ts';
 import type {
   ArtifactState, JobRecord, JobState, ResearchArtifact, ResearchCancelEnvelope, ResearchListEnvelope, ResearchReadEnvelope,
-  ResearchStartEnvelope, SearchEnvelope, Searcher, SearchResult,
+  ResearchRequest, ResearchStartEnvelope, SearchEnvelope, Searcher, SearchResult,
 } from './types.ts';
 import { MANAGEMENT_TEXT_MAX_BYTES, RESEARCH_PAGE_MAX_BYTES, SCHEMA_VERSION } from './types.ts';
 
-export interface WorkerLauncher { launch(jobId: string): Promise<void> }
+export interface WorkerLauncher { launch(jobId: string, jobsRoot?: string): Promise<void> }
+export type ExecutionSnapshotFactory = (request: ResearchRequest) => ExecutionSnapshot;
 
 export class DetachedWorkerLauncher implements WorkerLauncher {
   constructor(
@@ -21,9 +23,9 @@ export class DetachedWorkerLauncher implements WorkerLauncher {
     private readonly platform: NodeJS.Platform = process.platform,
     private readonly spawnProcess: typeof spawn = spawn,
   ) {}
-  async launch(jobId: string): Promise<void> {
+  async launch(jobId: string, jobsRoot?: string): Promise<void> {
     await new Promise<void>((resolveLaunch, reject) => {
-      const child = this.spawnProcess(process.execPath, [this.workerPath, jobId], {
+      const child = this.spawnProcess(process.execPath, [this.workerPath, jobId, ...(jobsRoot === undefined ? [] : [jobsRoot])], {
         detached: true, stdio: 'ignore', windowsHide: true, env: this.env,
       });
       child.once('error', reject);
@@ -37,6 +39,7 @@ export class ResearchService {
     private readonly store: JobStore,
     private readonly launcher: WorkerLauncher,
     private readonly requestId: () => string = randomUUID,
+    private readonly snapshotFactory?: ExecutionSnapshotFactory,
   ) {}
 
   async start(
@@ -51,14 +54,16 @@ export class ResearchService {
       throw invalidInput('idempotency_key must match [A-Za-z0-9._:-]{1,128}.');
     }
     assertActive(context.signal);
-    const created = await this.store.createOrReuse({ query, max_sources: maxSources, max_duration_ms: maxDurationMs }, input.idempotency_key);
+    const request = { query, max_sources: maxSources, max_duration_ms: maxDurationMs };
+    const snapshot = this.snapshotFactory?.(request);
+    const created = await this.store.createOrReuse(request, input.idempotency_key, snapshot);
     if (!created.reused) {
       try {
         if (context.signal?.aborted === true) {
           await this.store.requestCancel(created.job.job_id);
           throw new NbSearchError('CANCELLED', 'Research start was cancelled.');
         }
-        await this.launcher.launch(created.job.job_id);
+        await this.launcher.launch(created.job.job_id, this.store.root);
       }
       catch (error) {
         if (error instanceof NbSearchError && error.code === 'CANCELLED') throw error;
@@ -230,7 +235,10 @@ function mergeResearchResults(target: Map<string, SearchResult>, incoming: reado
     if (existing !== undefined) {
       for (const provider of item.providers) if (!existing.providers.includes(provider)) existing.providers.push(provider);
       for (const provenance of item.provenance) {
-        if (!existing.provenance.some((candidate) => candidate.provider === provenance.provider && candidate.original_url === provenance.original_url)) {
+        if (!existing.provenance.some((candidate) => candidate.provider === provenance.provider
+          && candidate.provider_instance_id === provenance.provider_instance_id
+          && candidate.invocation_id === provenance.invocation_id
+          && candidate.original_url === provenance.original_url)) {
           existing.provenance.push(structuredClone(provenance));
         }
       }

@@ -6,15 +6,19 @@ export class NbSearchError extends Error {
     message: string,
     readonly retryable = false,
     readonly provider?: ProviderName,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { retryAfterMs?: number },
   ) {
     super(message, options);
     this.name = new.target.name;
+    this.retryAfterMs = options?.retryAfterMs;
   }
+
+  readonly retryAfterMs?: number;
 
   toPublic(): PublicError {
     return { code: this.code, message: this.message, retryable: this.retryable,
-      ...(this.provider === undefined ? {} : { provider: this.provider }) };
+      ...(this.provider === undefined ? {} : { provider: this.provider }),
+      ...(this.retryAfterMs === undefined ? {} : { retry_after_ms: this.retryAfterMs }) };
   }
 }
 

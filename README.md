@@ -23,17 +23,50 @@ pnpm build
 
 ## Configuration
 
-The CLI, worker, and MCP server read configuration from their process environment.
+Configuration is resolved once in this order, from lowest to highest precedence:
+
+1. built-in defaults;
+2. the first existing legacy search-layer JSON file;
+3. canonical nb-search JSON;
+4. environment variables;
+5. in-process host configuration;
+6. in-process runtime overrides.
+
+Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search reads `$NB_SEARCH_HOME/config.json` when that file exists. Legacy lookup checks `SEARCH_LAYER_CREDENTIALS`, `~/.openclaw/credentials/search.json`, and then `./credentials/search.json`, stopping at the first existing file. A malformed legacy file is ignored and reported by `capabilities`; malformed canonical, host, or override configuration stops startup with `CONFIGURATION_ERROR`.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `NB_SEARCH_EXA_API_KEY` | Exa API key | Falls back to `EXA_API_KEY` |
 | `NB_SEARCH_TAVILY_API_KEY` | Tavily API key | Falls back to `TAVILY_API_KEY` |
+| `NB_SEARCH_CONFIG` | Canonical nb-search JSON file | `$NB_SEARCH_HOME/config.json` |
 | `NB_SEARCH_HOME` | Trusted local state directory | `~/.nb-search` |
+| `NB_SEARCH_JOBS_ROOT` | Durable job directory | `$NB_SEARCH_HOME/jobs` |
 | `NB_SEARCH_RETENTION_HOURS` | Age at which terminal jobs become eligible for pruning | `72` |
 | `NB_SEARCH_LOG_LEVEL` | `error`, `warn`, `info`, or `debug` logs on stderr | `warn` |
 
-Provider keys are sent only to their provider's fixed production endpoint. Queries, keys, endpoints, response bodies, and absolute artifact paths are omitted from logs. `capabilities` reports whether a provider is configured without making a network request.
+The canonical file can define provider instances, credential slots, and deterministic routing profiles. Exa and Tavily retrieval are the only built-in active adapters in this release. Credential slots name environment variables; they do not contain API-key values.
+
+```json
+{
+  "schema_version": "1",
+  "provider_instances": {
+    "exa.default": {
+      "base_url": "https://api.exa.ai/search",
+      "timeout_ms": 20000
+    }
+  },
+  "credential_slots": {
+    "exa.default": {
+      "provider_id": "exa",
+      "env": "NB_SEARCH_EXA_API_KEY"
+    }
+  }
+}
+```
+
+Provider instances merge by instance ID. Ordinary nested objects merge recursively, arrays replace, each credential slot and profile replaces atomically, and `null` removes a lower-precedence entry. Setting `enabled` to `false` keeps an instance disabled even when its credential is available.
+
+Queries, keys, configured endpoints, response bodies, and absolute artifact paths are omitted from logs. `capabilities` reports provider instances, profile readiness, and safe configuration diagnostics without making a network request.
 
 ## CLI
 
@@ -57,7 +90,9 @@ nb-search research cancel <job_id>
 nb-search capabilities
 ```
 
-`research start` returns a receipt without waiting for completion. Jobs use lowercase UUID v4 identifiers and live under `$NB_SEARCH_HOME/jobs`. Reusing an idempotency key with the same normalized request returns the existing job; changing the request returns `JOB_CONFLICT`.
+`research start` returns a receipt without waiting for completion. Jobs use lowercase UUID v4 identifiers and live under `$NB_SEARCH_HOME/jobs` unless `NB_SEARCH_JOBS_ROOT` changes that location. New jobs save an `execution.json` snapshot beside `job.json`; detached workers replay its plan, provider instances, and safe credential-grant identities instead of rereading routing configuration. API-key bytes are excluded from the snapshot.
+
+Reusing an idempotency key requires the same normalized request, plan, and configuration revision. A change returns `JOB_CONFLICT`.
 
 Research output is a bounded deterministic evidence report. It does not claim autonomous synthesis or semantic verification. `research read` labels artifacts as `checkpoint`, `final`, or `unavailable`; callers should not treat a checkpoint as a completed report.
 
@@ -95,14 +130,22 @@ The server exposes `search`, `research_start`, `research_status`, `research_read
 ```ts
 import { createNbSearchRuntime } from '@nb-corp/nb-search';
 
-const runtime = createNbSearchRuntime({ env: process.env });
+const runtime = createNbSearchRuntime({
+  env: process.env,
+  config: {
+    provider_instances: {
+      'exa.default': { timeout_ms: 15000 },
+    },
+  },
+  overrides: {},
+});
 const result = await runtime.search(
   { query: 'query', max_results: 8 },
   { requestId: 'host-request-id', signal: abortSignal },
 );
 ```
 
-The package exports `NbSearchRuntime`, `OperationContext`, `createNbSearchRuntime`, all seven strict input schemas, and their native envelope types. The runtime has no host-framework dependency.
+The package exports `NbSearchRuntime`, `OperationContext`, `createNbSearchRuntime`, canonical configuration types, static provider-registration types, planner/snapshot contracts, all seven strict input schemas, and their native envelope types. `provider_registrations` accepts explicit code registrations; configuration files are data-only and never load provider modules. The runtime has no host-framework dependency.
 
 ## Job Lifecycle And Recovery
 

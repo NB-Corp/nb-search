@@ -1,18 +1,27 @@
 import { NbSearchError } from './errors.ts';
 import { redactText } from './redaction.ts';
 import type { JsonTransport } from './transport.ts';
-import type { ProviderResult, ProviderSearchRequest, SearchProvider } from './types.ts';
+import type { CredentialSlotId, ProviderInstanceId, ProviderResult, ProviderSearchRequest, SearchProvider } from './types.ts';
 
 export const EXA_SEARCH_URL = 'https://api.exa.ai/search';
 export const TAVILY_SEARCH_URL = 'https://api.tavily.com/search';
 
-export interface ProviderOptions { apiKey: string; transport: JsonTransport; baseUrl?: string }
+export interface ProviderOptions {
+  apiKey: string; transport: JsonTransport; baseUrl?: string;
+  providerInstanceId?: ProviderInstanceId; credentialSlotId?: CredentialSlotId;
+  clock?: () => Date;
+}
 
 export class ExaProvider implements SearchProvider {
   readonly name = 'exa' as const;
+  readonly provider_id = 'exa' as const;
+  readonly provider_instance_id: string;
+  readonly credential_slot_id?: string;
   readonly redactions: readonly string[];
   private readonly endpoint: string;
   constructor(private readonly options: ProviderOptions) {
+    this.provider_instance_id = options.providerInstanceId ?? 'exa.default';
+    this.credential_slot_id = options.credentialSlotId;
     this.endpoint = resolveSearchUrl(options.baseUrl ?? EXA_SEARCH_URL);
     this.redactions = [options.apiKey, this.endpoint];
   }
@@ -24,7 +33,7 @@ export class ExaProvider implements SearchProvider {
         body: { query: request.query, numResults: request.limit, type: 'auto', contents: { highlights: { maxCharacters: 1200 } } },
         signal: request.signal,
       });
-      assertProviderStatus(response.status, this.name);
+      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
       const rows = Array.isArray(response.body.results) ? response.body.results : [];
       const resolvedType = stringValue(response.body.resolvedSearchType);
       return rows.flatMap((item): ProviderResult[] => {
@@ -46,9 +55,14 @@ export class ExaProvider implements SearchProvider {
 
 export class TavilyProvider implements SearchProvider {
   readonly name = 'tavily' as const;
+  readonly provider_id = 'tavily' as const;
+  readonly provider_instance_id: string;
+  readonly credential_slot_id?: string;
   readonly redactions: readonly string[];
   private readonly endpoint: string;
   constructor(private readonly options: ProviderOptions) {
+    this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
+    this.credential_slot_id = options.credentialSlotId;
     this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL);
     this.redactions = [options.apiKey, this.endpoint];
   }
@@ -59,7 +73,7 @@ export class TavilyProvider implements SearchProvider {
         body: { api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: false },
         signal: request.signal,
       });
-      assertProviderStatus(response.status, this.name);
+      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
       const rows = Array.isArray(response.body.results) ? response.body.results : [];
       return rows.flatMap((item): ProviderResult[] => {
         if (!isRecord(item) || stringValue(item['url']) === '') return [];
@@ -83,17 +97,28 @@ export function resolveSearchUrl(value: string): string {
   return url.toString();
 }
 
-function assertProviderStatus(status: number, provider: 'exa' | 'tavily'): void {
+function assertProviderStatus(
+  status: number,
+  provider: 'exa' | 'tavily',
+  headers?: Readonly<Record<string, string>>,
+  clock: () => Date = () => new Date(),
+): void {
   if (status >= 200 && status < 300) return;
   if (status === 401 || status === 403) throw new NbSearchError('PROVIDER_AUTH', `${provider} authentication failed.`, false, provider);
-  if (status === 429) throw new NbSearchError('PROVIDER_RATE_LIMIT', `${provider} rate limit was reached.`, true, provider);
+  if (status === 429) {
+    throw new NbSearchError('PROVIDER_RATE_LIMIT', `${provider} rate limit was reached.`, true, provider, {
+      retryAfterMs: parseRetryAfter(headerValue(headers, 'retry-after'), clock),
+    });
+  }
   const retryable = status === 408 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504;
   throw new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} request failed (HTTP ${String(status)}).`, retryable, provider);
 }
 
 function safeProviderError(error: unknown, provider: 'exa' | 'tavily', redactions: readonly string[]): NbSearchError {
   if (error instanceof NbSearchError) {
-    return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, { cause: error });
+    return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, {
+      cause: error, retryAfterMs: error.retryAfterMs,
+    });
   }
   return new NbSearchError('PROVIDER_UNAVAILABLE', redactText(`${provider} provider failed.`, redactions), true, provider, { cause: error });
 }
@@ -101,3 +126,18 @@ function isRecord(value: unknown): value is Record<string, unknown> { return typ
 function stringValue(value: unknown): string { return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '' }
 function numberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined }
 function joinedText(value: unknown): string { return Array.isArray(value) ? value.map(stringValue).filter(Boolean).join(' … ') : stringValue(value) }
+function parseRetryAfter(value: string | undefined, clock: () => Date): number | undefined {
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return undefined;
+  return Math.max(0, at - clock().getTime());
+}
+function headerValue(headers: Readonly<Record<string, string>> | undefined, name: string): string | undefined {
+  if (headers === undefined) return undefined;
+  const direct = headers[name];
+  if (direct !== undefined) return direct;
+  const found = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+  return found?.[1];
+}

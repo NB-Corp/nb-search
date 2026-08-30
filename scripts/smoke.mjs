@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,16 +8,22 @@ const execute = promisify(execFile);
 const root = resolve(import.meta.dirname, '..');
 const cli = resolve(root, 'dist/cli.mjs');
 const home = await mkdtemp(join(tmpdir(), 'nb-search-smoke-'));
+const configPath = join(home, 'config.json');
+const legacyPath = join(home, 'legacy.json');
 const env = {
-  ...process.env,
   NB_SEARCH_HOME: home,
-  NB_SEARCH_EXA_API_KEY: '',
-  NB_SEARCH_TAVILY_API_KEY: '',
-  EXA_API_KEY: '',
-  TAVILY_API_KEY: '',
+  NB_SEARCH_CONFIG: configPath,
+  SEARCH_LAYER_CREDENTIALS: legacyPath,
 };
 
 try {
+  await writeFile(configPath, JSON.stringify({
+    provider_instances: {
+      'exa.default': { enabled: false },
+      'tavily.default': { enabled: false },
+    },
+  }));
+  await writeFile(legacyPath, '{}');
   let oneStep;
   try {
     await execute(process.execPath, [cli, 'offline-smoke'], { cwd: root, env });
@@ -44,7 +50,7 @@ try {
   assert(!/@modelcontextprotocol|StdioClientTransport|createNbSearchMcpServer/.test(cliSource), 'CLI artifact has no MCP construction path');
 
   const publicModule = await import(new URL('../dist/index.mjs', import.meta.url));
-  const runtime = publicModule.createNbSearchRuntime({ env: { NB_SEARCH_HOME: home } });
+  const runtime = publicModule.createNbSearchRuntime({ env });
   assert((await runtime.capabilities()).mode === 'capabilities', 'native public export import');
 
   process.stdout.write(`${JSON.stringify({

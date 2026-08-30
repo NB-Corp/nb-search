@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
-
-import { NbSearchError, invalidInput, isRetryableProviderError, publicError } from './errors.ts';
-import { safeErrorMessage } from './redaction.ts';
+import { NbSearchError, invalidInput } from './errors.ts';
+import { PlanExecutor, type InvocationOutcome, type SearchPlan } from './planner.ts';
 import type {
   ProviderResult, ResultProvenance, SearchAttempt, SearchEnvelope, SearchProvider, SearchRequest, SearchResult, SearchState,
 } from './types.ts';
@@ -14,18 +12,26 @@ export interface SearchServiceOptions {
   now?: () => Date;
   requestId?: () => string;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  plan?: SearchPlan;
+  executor?: PlanExecutor;
 }
-
-interface ProviderOutcome { attempts: SearchAttempt[]; results: readonly ProviderResult[] }
 
 export class SearchService {
   private readonly now: () => Date;
   private readonly requestId: () => string;
-  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+  private readonly plan: SearchPlan;
+  private readonly executor: PlanExecutor;
   constructor(private readonly options: SearchServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.requestId = options.requestId ?? randomUUID;
-    this.sleep = options.sleep ?? (async (ms, signal) => { await delay(ms, undefined, { signal }); });
+    this.plan = options.plan ?? legacyPlan(options.providers);
+    const providers = new Map<string, SearchProvider>();
+    options.providers.forEach((provider, index) => providers.set(instanceIdentity(provider, index), provider));
+    this.executor = options.executor ?? new PlanExecutor({
+      providers,
+      now: this.now,
+      ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+    });
   }
 
   async search(request: SearchRequest, operationRequestId?: string): Promise<SearchEnvelope> {
@@ -35,27 +41,20 @@ export class SearchService {
     const budgetMs = boundedInteger(request.timeout_ms ?? 20_000, 1000, 45_000, 'timeout_ms');
     const requestId = operationRequestId ?? this.requestId();
     const startedAt = this.now();
-    if (this.options.providers.length === 0) {
+    if (this.plan.stages.length === 0) {
       return compactEnvelope(baseEnvelope(requestId, query, 'failed', startedAt, this.now(), budgetMs, [], [], [],
         new NbSearchError('CONFIGURATION_ERROR', 'No search provider is configured.').toPublic()));
     }
 
-    const deadline = new AbortController();
-    const timeout = setTimeout(() => deadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true)), budgetMs);
-    const signal = request.signal === undefined ? deadline.signal : AbortSignal.any([request.signal, deadline.signal]);
-    let outcomes: ProviderOutcome[];
-    try {
-      outcomes = await Promise.all(this.options.providers.map((provider) => this.runProvider(provider, query, maxResults, signal, request.signal, deadline.signal)));
-    } finally {
-      clearTimeout(timeout);
-    }
+    const execution = await this.executor.execute(this.plan, { query, limit: maxResults }, budgetMs, request.signal);
+    const outcomes = execution.outcomes;
     const attempts = outcomes.flatMap((outcome) => outcome.attempts);
-    const results = mergeResults(this.options.providers, outcomes, maxResults);
-    const callerCancelled = request.signal?.aborted === true;
-    const deadlineExceeded = !callerCancelled && deadline.signal.aborted;
+    const results = mergeResults(outcomes, maxResults);
+    const callerCancelled = execution.caller_cancelled;
+    const deadlineExceeded = execution.deadline_exceeded;
     const state = deriveState(results, attempts, callerCancelled, deadlineExceeded);
     const warnings = state === 'partial'
-      ? [deadline.signal.aborted ? 'The deadline was reached; useful results were preserved.' : 'One or more providers did not complete successfully.']
+      ? [deadlineExceeded ? 'The deadline was reached; useful results were preserved.' : 'One or more providers did not complete successfully.']
       : [];
     const terminalError = results.length === 0 && (state === 'failed' || state === 'timed_out' || state === 'cancelled')
       ? state === 'cancelled'
@@ -67,38 +66,6 @@ export class SearchService {
     return compactEnvelope(baseEnvelope(requestId, query, state, startedAt, this.now(), budgetMs, results, attempts, warnings, terminalError));
   }
 
-  private async runProvider(
-    provider: SearchProvider,
-    query: string,
-    limit: number,
-    signal: AbortSignal,
-    callerSignal: AbortSignal | undefined,
-    deadlineSignal: AbortSignal,
-  ): Promise<ProviderOutcome> {
-    const attempts: SearchAttempt[] = [];
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const started = performance.now();
-      try {
-        const results = await raceWithAbort(provider.search({ query, limit, signal }), signal);
-        attempts.push({ provider: provider.name, attempt, state: results.length === 0 ? 'empty' : 'succeeded', duration_ms: elapsed(started), result_count: results.length });
-        return { attempts, results };
-      } catch (error) {
-        const cancelled = callerSignal?.aborted === true;
-        const timedOut = !cancelled && deadlineSignal.aborted;
-        const safe = cancelled
-          ? new NbSearchError('CANCELLED', 'Search was cancelled.')
-          : timedOut
-            ? new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, provider.name)
-            : error instanceof NbSearchError
-              ? new NbSearchError(error.code, safeErrorMessage(error, provider.redactions), error.retryable, error.provider ?? provider.name, { cause: error })
-              : new NbSearchError('PROVIDER_UNAVAILABLE', safeErrorMessage(error, provider.redactions), true, provider.name);
-        attempts.push({ provider: provider.name, attempt, state: cancelled ? 'cancelled' : timedOut ? 'timed_out' : 'failed', duration_ms: elapsed(started), result_count: 0, error: publicError(safe) });
-        if (attempt === 2 || signal.aborted || !isRetryableProviderError(safe)) return { attempts, results: [] };
-        try { await this.sleep(attempt * 100, signal); } catch { return { attempts, results: [] }; }
-      }
-    }
-    return { attempts, results: [] };
-  }
 }
 
 function baseEnvelope(
@@ -113,19 +80,26 @@ function baseEnvelope(
   };
 }
 
-function mergeResults(providers: readonly SearchProvider[], outcomes: readonly ProviderOutcome[], limit: number): SearchResult[] {
+function mergeResults(outcomes: readonly InvocationOutcome[], limit: number): SearchResult[] {
   const merged = new Map<string, SearchResult>();
-  providers.forEach((provider, providerIndex) => {
-    const outcome = outcomes[providerIndex];
-    if (outcome === undefined) return;
+  outcomes.forEach((outcome) => {
+    const invocation = outcome.invocation;
     outcome.results.forEach((item, rank) => {
       const url = normalizeUrl(item.url);
       if (url === undefined) return;
-      const provenance: ResultProvenance = { provider: provider.name, rank, original_url: item.url,
+      const provenance: ResultProvenance = {
+        provider: invocation.provider_id,
+        provider_instance_id: invocation.provider_instance_id,
+        ...(invocation.credential_slot_id === undefined ? {} : { credential_slot_id: invocation.credential_slot_id }),
+        invocation_id: invocation.invocation_id,
+        capability: invocation.capability,
+        role: invocation.role,
+        trigger: invocation.trigger,
+        rank, original_url: item.url,
         ...(item.metadata === undefined ? {} : { metadata: item.metadata }) };
       const existing = merged.get(url);
       if (existing !== undefined) {
-        if (!existing.providers.includes(provider.name)) existing.providers.push(provider.name);
+        if (!existing.providers.includes(invocation.provider_id)) existing.providers.push(invocation.provider_id);
         existing.provenance.push(provenance);
         if (existing.snippet === '' && item.snippet !== undefined) existing.snippet = cleanText(item.snippet);
         return;
@@ -134,7 +108,7 @@ function mergeResults(providers: readonly SearchProvider[], outcomes: readonly P
         title: cleanText(item.title), url, snippet: cleanText(item.snippet ?? ''),
         ...(item.published_at === undefined ? {} : { published_at: item.published_at }),
         ...(item.site_name === undefined ? {} : { site_name: item.site_name }),
-        ...(item.score === undefined ? {} : { score: item.score }), providers: [provider.name], provenance: [provenance],
+        ...(item.score === undefined ? {} : { score: item.score }), providers: [invocation.provider_id], provenance: [provenance],
       });
     });
   });
@@ -150,7 +124,7 @@ function deriveState(
   if (callerCancelled) return 'cancelled';
   if (results.length === 0 && deadlineExceeded) return 'timed_out';
   const completed = attempts.filter((item) => item.state === 'succeeded' || item.state === 'empty');
-  const finalByProvider = new Map(attempts.map((item) => [item.provider, item]));
+  const finalByProvider = new Map(attempts.map((item) => [item.invocation_id ?? item.provider_instance_id ?? item.provider, item]));
   const failedFinal = [...finalByProvider.values()].filter((item) => item.state !== 'succeeded' && item.state !== 'empty');
   if (results.length > 0) return failedFinal.length > 0 ? 'partial' : 'succeeded';
   if (completed.length > 0 && failedFinal.length === 0) return 'empty';
@@ -191,12 +165,25 @@ function boundedInteger(value: number, min: number, max: number, field: string):
   if (!Number.isSafeInteger(value) || value < min || value > max) throw invalidInput(`${field} must be an integer from ${String(min)} to ${String(max)}.`);
   return value;
 }
-function elapsed(started: number): number { return Math.max(0, Math.round(performance.now() - started)) }
-async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw signal.reason;
-  return await new Promise<T>((resolve, reject) => {
-    const abort = (): void => reject(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort)).catch(() => undefined);
-  });
+function instanceIdentity(provider: SearchProvider, index: number): string {
+  return provider.provider_instance_id ?? `${provider.name}.default${index === 0 ? '' : `.${String(index + 1)}`}`;
+}
+
+function legacyPlan(providers: readonly SearchProvider[]): SearchPlan {
+  const invocations = providers.map((provider, index) => ({
+    invocation_id: `legacy-${String(index + 1)}-${instanceIdentity(provider, index)}`,
+    provider_id: provider.provider_id ?? provider.name,
+    provider_instance_id: instanceIdentity(provider, index),
+    ...(provider.credential_slot_id === undefined ? {} : { credential_slot_id: provider.credential_slot_id }),
+    capability: 'retrieval' as const,
+    role: 'primary',
+    trigger: 'always',
+    timeout_ms: 45_000,
+    retry: { max_attempts: 2, backoff_ms: 100, max_backoff_ms: 2_000 },
+  }));
+  return {
+    plan_version: '1', profile_id: 'legacy',
+    stages: invocations.length === 0 ? [] : [{ stage_id: 'stage-1', kind: 'parallel', invocations }],
+    plan_fingerprint: 'legacy-m1',
+  };
 }

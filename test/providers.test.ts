@@ -59,6 +59,15 @@ describe('provider ports', () => {
     await expect(provider.search(request())).rejects.toMatchObject({ code, retryable, provider: 'tavily' });
   });
 
+  it('preserves Retry-After as executor-owned retry metadata', async () => {
+    const provider = new TavilyProvider({
+      apiKey: 'secret', transport: new CaptureTransport({ status: 429, body: {}, headers: { 'retry-after': '7' } }),
+    });
+    await expect(provider.search(request())).rejects.toMatchObject({
+      code: 'PROVIDER_RATE_LIMIT', retryable: true, retryAfterMs: 7000,
+    });
+  });
+
   it('redacts credentials and configured endpoints from provider diagnostics', async () => {
     const transport: JsonTransport = {
       async send() { throw new Error('request https://private.test/search failed with api_key=my-secret'); },

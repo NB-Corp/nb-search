@@ -4,6 +4,12 @@ export const MANAGEMENT_TEXT_MAX_BYTES = 16 * 1024;
 export const RESEARCH_PAGE_MAX_BYTES = 24 * 1024;
 
 export type ProviderName = 'exa' | 'tavily' | (string & {});
+export type ProviderId = ProviderName;
+export type ProviderInstanceId = string;
+export type CredentialSlotId = string;
+export type InvocationId = string;
+export type ProfileId = string;
+export type ProviderCapability = 'retrieval' | 'answer' | 'research-light' | 'multi-agent-research';
 export type PublicErrorCode =
   | 'INVALID_INPUT'
   | 'CONFIGURATION_ERROR'
@@ -20,7 +26,9 @@ export type PublicErrorCode =
   | 'WORKER_LOST'
   | 'INTERNAL';
 
-export interface PublicError { code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName }
+export interface PublicError {
+  code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName; retry_after_ms?: number;
+}
 export interface ProviderSearchRequest { query: string; limit: number; signal: AbortSignal }
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
@@ -28,14 +36,21 @@ export interface ProviderResult {
 }
 export interface SearchProvider {
   readonly name: ProviderName; readonly redactions?: readonly string[];
+  readonly provider_id?: ProviderId;
+  readonly provider_instance_id?: ProviderInstanceId;
+  readonly credential_slot_id?: CredentialSlotId;
   search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]>;
 }
 export type AttemptState = 'succeeded' | 'empty' | 'failed' | 'timed_out' | 'cancelled';
 export interface SearchAttempt {
   provider: ProviderName; attempt: number; state: AttemptState; duration_ms: number; result_count: number; error?: PublicError;
+  provider_instance_id?: ProviderInstanceId; credential_slot_id?: CredentialSlotId; invocation_id?: InvocationId;
+  capability?: ProviderCapability; role?: string; trigger?: string;
 }
 export interface ResultProvenance {
   provider: ProviderName; rank: number; original_url: string; metadata?: Readonly<Record<string, unknown>>;
+  provider_instance_id?: ProviderInstanceId; credential_slot_id?: CredentialSlotId; invocation_id?: InvocationId;
+  capability?: ProviderCapability; role?: string; trigger?: string;
 }
 export interface SearchResult {
   title: string; url: string; snippet: string; published_at?: string; site_name?: string; score?: number;
@@ -91,10 +106,20 @@ export interface CapabilityEnvelope {
   schema_version: typeof SCHEMA_VERSION; request_id: string; mode: 'capabilities'; version: '0.1.0';
   search: { max_results: 20; max_timeout_ms: 45000 };
   research: { max_sources: 100; max_duration_ms: 3600000; detached_worker: true; guaranteed_process_survival: false };
-  providers: { exa: { configured: boolean }; tavily: { configured: boolean } };
+  providers: {
+    exa: { configured: boolean }; tavily: { configured: boolean };
+    instances?: Array<{
+      provider_id: ProviderId; provider_instance_id: ProviderInstanceId; credential_slot_id?: CredentialSlotId;
+      enabled: boolean; ready: boolean; capabilities: readonly ProviderCapability[];
+    }>;
+  };
+  profiles?: Array<{ profile_id: ProfileId; ready: boolean; stage_count: number }>;
   persistence: { durable_jobs: true; cancellation_markers: true; retention_hours: number; stale_after_ms: 30000 };
   transport: { mcp: 'stdio'; cli_direct_service: true };
-  diagnostics: { network_probe_performed: false };
+  diagnostics: {
+    network_probe_performed: false;
+    configuration?: Array<{ code: string; source: string; path?: string; message: string }>;
+  };
 }
 
 export interface ErrorEnvelope { error: PublicError }

@@ -31,6 +31,9 @@ interface RuntimeDependencies {
   requestId: () => string;
   providerConfigured: Readonly<Record<'exa' | 'tavily', boolean>>;
   retentionHours: number;
+  providerInstances?: CapabilityEnvelope['providers']['instances'];
+  profiles?: CapabilityEnvelope['profiles'];
+  configurationDiagnostics?: NonNullable<CapabilityEnvelope['diagnostics']['configuration']>;
 }
 
 export class NbSearchRuntimeImpl implements NbSearchRuntime {
@@ -90,7 +93,9 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
       providers: {
         exa: { configured: this.dependencies.providerConfigured.exa },
         tavily: { configured: this.dependencies.providerConfigured.tavily },
+        ...(this.dependencies.providerInstances === undefined ? {} : { instances: this.dependencies.providerInstances }),
       },
+      ...(this.dependencies.profiles === undefined ? {} : { profiles: this.dependencies.profiles }),
       persistence: {
         durable_jobs: true,
         cancellation_markers: true,
@@ -98,7 +103,12 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
         stale_after_ms: 30_000,
       },
       transport: { mcp: 'stdio', cli_direct_service: true },
-      diagnostics: { network_probe_performed: false },
+      diagnostics: {
+        network_probe_performed: false,
+        ...(this.dependencies.configurationDiagnostics === undefined ? {} : {
+          configuration: this.dependencies.configurationDiagnostics,
+        }),
+      },
     };
   }
 }
