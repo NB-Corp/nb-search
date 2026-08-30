@@ -33,6 +33,9 @@ export interface CompositionOptions {
   config?: CanonicalConfigPatch;
   overrides?: CanonicalConfigPatch;
   provider_registrations?: readonly ProviderRegistration[];
+  cwd?: string;
+  homeDirectory?: string;
+  snapshotless_legacy_guard?: boolean;
 }
 
 export function createRuntimeComposition(
@@ -44,14 +47,18 @@ export function createRuntimeComposition(
     ...(options.overrides === undefined ? {} : { overrides: options.overrides }),
     ...(options.provider_registrations === undefined ? {} : { provider_registrations: options.provider_registrations }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.homeDirectory === undefined ? {} : { homeDirectory: options.homeDirectory }),
   });
   const requestId = options.requestId ?? randomUUID;
+  const planningConfig = options.snapshotless_legacy_guard === true
+    ? withoutMultiAgentResearch(config.resolved.config) : config.resolved.config;
   const health = new NoopHealthStore();
   const healthSnapshot = health.snapshot();
-  const profilePlans = new Map(Object.keys(config.resolved.config.profiles).sort().map((profileId) => [
+  const profilePlans = new Map(Object.keys(planningConfig.profiles).sort().map((profileId) => [
     profileId,
     compileSearchPlan({
-      config: config.resolved.config,
+      config: planningConfig,
       registry: config.registry,
       readiness: config.provider_readiness,
       capability_readiness: config.capability_readiness,
@@ -59,15 +66,15 @@ export function createRuntimeComposition(
       routing: { profile: profileId },
     }),
   ]));
-  const plan = profilePlans.get(config.resolved.config.default_profile_id);
+  const plan = profilePlans.get(planningConfig.default_profile_id);
   if (plan === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The default search profile could not be compiled.');
   const search = new SearchService({
     providers: config.providers, plan,
     plans: profilePlans as ReadonlyMap<ProfileId, typeof plan>,
-    defaultProfileId: config.resolved.config.default_profile_id,
+    defaultProfileId: planningConfig.default_profile_id,
     portsByInstance: config.ports_by_instance,
     planFactory: (routing) => compileSearchPlan({
-      config: config.resolved.config, registry: config.registry, readiness: config.provider_readiness,
+      config: planningConfig, registry: config.registry, readiness: config.provider_readiness,
       capability_readiness: config.capability_readiness, health: health.snapshot(), routing,
     }),
     requestId, now: options.now,
@@ -80,12 +87,12 @@ export function createRuntimeComposition(
     launcher,
     requestId,
     (request) => {
-      const profile = request.profile ?? config.resolved.config.default_profile_id;
+      const profile = request.profile ?? planningConfig.default_profile_id;
       if (!profilePlans.has(profile)) throw new NbSearchError('INVALID_INPUT', `Search profile ${profile} is not configured.`);
       const selectedPlan = compileSearchPlan({
-        config: config.resolved.config, registry: config.registry, readiness: config.provider_readiness,
+        config: planningConfig, registry: config.registry, readiness: config.provider_readiness,
         capability_readiness: config.capability_readiness, health: health.snapshot(),
-        routing: { profile, ...(request.intent === undefined ? {} : { intent: request.intent }), ...(request.freshness === undefined ? {} : { freshness: request.freshness }) },
+        routing: { profile, ...(request.intent === undefined ? {} : { intent: request.intent }), ...(request.freshness === undefined ? {} : { freshness: request.freshness }), execution_surface: 'research-job' },
       });
       return createExecutionSnapshot(selectedPlan, config.resolved, config.registry, {
         profile,
@@ -93,7 +100,7 @@ export function createRuntimeComposition(
         ...(request.freshness === undefined ? {} : { freshness: request.freshness }),
       });
     },
-    config.resolved.config.default_profile_id,
+    planningConfig.default_profile_id,
   );
   const providerInstances = Object.entries(config.resolved.config.provider_instances)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -128,6 +135,9 @@ export function createRuntimeComposition(
   const compatibilityOwned = (profileId: string): boolean => {
     const owner = profileOwner(profileId); return owner === 'defaults' || owner?.startsWith('compatibility:') === true;
   };
+  const gmaInstance = config.resolved.config.provider_instances['grok-multi-agent.default'];
+  const gmaActive = gmaInstance?.provider_id === 'grok-multi-agent' && gmaInstance.enabled;
+  const gmaMode = gmaInstance?.options['replace_grok'] === true ? 'replacement' as const : 'overlay' as const;
   const runtime = new NbSearchRuntimeImpl({
     search,
     research,
@@ -137,8 +147,9 @@ export function createRuntimeComposition(
     providerInstances,
     profiles,
     capabilityRoutes: [
-      ...((['default', 'deep'] as const).filter(compatibilityOwned).length === 0 || config.resolved.config.provider_instances['tavily.default'] === undefined ? [] : [{ capability: 'answer' as const, provider_instance_id: 'tavily.default', profile_ids: (['default', 'deep'] as const).filter(compatibilityOwned), intent_in: ['factual', 'tutorial'] as const, failure_policy: 'affects-state' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['tavily.default']?.answer === true }]),
-      ...(compatibilityOwned('deep') && config.resolved.config.provider_instances['exa.default'] !== undefined ? [{ capability: 'research-light' as const, provider_instance_id: 'exa.default', profile_ids: ['deep'] as const, intent_in: ['status', 'comparison', 'exploratory', 'news'] as const, failure_policy: 'report-only' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['exa.default']?.['research-light'] === true }] : []),
+      ...((['default', 'deep'] as const).filter(compatibilityOwned).length === 0 || config.resolved.config.provider_instances['tavily.default'] === undefined ? [] : [{ capability: 'answer' as const, provider_instance_id: 'tavily.default', profile_ids: (['default', 'deep'] as const).filter(compatibilityOwned), intent_in: ['factual', 'tutorial'] as const, operations: ['search', 'research_start'] as const, failure_policy: 'affects-state' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['tavily.default']?.answer === true }]),
+      ...(compatibilityOwned('deep') && config.resolved.config.provider_instances['exa.default'] !== undefined ? [{ capability: 'research-light' as const, provider_instance_id: 'exa.default', profile_ids: ['deep'] as const, intent_in: ['status', 'comparison', 'exploratory', 'news'] as const, operations: gmaActive ? ['search'] as const : ['search', 'research_start'] as const, failure_policy: 'report-only' as const, execution_scope: 'once-per-job' as const, ready: config.capability_readiness['exa.default']?.['research-light'] === true }] : []),
+      ...(compatibilityOwned('deep') && gmaActive ? [{ capability: 'multi-agent-research' as const, provider_instance_id: 'grok-multi-agent.default', profile_ids: ['deep'] as const, intent_in: ['status', 'comparison', 'exploratory', 'news'] as const, operations: ['research_start'] as const, failure_policy: 'affects-state' as const, execution_scope: 'once-per-job' as const, async_only: true as const, route_mode: gmaMode, ready: config.capability_readiness['grok-multi-agent.default']?.['multi-agent-research'] === true }] : []),
     ],
     configurationDiagnostics: [
       ...config.diagnostics.map((item) => ({
@@ -150,6 +161,19 @@ export function createRuntimeComposition(
     ],
   });
   return { config, runtime, search, store };
+}
+
+function withoutMultiAgentResearch(config: AppConfiguration['resolved']['config']): AppConfiguration['resolved']['config'] {
+  const cloned = structuredClone(config);
+  for (const profile of Object.values(cloned.profiles)) {
+    profile.stages = profile.stages.flatMap((stage) => {
+      const invocations = stage.invocations.filter((item) => item.capability !== 'multi-agent-research');
+      return invocations.length === 0 ? [] : [{ ...stage, invocations }];
+    });
+  }
+  const gma = cloned.provider_instances['grok-multi-agent.default'];
+  if (gma !== undefined) gma.enabled = false;
+  return cloned;
 }
 
 export function createSearchFromSnapshot(

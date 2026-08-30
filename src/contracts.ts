@@ -30,7 +30,7 @@ export const researchStartInputSchema = z.object({
 export const researchStatusInputSchema = z.object({ job_id: z.string().uuid() }).strict();
 
 export const researchReadInputSchema = researchStatusInputSchema.extend({
-  artifact: z.enum(['summary', 'report', 'sources', 'capabilities']).optional(),
+  artifact: z.enum(['summary', 'report', 'sources', 'capabilities', 'multi_agent_research']).optional(),
   cursor: z.string().min(1).max(2048).optional(),
   page_size: z.number().int().min(1).max(100).optional(),
 }).strict();

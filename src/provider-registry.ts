@@ -3,12 +3,13 @@ import { stableFingerprint } from './config-schema.ts';
 import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
 import {
-  ExaProvider, ExaResearchLightProvider, GrokProvider, SearchGatewayProvider, TavilyAnswerProvider, TavilyProvider, validateGrokBaseUrl, validateGrokModel,
+  ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, GrokProvider, SearchGatewayProvider, TavilyAnswerProvider, TavilyProvider,
+  validateGmaEffort, validateGrokBaseUrl, validateGrokModel,
   validateProviderBaseUrl, validateSearchPath,
 } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
-import type { AnswerProvider, ProviderCapability, ProviderId, ResearchLightProvider, SearchProvider } from './types.ts';
-export type { AnswerProvider, ResearchLightProvider, ProviderCapabilityRequest } from './types.ts';
+import type { AnswerProvider, MultiAgentResearchProvider, ProviderCapability, ProviderId, ResearchLightProvider, SearchProvider } from './types.ts';
+export type { AnswerProvider, MultiAgentResearchProvider, ResearchLightProvider, ProviderCapabilityRequest } from './types.ts';
 export type ProviderAnswerResult = import('./types.ts').ProviderAnswerCapabilityResult;
 
 export const REGISTRY_SCHEMA_VERSION = '2' as const;
@@ -33,8 +34,6 @@ export interface ProviderFactoryContext {
   logger?: { write(level: 'error' | 'warn' | 'info' | 'debug', event: string, fields?: Readonly<Record<string, unknown>>): void };
   clock: () => Date;
 }
-
-export interface MultiAgentResearchProvider { research(request: { query: string; signal: AbortSignal }): Promise<unknown> }
 
 export interface ProviderPorts {
   retrieval?: SearchProvider;
@@ -107,7 +106,7 @@ export class ProviderRegistry {
 }
 
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] {
-  return [exaRegistration, grokRegistration, searchGatewayRegistration, tavilyRegistration];
+  return [exaRegistration, grokMultiAgentRegistration, grokRegistration, searchGatewayRegistration, tavilyRegistration];
 }
 
 const exaRegistration: ProviderRegistration = {
@@ -207,6 +206,38 @@ const grokRegistration: ProviderRegistration = {
   },
 };
 
+const grokMultiAgentRegistration: ProviderRegistration = {
+  descriptor: {
+    provider_id: 'grok-multi-agent', adapter_version: 'l5', capabilities: ['multi-agent-research'],
+    capability_versions: { 'multi-agent-research': 'l5' },
+    activation: { kind: 'credential', required: true, endpoint: 'required' },
+    operations: [{ capability: 'multi-agent-research', method: 'POST', response_type: 'text', path: '/chat/completions' }],
+    auth: { kind: 'bearer-header', name: 'Authorization' }, option_keys: ['model', 'reasoning_effort', 'replace_grok'],
+    option_schema: {
+      type: 'object',
+      properties: {
+        model: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$' },
+        reasoning_effort: { enum: ['low', 'medium', 'high', 'xhigh'] },
+        replace_grok: { type: 'boolean' },
+      },
+      additionalProperties: false,
+    },
+  },
+  validate: validateGmaInstance,
+  create(context) {
+    const credential = requireCredential(context);
+    if (context.instance.base_url === undefined || typeof context.instance.options['model'] !== 'string') {
+      throw new NbSearchError('CONFIGURATION_ERROR', `Provider instance ${context.instance_id} is incomplete.`);
+    }
+    validateGmaEffort(context.instance.options['reasoning_effort']);
+    return { multi_agent_research: new GrokMultiAgentProvider({
+      apiKey: credential.value, baseUrl: context.instance.base_url, model: context.instance.options['model'],
+      reasoningEffort: context.instance.options['reasoning_effort'], transport: context.transports.http,
+      providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id, clock: context.clock,
+    }) };
+  },
+};
+
 const searchGatewayRegistration: ProviderRegistration = {
   descriptor: {
     provider_id: 'search-gateway', adapter_version: 'l2', capabilities: ['retrieval'],
@@ -260,6 +291,14 @@ function validateGrokInstance(instanceId: string, instance: ProviderInstanceConf
   validateKnownOptions(instanceId, instance, ['model']);
   if (instance.base_url !== undefined) validateGrokBaseUrl(instance.base_url);
   validateGrokModel(instance.options['model']);
+}
+
+function validateGmaInstance(instanceId: string, instance: ProviderInstanceConfig): void {
+  validateKnownOptions(instanceId, instance, ['model', 'reasoning_effort', 'replace_grok']);
+  if (instance.base_url !== undefined) validateGrokBaseUrl(instance.base_url);
+  validateGrokModel(instance.options['model']);
+  validateGmaEffort(instance.options['reasoning_effort']);
+  if (typeof instance.options['replace_grok'] !== 'boolean') throw invalidOption(instanceId);
 }
 
 function validateKnownOptions(instanceId: string, instance: ProviderInstanceConfig, keys: readonly string[]): void {

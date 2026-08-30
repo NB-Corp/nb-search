@@ -10,7 +10,7 @@ import type { HttpTransport } from '../src/transport.ts';
 const transport: HttpTransport = { async send<T>() { return { status: 200, body: { results: [] } as T }; } };
 
 describe('static provider registry', () => {
-  it('declares Exa, Grok, aggregate gateway, and Tavily retrieval descriptors with fixed protocol contracts', () => {
+  it('declares built-in retrieval, capability, gateway, and GMA descriptors with fixed protocol contracts', () => {
     const registry = new ProviderRegistry(builtInProviderRegistrations());
     expect(registry.descriptors()).toMatchObject([
       {
@@ -22,6 +22,13 @@ describe('static provider registry', () => {
         provider_id: 'grok', adapter_version: 'l3', capabilities: ['retrieval'],
         operations: [{ method: 'POST', response_type: 'text', path: '/chat/completions' }],
         auth: { kind: 'bearer-header', name: 'Authorization' },
+      },
+      {
+        provider_id: 'grok-multi-agent', adapter_version: 'l5', capabilities: ['multi-agent-research'],
+        capability_versions: { 'multi-agent-research': 'l5' },
+        operations: [{ capability: 'multi-agent-research', method: 'POST', response_type: 'text', path: '/chat/completions' }],
+        auth: { kind: 'bearer-header', name: 'Authorization' },
+        option_keys: ['model', 'reasoning_effort', 'replace_grok'],
       },
       {
         provider_id: 'search-gateway', adapter_version: 'l2', capabilities: ['retrieval'],

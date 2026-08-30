@@ -35,8 +35,8 @@ export class JobStore {
   async createOrReuse(request: ResearchRequest, idempotencyKey?: string, snapshot?: ExecutionSnapshot): Promise<CreateJobResult> {
     await this.initialize();
     const normalized: ResearchRequest = { ...request, query: request.query.trim() };
-    const requestHash = hash(stableJson(snapshot === undefined ? normalized : snapshot.snapshot_version === '3'
-      ? { request: normalized, snapshot_fingerprint: snapshot.snapshot_fingerprint }
+    const requestHash = hash(stableJson(snapshot === undefined ? normalized : snapshot.snapshot_version === '4' || snapshot.snapshot_version === '3'
+      ? { normalized_request: normalized, snapshot_fingerprint: snapshot.snapshot_fingerprint }
       : {
           request: normalized,
           plan_fingerprint: snapshot.plan_fingerprint,
@@ -64,7 +64,7 @@ export class JobStore {
           schema_version: SCHEMA_VERSION, job_id: jobId, state: 'queued', phase: 'queued', request: normalized,
           request_hash: requestHash, ...(idempotencyHash === undefined ? {} : { idempotency_hash: idempotencyHash }),
           created_at: now, updated_at: now, progress: { completed_units: 0 },
-          artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable', capabilities: 'unavailable' },
+          artifacts: { summary: 'unavailable', report: 'unavailable', sources: 'unavailable', capabilities: 'unavailable', multi_agent_research: 'unavailable' },
           artifact_revision: 0,
         };
         if (snapshot !== undefined) await this.atomicWrite(resolve(dir, 'execution.json'), JSON.stringify(snapshot, null, 2));
@@ -104,9 +104,11 @@ export class JobStore {
     if (rawRevision !== undefined && (!Number.isSafeInteger(rawRevision) || Number(rawRevision) < 0)) throw storeError('Research artifact revision is invalid.');
     const rawCapabilityState = (job.artifacts as unknown as { capabilities?: unknown })?.capabilities;
     if (rawCapabilityState !== undefined && rawCapabilityState !== 'unavailable' && rawCapabilityState !== 'checkpoint' && rawCapabilityState !== 'final') throw storeError('Research capability artifact state is invalid.');
+    const rawGmaState = (job.artifacts as unknown as { multi_agent_research?: unknown })?.multi_agent_research;
+    if (rawGmaState !== undefined && rawGmaState !== 'unavailable' && rawGmaState !== 'checkpoint' && rawGmaState !== 'final') throw storeError('Research multi-agent artifact state is invalid.');
     return {
       ...job,
-      artifacts: { ...job.artifacts, capabilities: job.artifacts?.capabilities ?? 'unavailable' },
+      artifacts: { ...job.artifacts, capabilities: job.artifacts?.capabilities ?? 'unavailable', multi_agent_research: job.artifacts?.multi_agent_research ?? 'unavailable' },
       artifact_revision: rawRevision === undefined ? 0 : Number(rawRevision),
     };
   }
@@ -126,10 +128,11 @@ export class JobStore {
   async mutate(jobId: string, update: (job: JobRecord) => JobRecord): Promise<JobRecord> {
     const dir = await this.safeExistingJobDir(jobId);
     return await this.withLock(resolve(dir, '.lock'), async () => {
+      const rawShape = JSON.parse(await readFile(resolve(dir, 'job.json'), 'utf8')) as Record<string, unknown>;
       const current = await this.read(jobId);
       const next = update(structuredClone(current));
       if (next.job_id !== jobId) throw storeError('Job identity is immutable.');
-      await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(next, null, 2));
+      await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(jobForPersistedShape(next, rawShape), null, 2));
       if (current.state !== next.state) await this.appendEvent(jobId, { type: 'state', from: current.state, state: next.state, at: next.updated_at });
       return next;
     });
@@ -165,6 +168,7 @@ export class JobStore {
     const dir = await this.safeExistingJobDir(jobId);
     return await this.withLock(resolve(dir, '.lock'), async () => {
       const current = await this.read(jobId);
+      const rawShape = JSON.parse(await readFile(resolve(dir, 'job.json'), 'utf8')) as Record<string, unknown>;
       if (TERMINAL.has(current.state)) return { job: current, accepted: false };
       if (current.state === 'cancelling') return { job: current, accepted: true };
 
@@ -179,7 +183,7 @@ export class JobStore {
         ...(TERMINAL.has(nextState) ? { completed_at: at } : {}),
       };
       await this.atomicWrite(resolve(dir, 'cancel.json'), JSON.stringify({ requested_at: at }));
-      await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(next, null, 2));
+      await this.atomicWrite(resolve(dir, 'job.json'), JSON.stringify(jobForPersistedShape(next, rawShape), null, 2));
       await this.appendEvent(jobId, { type: 'state', from: current.state, state: nextState, at });
       return { job: next, accepted: true };
     });
@@ -193,13 +197,35 @@ export class JobStore {
   async writeArtifacts(
     jobId: string,
     state: Exclude<ArtifactState, 'unavailable'>,
-    artifacts: { summary: unknown; report: string; sources: readonly unknown[]; capabilities?: readonly unknown[] },
+    artifacts: { summary: unknown; report: string; sources: readonly unknown[]; capabilities?: readonly unknown[]; multi_agent_research?: readonly unknown[] },
     checkpoint?: { phase: string; progress: JobRecord['progress'] },
   ): Promise<JobRecord> {
     const artifactDir = await this.safeArtifactDir(jobId);
     const jobDir = dirname(artifactDir);
     return await this.withLock(resolve(jobDir, '.lock'), async () => {
       const job = await this.read(jobId);
+      const rawMetadata = JSON.parse(await readFile(resolve(jobDir, 'job.json'), 'utf8')) as { artifacts?: Record<string, unknown> };
+      const artifactContract3 = rawMetadata.artifacts?.['multi_agent_research'] !== undefined;
+      const artifactContract2 = artifactContract3 || rawMetadata.artifacts?.['capabilities'] !== undefined
+        || Object.prototype.hasOwnProperty.call(rawMetadata, 'artifact_revision');
+      if (!artifactContract2) {
+        await this.atomicWrite(resolve(artifactDir, 'summary.json'), JSON.stringify(artifacts.summary, null, 2));
+        await this.atomicWrite(resolve(artifactDir, 'report.md'), artifacts.report);
+        await this.atomicWrite(resolve(artifactDir, 'sources.jsonl'), jsonLines(artifacts.sources));
+        const updatedAt = this.now().toISOString();
+        const legacyNext = {
+          ...job, ...(checkpoint === undefined ? {} : checkpoint), updated_at: updatedAt,
+          artifacts: { summary: state, report: state, sources: state, capabilities: 'unavailable' as const, multi_agent_research: 'unavailable' as const },
+          artifact_revision: 0,
+        };
+        const persisted = structuredClone(legacyNext) as unknown as Record<string, unknown>;
+        delete persisted['artifact_revision'];
+        const persistedArtifacts = persisted['artifacts'] as Record<string, unknown>;
+        delete persistedArtifacts['capabilities']; delete persistedArtifacts['multi_agent_research'];
+        await this.atomicWrite(resolve(jobDir, 'job.json'), JSON.stringify(persisted, null, 2));
+        await this.appendEvent(jobId, { type: 'artifacts', state, at: updatedAt });
+        return legacyNext;
+      }
       const revision = job.artifact_revision + 1;
       const revisionsDir = resolve(artifactDir, 'revisions');
       const revisionsInfo = await lstat(revisionsDir).catch((error) => { throw storeError('Research artifact revision directory is missing.', error); });
@@ -212,6 +238,7 @@ export class JobStore {
         await this.atomicWrite(resolve(temporary, 'report.md'), artifacts.report);
         await this.atomicWrite(resolve(temporary, 'sources.jsonl'), jsonLines(artifacts.sources));
         await this.atomicWrite(resolve(temporary, 'capabilities.jsonl'), jsonLines(artifacts.capabilities ?? []));
+        if (artifactContract3) await this.atomicWrite(resolve(temporary, 'multi_agent_research.jsonl'), jsonLines(artifacts.multi_agent_research ?? []));
         try { const handle = await open(temporary, 'r'); try { await handle.sync(); } finally { await handle.close(); } } catch {}
         await rename(temporary, published);
       } catch (error) {
@@ -220,9 +247,13 @@ export class JobStore {
       }
       const next: JobRecord = {
         ...job, ...(checkpoint === undefined ? {} : checkpoint), updated_at: this.now().toISOString(), artifact_revision: revision,
-        artifacts: { summary: state, report: state, sources: state, capabilities: state },
+        artifacts: artifactContract3
+          ? { summary: state, report: state, sources: state, capabilities: state, multi_agent_research: state }
+          : { summary: state, report: state, sources: state, capabilities: state, multi_agent_research: 'unavailable' },
       };
-      await this.atomicWrite(resolve(jobDir, 'job.json'), JSON.stringify(next, null, 2));
+      const persistedNext = structuredClone(next);
+      if (!artifactContract3) delete (persistedNext.artifacts as unknown as { multi_agent_research?: ArtifactState }).multi_agent_research;
+      await this.atomicWrite(resolve(jobDir, 'job.json'), JSON.stringify(persistedNext, null, 2));
       await this.appendEvent(jobId, { type: 'artifacts', revision, state, at: next.updated_at });
       return next;
     });
@@ -234,7 +265,7 @@ export class JobStore {
     if (state === 'unavailable') return { state, revision: job.artifact_revision, items: [] };
     const artifactDir = await this.safeArtifactDir(jobId);
     const selectedDir = job.artifact_revision === 0 ? artifactDir : await this.safeRevisionDir(jobId, job.artifact_revision);
-    const path = resolve(selectedDir, artifact === 'summary' ? 'summary.json' : artifact === 'report' ? 'report.md' : artifact === 'sources' ? 'sources.jsonl' : 'capabilities.jsonl');
+    const path = resolve(selectedDir, artifact === 'summary' ? 'summary.json' : artifact === 'report' ? 'report.md' : artifact === 'sources' ? 'sources.jsonl' : artifact === 'capabilities' ? 'capabilities.jsonl' : 'multi_agent_research.jsonl');
     const raw = await readFile(path, 'utf8');
     if (artifact === 'summary') return { state, revision: job.artifact_revision, items: [JSON.parse(raw) as unknown] };
     if (artifact === 'report') return { state, revision: job.artifact_revision, items: chunkText(raw, 4000) };
@@ -377,3 +408,13 @@ function hash(value: string): string { return createHash('sha256').update(value)
 function chunkText(value: string, size: number): string[] { const chunks: string[] = []; for (let i = 0; i < value.length; i += size) chunks.push(value.slice(i, i + size)); return chunks }
 function jsonLines(items: readonly unknown[]): string { return items.map((item) => JSON.stringify(item)).join('\n') + (items.length > 0 ? '\n' : '') }
 function storeError(message: string, cause?: unknown): NbSearchError { return new NbSearchError('JOB_STORE_ERROR', message, false, undefined, cause === undefined ? undefined : { cause }) }
+function jobForPersistedShape(job: JobRecord, rawShape: Record<string, unknown>): Record<string, unknown> {
+  const persisted = structuredClone(job) as unknown as Record<string, unknown>;
+  const rawArtifacts = isRecord(rawShape['artifacts']) ? rawShape['artifacts'] : {};
+  const artifacts = persisted['artifacts'] as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(rawArtifacts, 'capabilities')) delete artifacts['capabilities'];
+  if (!Object.prototype.hasOwnProperty.call(rawArtifacts, 'multi_agent_research')) delete artifacts['multi_agent_research'];
+  if (!Object.prototype.hasOwnProperty.call(rawShape, 'artifact_revision')) delete persisted['artifact_revision'];
+  return persisted;
+}
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }

@@ -103,13 +103,13 @@ describe('L4 answer and research-light capabilities', () => {
     expect(JSON.stringify(result)).not.toContain('gateway answer must be ignored');
   });
 
-  it('exposes four revision-bound artifacts and safe capability readiness without a network probe', async () => {
+  it('exposes five revision-bound artifacts and safe capability readiness without a network probe', async () => {
     const transport = new RoutingTransport();
     const compositionValue = composition(transport);
     const capabilities = await compositionValue.runtime.capabilities();
     expect(transport.requests).toHaveLength(0);
     expect(capabilities.search).toEqual({ max_results: 20, default_timeout_ms: 20_000, max_timeout_ms: 120_000 });
-    expect(capabilities.research.artifacts).toEqual(['summary', 'report', 'sources', 'capabilities']);
+    expect(capabilities.research.artifacts).toEqual(['summary', 'report', 'sources', 'capabilities', 'multi_agent_research']);
     expect(capabilities.capability_routes).toHaveLength(2);
     expect(JSON.stringify(capabilities)).not.toMatch(/tavily-secret|exa-secret|api\.tavily\.com|api\.exa\.ai/);
   });
@@ -185,7 +185,7 @@ class RoutingTransport implements HttpTransport {
 
 function composition(transport: HttpTransport, config: import('../src/config-schema.ts').CanonicalConfigPatch = {}) {
   const home = join(tmpdir(), `nb-search-l4-${String(Math.random()).slice(2)}`); roots.push(home);
-  return createRuntimeComposition({ NB_SEARCH_HOME: home, NB_SEARCH_EXA_API_KEY: 'exa-secret', NB_SEARCH_TAVILY_API_KEY: 'tavily-secret' }, {
+  return createRuntimeComposition({ NB_SEARCH_HOME: home, NB_SEARCH_EXA_API_KEY: 'exa-secret', NB_SEARCH_TAVILY_API_KEY: 'tavily-secret', NB_SEARCH_GROK_MULTI_AGENT_ENABLED: 'false' }, {
     transport, launcher: { async launch() {} }, now: () => new Date('2026-08-30T00:00:00.000Z'),
     config: { ...config, provider_instances: { 'grok.default': { enabled: false }, ...config.provider_instances } },
   });

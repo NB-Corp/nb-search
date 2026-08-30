@@ -21,7 +21,7 @@ export interface SearchServiceOptions {
   routingLocked?: boolean;
   executor?: PlanExecutor;
   portsByInstance?: ReadonlyMap<string, ProviderPorts>;
-  planFactory?: (routing: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness }) => SearchPlan;
+  planFactory?: (routing: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness; execution_surface?: 'sync' | 'research-job' }) => SearchPlan;
 }
 
 export class SearchService {
@@ -48,7 +48,9 @@ export class SearchService {
     const query = request.query.trim();
     if (query.length < 1 || query.length > 4000) throw invalidInput('query must contain 1 to 4000 characters.');
     const maxResults = boundedInteger(request.max_results ?? 8, 1, 20, 'max_results');
-    const budgetMs = boundedInteger(request.timeout_ms ?? 20_000, 1000, 120_000, 'timeout_ms');
+    const publicBudgetMs = boundedInteger(request.timeout_ms ?? 20_000, 1000, 120_000, 'timeout_ms');
+    const budgetMs = executionContext?.scope === 'research-job' && executionContext.operation_budget_ms !== undefined
+      ? boundedInteger(executionContext.operation_budget_ms, 1000, 3_600_000, 'operation_budget_ms') : publicBudgetMs;
     const requestId = operationRequestId ?? this.requestId();
     const startedAt = this.now();
     const locked = this.options.routingLocked === true;
@@ -59,7 +61,7 @@ export class SearchService {
       routedRequest.freshness,
       routedRequest.profile ?? this.options.defaultProfileId ?? this.plan.profile_id,
     );
-    const routing = { profile, ...(routedRequest.intent === undefined ? {} : { intent: routedRequest.intent }), ...(routedRequest.freshness === undefined ? {} : { freshness: routedRequest.freshness }) };
+    const routing = { profile, ...(routedRequest.intent === undefined ? {} : { intent: routedRequest.intent }), ...(routedRequest.freshness === undefined ? {} : { freshness: routedRequest.freshness }), execution_surface: executionContext?.scope ?? 'sync' };
     const plan = this.options.planFactory?.(routing) ?? this.plans.get(profile) ?? (profile === this.plan.profile_id ? this.plan : undefined);
     if (plan === undefined) throw invalidInput(`profile ${profile} is not configured.`);
     if (!hasSelectedPlanWork(plan)) {
@@ -67,6 +69,7 @@ export class SearchService {
         new NbSearchError('CONFIGURATION_ERROR', 'No search provider is configured.').toPublic()));
     }
 
+    const completedBefore = new Set(executionContext?.completed_once_per_job_invocation_ids ?? []);
     const execution = await this.executor.execute(plan, {
       query, limit: maxResults, profile, request_time_utc: startedAt.toISOString(),
       ...(routedRequest.intent === undefined ? {} : { intent: routedRequest.intent }),
@@ -80,10 +83,11 @@ export class SearchService {
     const results = mergeResults(outcomes, maxResults);
     const augmentations = projectAugmentations(execution, plan);
     executionContext?.capture_augmentations?.(structuredClone(augmentations ?? []));
+    executionContext?.capture_capabilities?.(structuredClone(projectCapabilityCaptures(execution)));
     const callerCancelled = execution.caller_cancelled;
     const deadlineExceeded = execution.deadline_exceeded;
-    const state = deriveState(results, outcomes, execution.omissions, callerCancelled, deadlineExceeded);
-    const warnings = capabilityWarnings(augmentations, outcomes, state, deadlineExceeded, callerCancelled);
+    const state = deriveState(results, outcomes, execution.omissions, callerCancelled, deadlineExceeded, plan, completedBefore);
+    const warnings = capabilityWarnings(augmentations, outcomes, execution.omissions, state, deadlineExceeded, callerCancelled);
     const terminalError = callerCancelled && state === 'cancelled'
       ? new NbSearchError('CANCELLED', 'Search was cancelled.').toPublic()
       : deadlineExceeded && (state === 'partial' || state === 'timed_out')
@@ -98,6 +102,14 @@ export class SearchService {
               : new NbSearchError('CAPABILITY_UNAVAILABLE', 'The requested capability is unavailable.').toPublic())
           : undefined;
     return compactEnvelope(baseEnvelope(requestId, query, state, startedAt, this.now(), budgetMs, results, attempts, warnings, terminalError, augmentations));
+  }
+
+  researchOperationBudgetMs(operation: number, remainingMs: number): number {
+    if (operation > 0) return Math.min(45_000, remainingMs);
+    const gmaTimeout = this.plan.stages.flatMap((stage) => stage.invocations)
+      .filter((item) => item.capability === 'multi-agent-research')
+      .reduce((maximum, item) => Math.max(maximum, item.timeout_ms), 0);
+    return Math.min(gmaTimeout > 0 ? Math.max(120_000, gmaTimeout) : 120_000, remainingMs);
   }
 
 }
@@ -179,6 +191,8 @@ function deriveState(
   omissions: readonly import('./planner.ts').PlanOmission[],
   callerCancelled: boolean,
   deadlineExceeded: boolean,
+  plan: SearchPlan,
+  completedBefore: ReadonlySet<string>,
 ): SearchState {
   if (callerCancelled) return 'cancelled';
   const required = outcomes.filter((item) => (item.invocation.failure_policy ?? 'affects-state') === 'affects-state');
@@ -187,9 +201,19 @@ function deriveState(
   const answerUnsupported = answer?.state === 'succeeded' && answer.results.every((item) => normalizeUrl(item.url) === undefined);
   const requiredOmissions = omissions.filter((item) => item.failure_policy === 'affects-state');
   const usefulAnswer = answer?.state === 'succeeded';
+  const usefulGma = required.some((item) => item.invocation.capability === 'multi-agent-research'
+    && (item.state === 'succeeded' || item.state === 'partial'));
   const usefulRetrieval = required.some((item) => item.invocation.capability === 'retrieval' && item.results.some((result) => normalizeUrl(result.url) !== undefined));
-  if (deadlineExceeded) return results.length > 0 || usefulAnswer ? 'partial' : 'timed_out';
-  if (results.length > 0 || usefulAnswer) return failedFinal.length > 0 || requiredOmissions.length > 0 || answerUnsupported || (usefulAnswer && !usefulRetrieval) ? 'partial' : 'succeeded';
+  const compatibilityGma = plan.routing?.multi_agent_route === 'replacement' || plan.routing?.multi_agent_route === 'overlay';
+  const selectedGmaIds = new Set([
+    ...plan.stages.flatMap((stage) => stage.invocations.filter((item) => item.capability === 'multi-agent-research').map((item) => item.invocation_id)),
+    ...(plan.omissions ?? []).filter((item) => item.capability === 'multi-agent-research').map((item) => item.invocation_id),
+  ]);
+  const gmaRequiredThisOperation = compatibilityGma && [...selectedGmaIds].some((id) => !completedBefore.has(id));
+  const gmaSatisfied = required.some((item) => item.invocation.capability === 'multi-agent-research' && item.state === 'succeeded');
+  if (deadlineExceeded) return results.length > 0 || usefulAnswer || usefulGma ? 'partial' : 'timed_out';
+  if (results.length > 0 || usefulAnswer || usefulGma) return failedFinal.length > 0 || requiredOmissions.length > 0
+    || answerUnsupported || (usefulAnswer && !usefulRetrieval) || (gmaRequiredThisOperation && (!gmaSatisfied || !usefulRetrieval)) ? 'partial' : 'succeeded';
   if (required.length > 0 && required.every((item) => item.state === 'empty') && requiredOmissions.length === 0) return 'empty';
   if (failedFinal.length > 0 && failedFinal.every((item) => item.state === 'timed_out')) return 'timed_out';
   return 'failed';
@@ -225,6 +249,29 @@ function projectAugmentations(execution: import('./planner.ts').PlanExecution, p
   return items.length === 0 ? undefined : items;
 }
 
+function projectCapabilityCaptures(execution: import('./planner.ts').PlanExecution): import('./types.ts').CapabilityCapture[] {
+  const captures: import('./types.ts').CapabilityCapture[] = [];
+  for (const outcome of execution.outcomes) {
+    if (outcome.invocation.capability !== 'multi-agent-research') continue;
+    captures.push({
+      capability: 'multi-agent-research', provider_id: outcome.invocation.provider_id,
+      provider_instance_id: outcome.invocation.provider_instance_id,
+      ...(outcome.invocation.credential_slot_id === undefined ? {} : { credential_slot_id: outcome.invocation.credential_slot_id }),
+      invocation_id: outcome.invocation.invocation_id, failure_policy: outcome.invocation.failure_policy ?? 'affects-state',
+      attempt_count: outcome.attempts.length, state: outcome.state,
+      ...(outcome.result?.capability === 'multi-agent-research' ? { result: outcome.result } : {}),
+      ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+  }
+  for (const omission of execution.omissions) if (omission.capability === 'multi-agent-research') captures.push({
+    capability: 'multi-agent-research', provider_id: omission.provider_id, provider_instance_id: omission.provider_instance_id,
+    ...(omission.credential_slot_id === undefined ? {} : { credential_slot_id: omission.credential_slot_id }),
+    invocation_id: omission.invocation_id, failure_policy: omission.failure_policy, attempt_count: 0, state: 'unavailable',
+    error: new NbSearchError('CAPABILITY_UNAVAILABLE', 'The selected capability is unavailable.', false, omission.provider_id).toPublic(),
+  });
+  return captures;
+}
+
 function providerResultSupportingUrls(results: readonly ProviderResult[]): SupportingUrl[] {
   const seen = new Set<string>(); const items: SupportingUrl[] = [];
   for (const result of results) { const url = normalizeUrl(result.url); if (url === undefined || seen.has(url)) continue; seen.add(url); const title = truncateUtf8(cleanText(result.title), 512); items.push({ url, ...(title === '' ? {} : { title }), source: 'provider-result' }); if (items.length >= 5) break; }
@@ -234,6 +281,7 @@ function citationStatus(): { claim_linked_citations: false; evidence_map_availab
 function capabilityWarnings(
   augmentations: readonly CapabilityAugmentation[] | undefined,
   outcomes: readonly InvocationOutcome[],
+  omissions: readonly import('./planner.ts').PlanOmission[],
   state: SearchState,
   deadlineExceeded: boolean,
   callerCancelled: boolean,
@@ -247,6 +295,11 @@ function capabilityWarnings(
     else if (item.capability === 'answer' && item.state === 'succeeded' && item.result.delivery === 'inline' && item.result.value.supporting_urls.length === 0) warnings.push('The generated answer has no same-operation supporting URL.');
     else if (item.capability === 'research-light' && item.state !== 'succeeded') warnings.push('Optional research-light augmentation did not complete successfully.');
   }
+  for (const outcome of outcomes) if (outcome.invocation.capability === 'multi-agent-research') {
+    if (outcome.state === 'partial') warnings.push('Multi-agent research completed with incomplete answer or evidence structure.');
+    else if (outcome.state !== 'succeeded') warnings.push('The requested multi-agent research capability did not complete successfully.');
+  }
+  if (omissions.some((item) => item.capability === 'multi-agent-research')) warnings.push('The requested multi-agent research capability did not complete successfully.');
   return [...new Set(warnings)];
 }
 

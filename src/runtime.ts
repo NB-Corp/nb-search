@@ -29,7 +29,7 @@ interface RuntimeDependencies {
   search: SearchService;
   research: ResearchService;
   requestId: () => string;
-  providerConfigured: Readonly<Record<'exa' | 'tavily', boolean> & Partial<Record<'grok', boolean>>>;
+  providerConfigured: Readonly<Record<'exa' | 'tavily', boolean> & Partial<Record<'grok' | 'grok-multi-agent', boolean>>>;
   retentionHours: number;
   providerInstances?: CapabilityEnvelope['providers']['instances'];
   profiles?: CapabilityEnvelope['profiles'];
@@ -90,13 +90,15 @@ export class NbSearchRuntimeImpl implements NbSearchRuntime {
         max_duration_ms: 3_600_000,
         detached_worker: true,
         guaranteed_process_survival: false,
-        artifacts: ['summary', 'report', 'sources', 'capabilities'],
+        artifacts: ['summary', 'report', 'sources', 'capabilities', 'multi_agent_research'],
         capability_once_per_job: true,
+        multi_agent_async_only: true,
       },
       providers: {
         exa: { configured: this.dependencies.providerConfigured.exa },
         tavily: { configured: this.dependencies.providerConfigured.tavily },
         grok: { configured: this.dependencies.providerConfigured.grok === true },
+        'grok-multi-agent': { configured: this.dependencies.providerConfigured['grok-multi-agent'] === true },
         ...(this.dependencies.providerInstances === undefined ? {} : { instances: this.dependencies.providerInstances }),
       },
       ...(this.dependencies.profiles === undefined ? {} : { profiles: this.dependencies.profiles }),

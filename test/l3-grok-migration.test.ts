@@ -349,7 +349,7 @@ describe('L3 Grok retrieval migration', () => {
     const snapshot = createExecutionSnapshot(plan, config.resolved, config.registry, { profile: 'default', freshness: 'pm' });
     const serialized = JSON.stringify(snapshot);
     expect(snapshot).toMatchObject({
-      snapshot_version: '3', artifact_contract_version: '2', routing: { profile: 'default', freshness: 'pm' },
+      snapshot_version: '4', artifact_contract_version: '3', routing: { profile: 'default', freshness: 'pm' },
       provider_instances: [{ provider_instance_id: 'grok.default', config: {
         provider_id: 'grok', base_url: 'https://snapshot.test/v1', options: { model: 'model-A' }, timeout_ms: 30_000,
       } }],

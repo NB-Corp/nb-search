@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
@@ -8,7 +8,7 @@ import type { OperationContext } from './contracts.ts';
 import { isTerminalState, JobStore } from './job-store.ts';
 import { Logger, queryFingerprint } from './logging.ts';
 import type {
-  ArtifactState, JobRecord, JobState, ResearchArtifact, ResearchCancelEnvelope, ResearchListEnvelope, ResearchReadEnvelope,
+  ArtifactState, CapabilityAugmentation, CapabilityCapture, JobRecord, JobState, MultiAgentResearchArtifactItem, ResearchArtifact, ResearchCancelEnvelope, ResearchListEnvelope, ResearchReadEnvelope,
   Freshness, ProfileId, ResearchRequest, ResearchStartEnvelope, SearchEnvelope, SearchIntent, SearchProfileId, Searcher, SearchResult,
 } from './types.ts';
 import { MANAGEMENT_TEXT_MAX_BYTES, RESEARCH_PAGE_MAX_BYTES, SCHEMA_VERSION } from './types.ts';
@@ -111,7 +111,9 @@ export class ResearchService {
     const content = await this.store.readArtifact(input.job_id, artifact);
     const offset = decodeCursor(input.cursor, artifact, content.state, content.revision);
     const selected = content.items.slice(offset, offset + pageSize);
-    let bounded = selected.map((item) => boundItem(item, RESEARCH_PAGE_MAX_BYTES - 2048));
+    let bounded = artifact === 'multi_agent_research'
+      ? selected.map((item) => ({ item, truncated: false, originalBytes: jsonBytes(item), boundedBytes: jsonBytes(item) }))
+      : selected.map((item) => boundItem(item, RESEARCH_PAGE_MAX_BYTES - 2048));
     let envelope = researchReadEnvelope(
       operationRequestId ?? this.requestId(), job, artifact, content.state, content.revision, offset, content.items.length, bounded,
     );
@@ -122,6 +124,7 @@ export class ResearchService {
       );
     }
     if (jsonBytes(envelope) > RESEARCH_PAGE_MAX_BYTES && bounded.length === 1) {
+      if (artifact === 'multi_agent_research') throw new NbSearchError('INTERNAL', 'Multi-agent research artifact item exceeds the page bound.');
       const empty = researchReadEnvelope(
         envelope.request_id, job, artifact, content.state, content.revision, offset, content.items.length, [],
       );
@@ -185,6 +188,7 @@ export class ResearchRunner {
       const operations: SearchEnvelope[] = [];
       const completedOnce = new Set<string>();
       const collected = new Map<string, SearchResult>();
+      const capabilityCaptures: CapabilityCapture[] = [];
       let deadlineReached = false;
 
       for (let operation = 0; operation < operationLimit && collected.size < job.request.max_sources; operation += 1) {
@@ -192,10 +196,13 @@ export class ResearchRunner {
         const remainingMs = Math.floor(deadline - this.monotonicNow());
         if (remainingMs < 1000) { deadlineReached = true; break; }
         let retainedAugmentations: SearchEnvelope['augmentations'];
+        let retainedCapabilities: readonly CapabilityCapture[] = [];
+        const operationBudgetMs = this.searcher.researchOperationBudgetMs?.(operation, remainingMs)
+          ?? Math.min(operation === 0 && hasCapabilityRoute(job.request) ? 120_000 : 45_000, remainingMs);
         const result = await this.searcher.search({
           query: researchOperationQuery(job.request.query, operation),
           max_results: Math.min(20, job.request.max_sources - collected.size),
-          timeout_ms: Math.min(operation === 0 && hasCapabilityRoute(job.request) ? 120_000 : 45_000, remainingMs),
+          ...(this.searcher.researchOperationBudgetMs === undefined ? { timeout_ms: operationBudgetMs } : {}),
           signal: controller.signal,
           ...(job.request.profile === undefined ? {} : { profile: job.request.profile }),
           ...(job.request.intent === undefined ? {} : { intent: job.request.intent }),
@@ -203,13 +210,17 @@ export class ResearchRunner {
         }, undefined, {
           scope: 'research-job', completed_once_per_job_invocation_ids: completedOnce,
           capture_augmentations: (items) => { retainedAugmentations = [...structuredClone(items)]; },
+          capture_capabilities: (items) => { retainedCapabilities = structuredClone(items); },
+          research_brief: job.request.query,
+          operation_budget_ms: operationBudgetMs,
         });
+        for (const capture of retainedCapabilities) if (!capabilityCaptures.some((item) => item.invocation_id === capture.invocation_id)) capabilityCaptures.push(capture);
         if (retainedAugmentations !== undefined && retainedAugmentations.length > 0) result.augmentations = retainedAugmentations;
         operations.push(result);
         mergeResearchResults(collected, result.results, job.request.max_sources);
         deadlineReached = this.monotonicNow() >= deadline;
         const checkpoint = collectionEnvelope(job, operations, [...collected.values()], started, this.monotonicNow(), deadlineReached);
-        await this.store.writeArtifacts(jobId, 'checkpoint', evidenceArtifacts(job, checkpoint), {
+        job = await this.store.writeArtifacts(jobId, 'checkpoint', evidenceArtifacts(job, checkpoint, capabilityCaptures, job.artifact_revision + 1), {
           phase: 'collecting',
           progress: { completed_units: collected.size, total_units: job.request.max_sources },
         });
@@ -219,7 +230,7 @@ export class ResearchRunner {
 
       if (await this.store.cancelRequested(jobId)) return await this.finishCancelled(jobId);
       const result = collectionEnvelope(job, operations, [...collected.values()], started, this.monotonicNow(), deadlineReached);
-      await this.store.writeArtifacts(jobId, 'final', evidenceArtifacts(job, result));
+      job = await this.store.writeArtifacts(jobId, 'final', evidenceArtifacts(job, result, capabilityCaptures, job.artifact_revision + 1));
       const terminal = researchTerminal(result);
       return await this.store.transition(jobId, terminal, {
         phase: terminal === 'succeeded' || terminal === 'partial' ? 'complete' : terminal,
@@ -352,12 +363,29 @@ function collectionEnvelope(
   };
 }
 
-function evidenceArtifacts(job: JobRecord, result: SearchEnvelope) {
+function evidenceArtifacts(
+  job: JobRecord,
+  result: SearchEnvelope,
+  captures: readonly CapabilityCapture[] = [],
+  artifactRevision = job.artifact_revision + 1,
+) {
+  const gma = projectMultiAgentResearchArtifact(captures[0]);
+  const capabilityOutcomes: CapabilityAugmentation[] = [
+    ...(result.augmentations ?? []),
+    ...projectMultiAgentResearchOutcome(captures[0], gma.items, artifactRevision),
+  ];
   const summary = {
     kind: 'bounded_evidence_report', query: job.request.query, state: result.state,
     source_count: result.results.length, provider_attempts: result.attempts, warnings: result.warnings,
-    capability_outcomes: (result.augmentations ?? []).map((item) => ({ capability: item.capability, state: item.state, provider_id: item.provider_id, provider_instance_id: item.provider_instance_id, invocation_id: item.invocation_id, failure_policy: item.failure_policy })),
-    provider_synthesis_available: (result.augmentations ?? []).some((item) => item.state === 'succeeded'),
+    capability_outcomes: capabilityOutcomes.map((item) => ({
+      capability: item.capability, state: item.state, provider_id: item.provider_id,
+      provider_instance_id: item.provider_instance_id, invocation_id: item.invocation_id, failure_policy: item.failure_policy,
+      ...(item.capability === 'multi-agent-research' && (item.state === 'succeeded' || item.state === 'partial')
+        ? { artifact_available: true, result_count: item.preview.result_count, claim_count: item.preview.claim_count }
+        : item.capability === 'multi-agent-research' ? { artifact_available: false } : {}),
+    })),
+    provider_synthesis_available: capabilityOutcomes.some((item) => item.state === 'succeeded'
+      || (item.capability === 'multi-agent-research' && item.state === 'partial' && item.preview.answer_available)),
     synthesis_claimed: false,
   };
   const lines = [
@@ -365,7 +393,75 @@ function evidenceArtifacts(job: JobRecord, result: SearchEnvelope) {
     'This is a deterministic evidence collection report. Inspect the cited sources before relying on material claims.', '',
     ...result.results.flatMap((item, index) => [`## ${String(index + 1)}. ${item.title || item.url}`, item.url, item.snippet, '']),
   ];
-  return { summary, report: lines.join('\n'), sources: result.results, capabilities: result.augmentations ?? [] };
+  return { summary, report: lines.join('\n'), sources: result.results, capabilities: capabilityOutcomes, multi_agent_research: gma.items };
+}
+
+function projectMultiAgentResearchArtifact(capture: CapabilityCapture | undefined): { items: MultiAgentResearchArtifactItem[] } {
+  const result = capture?.result;
+  if (capture === undefined || result === undefined || (capture.state !== 'succeeded' && capture.state !== 'partial') || result.completeness === 'empty') return { items: [] };
+  const evidenceMapAvailable = result.trace.claims.length > 0;
+  const items: MultiAgentResearchArtifactItem[] = [{
+    schema_version: 1, kind: 'metadata', capability: 'multi-agent-research', provider_id: 'grok-multi-agent',
+    provider_instance_id: capture.provider_instance_id, invocation_id: capture.invocation_id, role: 'primary_synthesis',
+    model: result.model, reasoning_effort: result.reasoning_effort, api_mode: 'chat_completions',
+    expected_agent_count: result.expected_agent_count, backend_trace_observable: false, claim_linked_citations: false,
+    evidence_map_available: evidenceMapAvailable, evidence_linkage: 'model_declared_url_matched', semantic_verification: false,
+  }];
+  if (result.answer !== undefined) items.push({
+    schema_version: 1, kind: 'answer', text: result.answer, claim_linked_citations: false,
+    evidence_map_available: evidenceMapAvailable, evidence_linkage: 'model_declared_url_matched', semantic_verification: false,
+  });
+  result.results.forEach((item, index) => items.push({
+    schema_version: 1, kind: 'result', index, title: item.title, url: item.url,
+    ...(item.snippet === undefined ? {} : { snippet: item.snippet }), ...(item.published_at === undefined ? {} : { published_at: item.published_at }),
+    source_type: item.metadata.source_type, supports_claim_ids: item.metadata.supports_claim_ids,
+  }));
+  result.trace.angles.forEach((text, index) => items.push({ schema_version: 1, kind: 'angle', index, text }));
+  result.trace.claims.forEach((item, index) => items.push({ schema_version: 1, kind: 'claim', index, ...item }));
+  result.trace.conflicts.forEach((item, index) => items.push({ schema_version: 1, kind: 'conflict', index, ...item }));
+  result.trace.follow_up_queries.forEach((text, index) => items.push({ schema_version: 1, kind: 'follow_up_query', index, text }));
+  items.push({
+    schema_version: 1, kind: 'summary', completeness: result.completeness as 'complete' | 'partial',
+    result_count: result.results.length, angle_count: result.trace.angles.length, claim_count: result.trace.claims.length,
+    conflict_count: result.trace.conflicts.length, follow_up_query_count: result.trace.follow_up_queries.length,
+    source_mix: result.trace.source_mix, linked_evidence_count: result.trace.linked_evidence_count, omissions: result.trace.omissions,
+  });
+  for (const item of items) if (jsonBytes(item) > 18_000) throw new NbSearchError('INTERNAL', 'Multi-agent research artifact record exceeds the publication bound.');
+  return { items };
+}
+
+function projectMultiAgentResearchOutcome(
+  capture: CapabilityCapture | undefined,
+  items: readonly MultiAgentResearchArtifactItem[],
+  artifactRevision: number,
+): CapabilityAugmentation[] {
+  if (capture === undefined) return [];
+  const base = {
+    capability: 'multi-agent-research' as const, provider_id: capture.provider_id,
+    provider_instance_id: capture.provider_instance_id, ...(capture.credential_slot_id === undefined ? {} : { credential_slot_id: capture.credential_slot_id }),
+    invocation_id: capture.invocation_id, failure_policy: capture.failure_policy, attempt_count: capture.attempt_count,
+  };
+  const result = capture.result;
+  if ((capture.state === 'succeeded' || capture.state === 'partial') && result !== undefined && result.completeness !== 'empty') {
+    const bytes = Buffer.from(jsonLines(items), 'utf8');
+    return [{
+      ...base, state: capture.state,
+      result: { delivery: 'artifact', artifact: {
+        artifact_id: 'multi_agent_research', artifact_revision: artifactRevision, capability: 'multi-agent-research',
+        artifact_kind: 'multi_agent_research', media_type: 'application/x-ndjson', byte_length: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      } },
+      preview: {
+        answer_available: result.answer !== undefined, result_count: result.results.length, angle_count: result.trace.angles.length,
+        claim_count: result.trace.claims.length, conflict_count: result.trace.conflicts.length,
+        follow_up_query_count: result.trace.follow_up_queries.length, expected_agent_count: result.expected_agent_count,
+        backend_trace_observable: false, evidence_map_available: result.trace.claims.length > 0,
+        evidence_linkage: 'model_declared_url_matched', semantic_verification: false, omissions: result.trace.omissions,
+      },
+    }];
+  }
+  if (capture.state === 'empty' || result?.completeness === 'empty') return [{ ...base, state: 'empty' }];
+  return [{ ...base, state: capture.state as 'unavailable' | 'failed' | 'timed_out' | 'cancelled', error: capture.error ?? new NbSearchError('CAPABILITY_UNAVAILABLE', 'The selected capability is unavailable.').toPublic() }];
 }
 function researchTerminal(result: SearchEnvelope): Extract<JobState, 'succeeded' | 'partial' | 'failed' | 'timed_out' | 'cancelled'> {
   if (result.state === 'succeeded' || result.state === 'empty') return 'succeeded';
@@ -619,6 +715,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function jsonBytes(value: unknown): number { return Buffer.byteLength(JSON.stringify(value) ?? 'null', 'utf8') }
+function jsonLines(items: readonly unknown[]): string { return items.map((item) => JSON.stringify(item)).join('\n') + (items.length > 0 ? '\n' : '') }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 const ALL_STATES = new Set<JobState>(['queued', 'running', 'cancelling', 'succeeded', 'partial', 'failed', 'timed_out', 'cancelled']);
 function assertActive(signal: AbortSignal | undefined): void {

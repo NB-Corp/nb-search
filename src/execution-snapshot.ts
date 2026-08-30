@@ -9,34 +9,37 @@ import { REGISTRY_SCHEMA_VERSION, type ProviderDescriptor, type ProviderRegistry
 import type { ProviderCapability } from './types.ts';
 import { FRESHNESS_VALUES, SEARCH_INTENTS, type Freshness, type ProfileId, type SearchIntent } from './types.ts';
 
-export const EXECUTION_SNAPSHOT_VERSION = '3' as const;
-export const PREVIOUS_EXECUTION_SNAPSHOT_VERSION = '2' as const;
+export const EXECUTION_SNAPSHOT_VERSION = '4' as const;
+export const PREVIOUS_EXECUTION_SNAPSHOT_VERSION = '3' as const;
+export const RETRIEVAL_EXECUTION_SNAPSHOT_VERSION = '2' as const;
 export const LEGACY_EXECUTION_SNAPSHOT_VERSION = '1' as const;
-export const ARTIFACT_CONTRACT_VERSION = '2' as const;
+export const ARTIFACT_CONTRACT_VERSION = '3' as const;
 export const M1_REGISTRY_REVISION = 'registry-1-a66d6be4db9ec72f' as const;
 export const M1_REGISTRY_FINGERPRINT = 'a66d6be4db9ec72f6a995019da3253fb14f835cbbd3b5401969b12091f7d57f4' as const;
 
 export interface SnapshotProviderInstance {
   provider_instance_id: string;
   config: ProviderInstanceConfig;
+  connection_origin?: { kind: 'configured' } | { kind: 'inherited'; provider_instance_id: 'grok.default' };
 }
 
 export interface SnapshotCredentialBinding {
   credential_slot_id: string;
   provider_id: string;
   worker_grant: WorkerGrant;
+  inherited_from_slot_id?: string;
 }
 
 export interface ExecutionSnapshot {
-  snapshot_version: typeof EXECUTION_SNAPSHOT_VERSION | typeof PREVIOUS_EXECUTION_SNAPSHOT_VERSION | typeof LEGACY_EXECUTION_SNAPSHOT_VERSION;
-  artifact_contract_version: typeof ARTIFACT_CONTRACT_VERSION | '1';
+  snapshot_version: typeof EXECUTION_SNAPSHOT_VERSION | typeof PREVIOUS_EXECUTION_SNAPSHOT_VERSION | typeof RETRIEVAL_EXECUTION_SNAPSHOT_VERSION | typeof LEGACY_EXECUTION_SNAPSHOT_VERSION;
+  artifact_contract_version: typeof ARTIFACT_CONTRACT_VERSION | '2' | '1';
   plan: SearchPlan;
   plan_fingerprint: string;
   config_revision: string;
   config_fingerprint: string;
   registry_revision: string;
   registry_fingerprint: string;
-  routing: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness };
+  routing: { profile: ProfileId; intent?: SearchIntent; freshness?: Freshness; execution_surface?: 'sync' | 'research-job'; multi_agent_route?: 'none' | 'replacement' | 'overlay' | 'explicit' };
   provider_instances: readonly SnapshotProviderInstance[];
   credential_bindings: readonly SnapshotCredentialBinding[];
   selected_provider_descriptors?: readonly SelectedProviderDescriptor[];
@@ -63,7 +66,13 @@ export function createExecutionSnapshot(
   const providerInstances = [...selectedIds].sort().map((instanceId): SnapshotProviderInstance => {
     const config = resolved.config.provider_instances[instanceId];
     if (config === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Planned provider instance ${instanceId} is missing.`);
-    return { provider_instance_id: instanceId, config: structuredClone(config) };
+    const endpointOwner = resolved.provenance.find((item) => item.path === `provider_instances.${instanceId}.base_url`)?.source;
+    return {
+      provider_instance_id: instanceId, config: structuredClone(config),
+      ...(instanceId !== 'grok-multi-agent.default' ? {} : endpointOwner === 'compatibility:inherited-grok-endpoint'
+        ? { connection_origin: { kind: 'inherited' as const, provider_instance_id: 'grok.default' as const } }
+        : { connection_origin: { kind: 'configured' as const } }),
+    };
   });
   const executableInstanceIds = new Set(plan.stages.flatMap((stage) => stage.invocations.map((item) => item.provider_instance_id)));
   const selectedSlots = new Set(providerInstances.flatMap((item) => !executableInstanceIds.has(item.provider_instance_id) || item.config.credential_slot_id === undefined ? [] : [item.config.credential_slot_id]));
@@ -77,6 +86,7 @@ export function createExecutionSnapshot(
       credential_slot_id: slotId,
       provider_id: slot.provider_id,
       worker_grant: structuredClone(binding.worker_grant),
+      ...(binding.inherited_from_slot_id === undefined ? {} : { inherited_from_slot_id: binding.inherited_from_slot_id }),
     };
   });
   const selectedDescriptors = selectedProviderDescriptors(plan, registry);
@@ -94,6 +104,8 @@ export function createExecutionSnapshot(
       profile: routing.profile ?? plan.profile_id,
       ...(routing.intent === undefined ? {} : { intent: routing.intent }),
       ...(routing.freshness === undefined ? {} : { freshness: routing.freshness }),
+      execution_surface: plan.routing?.execution_surface ?? 'research-job',
+      multi_agent_route: plan.routing?.multi_agent_route ?? 'none',
     },
     provider_instances: providerInstances,
     credential_bindings: bindings,
@@ -103,9 +115,10 @@ export function createExecutionSnapshot(
 }
 
 export function validateExecutionSnapshot(value: unknown): ExecutionSnapshot {
-  if (!isRecord(value) || (value['snapshot_version'] !== EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== PREVIOUS_EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== LEGACY_EXECUTION_SNAPSHOT_VERSION)
+  if (!isRecord(value) || (value['snapshot_version'] !== EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== PREVIOUS_EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== RETRIEVAL_EXECUTION_SNAPSHOT_VERSION && value['snapshot_version'] !== LEGACY_EXECUTION_SNAPSHOT_VERSION)
     || !((value['snapshot_version'] === EXECUTION_SNAPSHOT_VERSION && value['artifact_contract_version'] === ARTIFACT_CONTRACT_VERSION)
-      || (value['snapshot_version'] !== EXECUTION_SNAPSHOT_VERSION && value['artifact_contract_version'] === '1'))
+      || (value['snapshot_version'] === PREVIOUS_EXECUTION_SNAPSHOT_VERSION && value['artifact_contract_version'] === '2')
+      || ((value['snapshot_version'] === RETRIEVAL_EXECUTION_SNAPSHOT_VERSION || value['snapshot_version'] === LEGACY_EXECUTION_SNAPSHOT_VERSION) && value['artifact_contract_version'] === '1'))
     || typeof value['snapshot_fingerprint'] !== 'string'
     || !isRecord(value['plan']) || !Array.isArray(value['provider_instances']) || !Array.isArray(value['credential_bindings'])) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot is invalid.');
@@ -116,19 +129,27 @@ export function validateExecutionSnapshot(value: unknown): ExecutionSnapshot {
     || value['routing']['profile'].length > 256
     || value['routing']['profile'] !== value['plan']['profile_id']
     || (value['routing']['intent'] !== undefined && !(SEARCH_INTENTS as readonly unknown[]).includes(value['routing']['intent']))
-    || (value['routing']['freshness'] !== undefined && !(FRESHNESS_VALUES as readonly unknown[]).includes(value['routing']['freshness'])))) {
+    || (value['routing']['freshness'] !== undefined && !(FRESHNESS_VALUES as readonly unknown[]).includes(value['routing']['freshness']))
+    || (value['snapshot_version'] === EXECUTION_SNAPSHOT_VERSION && (value['routing']['execution_surface'] !== 'research-job' && value['routing']['execution_surface'] !== 'sync'
+      || !['none', 'replacement', 'overlay', 'explicit'].includes(String(value['routing']['multi_agent_route'])))))) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot routing is invalid.');
   }
   const { snapshot_fingerprint: fingerprint, ...base } = candidate;
   if (stableFingerprint(base) !== fingerprint || planFingerprint(candidate.plan) !== candidate.plan_fingerprint) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot fingerprint does not match.');
   }
-  if (candidate.snapshot_version === EXECUTION_SNAPSHOT_VERSION && (value['routing'] === undefined || candidate.plan.routing?.profile !== candidate.routing.profile
-    || candidate.plan.routing?.intent !== candidate.routing.intent || candidate.plan.routing?.freshness !== candidate.routing.freshness)) {
+  if (candidate.snapshot_version === EXECUTION_SNAPSHOT_VERSION && (value['routing'] === undefined || candidate.plan.plan_version !== '3'
+    || candidate.plan.routing?.profile !== candidate.routing.profile || candidate.plan.routing?.intent !== candidate.routing.intent
+    || candidate.plan.routing?.freshness !== candidate.routing.freshness || candidate.plan.routing?.execution_surface !== candidate.routing.execution_surface
+    || candidate.plan.routing?.multi_agent_route !== candidate.routing.multi_agent_route)) {
     throw new NbSearchError('JOB_STORE_ERROR', 'Research execution snapshot routing does not match its plan.');
   }
   if (candidate.snapshot_version === LEGACY_EXECUTION_SNAPSHOT_VERSION) validateLegacyM1Snapshot(candidate);
-  if (candidate.snapshot_version === PREVIOUS_EXECUTION_SNAPSHOT_VERSION && candidate.plan.stages.some((stage) => stage.invocations.some((item) => item.capability !== 'retrieval'))) {
+  if (candidate.snapshot_version === PREVIOUS_EXECUTION_SNAPSHOT_VERSION && (candidate.plan.plan_version !== '2'
+    || [...candidate.plan.stages.flatMap((stage) => stage.invocations), ...(candidate.plan.omissions ?? [])].some((item) => item.capability === 'multi-agent-research'))) {
+    throw new NbSearchError('CONFIGURATION_ERROR', 'Version 3 execution snapshots cannot contain multi-agent research.');
+  }
+  if (candidate.snapshot_version === RETRIEVAL_EXECUTION_SNAPSHOT_VERSION && candidate.plan.stages.some((stage) => stage.invocations.some((item) => item.capability !== 'retrieval'))) {
     throw new NbSearchError('CONFIGURATION_ERROR', 'Version 2 execution snapshots may contain retrieval invocations only.');
   }
   const cloned = structuredClone(candidate);
@@ -146,7 +167,7 @@ export function resolveSnapshotBindings(
   const bindings = new Map<string, SecretBinding>();
   for (const binding of snapshot.credential_bindings) {
     const value = resolveWorkerGrant(binding.worker_grant, env, opaqueGrants);
-    if (value === undefined || (binding.provider_id === 'grok' && value.length > 8192)) {
+    if (value === undefined || ((binding.provider_id === 'grok' || binding.provider_id === 'grok-multi-agent') && value.length > 8192)) {
       throw new NbSearchError('CONFIGURATION_ERROR', `Worker credential grant is unavailable for slot ${binding.credential_slot_id}.`);
     }
     bindings.set(binding.credential_slot_id, {
@@ -154,6 +175,7 @@ export function resolveSnapshotBindings(
       provider_id: binding.provider_id,
       value,
       worker_grant: binding.worker_grant,
+      ...(binding.inherited_from_slot_id === undefined ? {} : { inherited_from_slot_id: binding.inherited_from_slot_id }),
     });
   }
   return bindings;
@@ -174,6 +196,9 @@ function resolveWorkerGrant(
   if (grant.key === 'grok') {
     return isRecord(raw) && typeof raw['apiKey'] === 'string' ? nonempty(raw['apiKey']) : undefined;
   }
+  if (grant.key === 'grokMultiAgent') {
+    return isRecord(raw) && typeof raw['apiKey'] === 'string' ? nonempty(raw['apiKey']) : undefined;
+  }
   if (grant.key === 'searchGateway' && isRecord(raw)) {
     return nonempty(typeof raw['token'] === 'string' ? raw['token'] : undefined)
       ?? nonempty(typeof raw['apiKey'] === 'string' ? raw['apiKey'] : undefined);
@@ -188,7 +213,7 @@ export function assertSnapshotRegistry(snapshot: ExecutionSnapshot, registry: Pr
     assertCurrentM1DirectWire(registry);
     return;
   }
-  if (snapshot.snapshot_version === PREVIOUS_EXECUTION_SNAPSHOT_VERSION) {
+  if (snapshot.snapshot_version === RETRIEVAL_EXECUTION_SNAPSHOT_VERSION) {
     assertVersion2Registry(snapshot, registry);
     return;
   }
@@ -242,6 +267,7 @@ function selectedProviderDescriptors(plan: SearchPlan, registry: ProviderRegistr
       ...(ordered.includes('retrieval') ? descriptor.option_keys.filter((key) => key !== 'answer_path' && key !== 'research_light_path') : []),
       ...(ordered.includes('answer') ? ['answer_path'] : []),
       ...(ordered.includes('research-light') ? ['research_light_path'] : []),
+      ...(ordered.includes('multi-agent-research') ? ['model', 'reasoning_effort', 'replace_grok'] : []),
     ])];
     const schemaProperties = isRecord(descriptor.option_schema['properties']) ? descriptor.option_schema['properties'] : {};
     const relevantOptionSchema = { ...descriptor.option_schema, properties: Object.fromEntries(optionKeys.flatMap((key) => schemaProperties[key] === undefined ? [] : [[key, schemaProperties[key]]])) };

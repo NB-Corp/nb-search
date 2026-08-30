@@ -19,7 +19,7 @@ export interface AppConfiguration {
   providers: SearchProvider[];
   providers_by_instance: ReadonlyMap<string, SearchProvider>;
   ports_by_instance: ReadonlyMap<string, ProviderPorts>;
-  provider_configured: Record<'exa' | 'tavily' | 'grok', boolean>;
+  provider_configured: Record<'exa' | 'tavily' | 'grok' | 'grok-multi-agent', boolean>;
   provider_readiness: Readonly<Record<string, boolean>>;
   capability_readiness: Readonly<Record<string, Readonly<Partial<Record<import('./types.ts').ProviderCapability, boolean>>>>>;
   resolved: ResolvedConfiguration;
@@ -90,8 +90,9 @@ export function loadConfiguration(
       providersByInstance.set(instanceId, ports.retrieval);
     }
   }
-  const configured = (providerId: 'exa' | 'tavily' | 'grok'): boolean => Object.entries(resolved.config.provider_instances)
-    .some(([instanceId, instance]) => instance.provider_id === providerId && readiness[instanceId] === true);
+  const configured = (providerId: 'exa' | 'tavily' | 'grok' | 'grok-multi-agent'): boolean => Object.entries(resolved.config.provider_instances)
+    .some(([instanceId, instance]) => instance.provider_id === providerId
+      && (providerId === 'grok-multi-agent' ? instance.enabled : readiness[instanceId] === true));
   return {
     home: resolve(resolved.config.home ?? '.'),
     jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')),
@@ -100,7 +101,7 @@ export function loadConfiguration(
     providers,
     providers_by_instance: providersByInstance,
     ports_by_instance: portsByInstance,
-    provider_configured: { exa: configured('exa'), tavily: configured('tavily'), grok: configured('grok') },
+    provider_configured: { exa: configured('exa'), tavily: configured('tavily'), grok: configured('grok'), 'grok-multi-agent': configured('grok-multi-agent') },
     provider_readiness: readiness,
     capability_readiness: capabilityReadiness,
     resolved,

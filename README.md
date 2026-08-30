@@ -47,6 +47,13 @@ Set `NB_SEARCH_CONFIG` to select the canonical JSON file. Without it, nb-search 
 | `NB_SEARCH_GROK_API_KEY` | Grok bearer credential | Falls back to `GROK_API_KEY` |
 | `NB_SEARCH_GROK_MODEL` | Grok retrieval model ID | `grok-4.1-fast`; falls back to `GROK_MODEL` |
 | `NB_SEARCH_GROK_TIMEOUT_MS` | Per-attempt Grok timeout | `30000` |
+| `NB_SEARCH_GROK_MULTI_AGENT_ENABLED` | Activate asynchronous Grok Multi-Agent research | `false` |
+| `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL` | Multi-agent Chat Completions base or full endpoint | Inherits the resolved direct-Grok endpoint |
+| `NB_SEARCH_GROK_MULTI_AGENT_API_KEY` | Multi-agent bearer credential | Inherits the resolved direct-Grok grant |
+| `NB_SEARCH_GROK_MULTI_AGENT_MODEL` | Multi-agent relay model ID | `grok-4.20-multi-agent-xhigh` |
+| `NB_SEARCH_GROK_MULTI_AGENT_EFFORT` | Expected relay tier: `low`, `medium`, `high`, or `xhigh` | `xhigh` |
+| `NB_SEARCH_GROK_MULTI_AGENT_REPLACE_GROK` | Replace direct Grok retrieval on selected async routes | `false`; overlay keeps direct Grok |
+| `NB_SEARCH_GROK_MULTI_AGENT_TIMEOUT_MS` | Per-attempt multi-agent timeout | `240000`, clamped by the job budget |
 | `NB_SEARCH_GATEWAY_BASE_URL` | Aggregate gateway base URL | No endpoint; aggregate remains inactive |
 | `NB_SEARCH_GATEWAY_TOKEN` | Aggregate or explicit relay downstream token | No token |
 | `NB_SEARCH_GATEWAY_AGGREGATE` | Replace compatibility-owned profiles with aggregate retrieval | `false` |
@@ -89,6 +96,12 @@ Once active, an aggregate error, timeout, cancellation, or empty response stays 
 
 Grok becomes ready after both `NB_SEARCH_GROK_BASE_URL` and `NB_SEARCH_GROK_API_KEY` resolve. The endpoint may be a base URL or already end in `/chat/completions`. Grok sends a fixed retrieval prompt and projects only bounded HTTP(S) result rows; it does not expose assistant answers or configurable chat messages, temperature, token limits, streaming, or authentication fields. Custom Grok instances may set only `options.model`.
 
+Grok Multi-Agent is a separate `grok-multi-agent` provider used only by asynchronous `research start` jobs with `profile=deep` and intent `status`, `comparison`, `exploratory`, or `news`. `NB_SEARCH_GROK_MULTI_AGENT_REPLACE_GROK=true` replaces the direct Grok lane; the default overlay keeps it. Exa/Tavily or aggregate retrieval remains as verification evidence.
+
+Synchronous search, `default`, `fast`, factual/tutorial, resource, and missing-intent routes never start the multi-agent relay.
+
+The compatibility instance activates only from GMA-specific legacy, environment, or explicit configuration. When its endpoint or credential is absent, it can inherit the final direct-Grok endpoint and worker grant while keeping a distinct provider, slot, readiness, and health identity. Model, effort, and replacement do not inherit.
+
 Exa and Tavily can also use a vendor-compatible relay. Define explicit provider instances with `options.search_path` and provider-bound credential slots. Exa keeps `x-api-key` authentication, Tavily keeps body `api_key`, and both slots may name the same downstream token environment variable. A relay instance with `search_path` exposes retrieval only until it also declares `research_light_path` for Exa or `answer_path` for Tavily.
 
 ```json
@@ -112,7 +125,9 @@ Exa and Tavily can also use a vendor-compatible relay. Define explicit provider 
 
 `search_path`, `research_light_path`, and `answer_path` must be absolute operation paths without query text, fragments, traversal segments, empty segments, backslashes, or a trailing slash. Unknown instance options stop configuration before a request is sent.
 
-Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order. A legacy object-valued `grok` entry maps only `apiUrl`, `apiKey`, and `model`; string shorthand, `baseUrl`, `apiBase`, and `grokMultiAgent` fields do not configure direct Grok.
+Legacy Exa and Tavily entries accept a key string or an object with `apiKey`. Provider objects accept `apiUrl`, `baseUrl`, or `apiBase`. Top-level `exaApiUrl|exaApiBase|exaBaseUrl` and `tavilyApiUrl|tavilyApiBase|tavilyBaseUrl` aliases override nested endpoints in that order.
+
+A legacy object-valued `grok` entry maps only `apiUrl`, `apiKey`, and `model`; string shorthand, `baseUrl`, and `apiBase` do not configure direct Grok. A separate object-valued `grokMultiAgent` entry maps `apiUrl|baseUrl|apiBase`, `apiKey`, `model`, `reasoningEffort`, and `replaceGrokWithMultiAgent`.
 
 A legacy `searchGateway` object maps its base, token, aggregate flag, and downstream profile to `search-gateway.aggregate`; `token` wins over `apiKey`, and `baseUrl` wins over `apiUrl` and `apiBase`.
 
@@ -121,6 +136,8 @@ A legacy `searchLayer` object maps `requestTimeoutSeconds`, provider timeouts, a
 Legacy gateway aliases remain available: `SEARCH_GATEWAY_BASE_URL`, `SEARCH_GATEWAY_TOKEN`, `SEARCH_GATEWAY_AGGREGATE`, `SEARCH_GATEWAY_PROFILE`, and `SEARCH_LAYER_SEARCH_GATEWAY_TIMEOUT_SECONDS`.
 
 Direct Grok aliases remain `GROK_API_URL`, `GROK_API_KEY`, `GROK_MODEL`, and `SEARCH_LAYER_GROK_TIMEOUT_SECONDS`. Other direct-provider timeout aliases remain `SEARCH_LAYER_REQUEST_TIMEOUT_SECONDS`, `SEARCH_LAYER_EXA_TIMEOUT_SECONDS`, `SEARCH_LAYER_TAVILY_TIMEOUT_SECONDS`, and `SEARCH_LAYER_EXA_RESEARCH_LIGHT_TIMEOUT_SECONDS`.
+
+GMA aliases remain `GROK_MULTI_AGENT_MODEL`, `GROK_MULTI_AGENT_EFFORT`, `GROK_MULTI_AGENT_REPLACE`, and `SEARCH_LAYER_GROK_MULTI_AGENT_TIMEOUT_SECONDS`. GMA URL and key have no legacy environment alias.
 
 Provider attempts use the smaller applicable provider/request budget. The synchronous request timeout and research deadline remain the outer bound for every attempt and retry sleep.
 
@@ -140,7 +157,9 @@ Search accepts 1–20 results and a 1,000–120,000 ms total budget; the default
 
 Routing fields are optional. Calls without `intent` preserve the retrieval routes: with aggregate cutover inactive, `default` and `deep` run ready Exa, Tavily, and Grok lanes in parallel, while `fast` uses them as ordered fallbacks. With cutover active, aggregate replaces direct Exa/Tavily retrieval and ready Grok remains independent.
 
-`default|deep` with `factual|tutorial` runs Exa or aggregate retrieval beside one Tavily advanced-answer operation. The generated text appears only in `augmentations`; genuine Tavily rows from that same operation remain ordinary results. `deep` with `status|comparison|exploratory|news` runs one Exa research-light augmentation after retrieval. Research-light failure is reported without downgrading successful retrieval. `fast`, missing intent, and all other combinations stay retrieval-only.
+`default|deep` with `factual|tutorial` runs Exa or aggregate retrieval beside one Tavily advanced-answer operation. The generated text appears only in `augmentations`; genuine Tavily rows from that same operation remain ordinary results.
+
+Without active GMA, `deep` with `status|comparison|exploratory|news` runs one Exa research-light augmentation after retrieval. A matching asynchronous GMA route becomes the sole synthesis capability and omits research-light. `fast`, missing intent, and all other combinations stay retrieval-only.
 
 Supported intents are `factual`, `status`, `comparison`, `tutorial`, `exploratory`, `news`, and `resource`. Freshness values `pd`, `pw`, `pm`, and `py` apply 1, 7, 30, or 365 days to Exa and Tavily requests. Grok receives the same value as a prompt hint rather than a hard date filter. Ordinary Tavily retrieval sends `include_answer:false`; the selected answer route sends `include_answer:"advanced"` once.
 
@@ -163,9 +182,15 @@ nb-search capabilities
 
 Reusing an idempotency key requires the same normalized request and complete execution snapshot fingerprint. Route, grant identity, plan, policy, or selected provider descriptor drift returns `JOB_CONFLICT`; changing only secret bytes under the same grant identity does not change the snapshot fingerprint.
 
-Research output has four revision-bound artifacts: `summary`, `report`, `sources`, and `capabilities`. Summary and report omit provider prose; `sources` contains retrieval evidence; `capabilities` contains the bounded typed answer or research-light outcome. `research read` labels artifacts as `checkpoint`, `final`, or `unavailable`, and its cursor is invalidated when a newer artifact revision becomes current.
+Research output has five revision-bound artifacts: `summary`, `report`, `sources`, `capabilities`, and `multi_agent_research`. Summary and report omit provider prose; `sources` contains retrieval evidence, including accepted GMA URL rows. `capabilities` indexes typed outcomes and the GMA artifact reference.
 
-Research collection uses successive operations of at most 20 results, with deterministic evidence-focus suffixes after the first batch. A capability-bearing first operation may use up to 120 seconds; later retrieval-only operations use at most 45 seconds. The selected non-retrieval capability runs once per claimed job, including empty or failed outcomes. The runner checkpoints after every operation, deduplicates sources, and stops when it reaches `max_sources`, exhausts `max_duration_ms`, or observes durable cancellation.
+`multi_agent_research` stores bounded NDJSON metadata, answer, results, angles, URL-matched claims, conflicts, follow-up queries, and summary records. Claim links are model-declared URL matches with `semantic_verification:false`; expected agent count is configuration-derived and backend trace observability is always false.
+
+`research read` labels artifacts as `checkpoint`, `final`, or `unavailable`, and its cursor is invalidated when a newer artifact revision becomes current. GMA artifact pages return whole typed records and never prefix-truncate an answer or claim.
+
+Research collection uses successive operations of at most 20 results, with deterministic evidence-focus suffixes after the first batch. A GMA-bearing first operation may use the configured 240-second capability cap within the remaining job budget; other capability-bearing first operations use at most 120 seconds, and later retrieval-only operations use at most 45 seconds.
+
+GMA receives the complete normalized job brief once; later facets continue only the frozen retrieval lanes. The runner checkpoints after every operation, deduplicates sources, and stops when it reaches `max_sources`, exhausts `max_duration_ms`, or observes durable cancellation.
 
 ## Generic MCP
 

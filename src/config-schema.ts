@@ -39,7 +39,11 @@ export interface ProfileInvocationConfig {
   trigger: string;
   timeout_ms?: number;
   retry?: Partial<RetryPolicyConfig>;
-  when?: { intent_in?: readonly SearchIntent[]; intent_not_in?: readonly SearchIntent[] };
+  when?: {
+    intent_in?: readonly SearchIntent[]; intent_not_in?: readonly SearchIntent[];
+    execution_in?: readonly ('sync' | 'research-job')[];
+    multi_agent_route_in?: readonly ('none' | 'replacement' | 'overlay')[];
+  };
   failure_policy?: 'affects-state' | 'report-only';
   execution_scope?: 'per-operation' | 'once-per-job';
 }
@@ -140,10 +144,14 @@ const invocationSchema = z.object({
   when: z.object({
     intent_in: z.array(z.enum(SEARCH_INTENTS)).min(1).max(7).optional(),
     intent_not_in: z.array(z.enum(SEARCH_INTENTS)).min(1).max(7).optional(),
+    execution_in: z.array(z.enum(['sync', 'research-job'])).min(1).max(2).optional(),
+    multi_agent_route_in: z.array(z.enum(['none', 'replacement', 'overlay'])).min(1).max(3).optional(),
   }).strict().superRefine((value, context) => {
     if (value.intent_in !== undefined && value.intent_not_in !== undefined) context.addIssue({ code: 'custom', message: 'only one intent condition may be set' });
     const values = value.intent_in ?? value.intent_not_in;
     if (values !== undefined && new Set(values).size !== values.length) context.addIssue({ code: 'custom', message: 'intent condition values must be unique' });
+    if (value.execution_in !== undefined && new Set(value.execution_in).size !== value.execution_in.length) context.addIssue({ code: 'custom', message: 'execution condition values must be unique' });
+    if (value.multi_agent_route_in !== undefined && new Set(value.multi_agent_route_in).size !== value.multi_agent_route_in.length) context.addIssue({ code: 'custom', message: 'multi-agent route condition values must be unique' });
   }).optional(),
   failure_policy: z.enum(['affects-state', 'report-only']).optional(),
   execution_scope: z.enum(['per-operation', 'once-per-job']).optional(),
@@ -187,6 +195,14 @@ const configSchema = z.object({
           message: 'provider instance is not configured',
         });
       }
+      if (invocation.capability === 'multi-agent-research'
+        && (invocation.when?.execution_in?.length !== 1 || invocation.when.execution_in[0] !== 'research-job')) {
+        context.addIssue({
+          code: 'custom',
+          path: ['profiles', profileId, 'stages', stageIndex, 'invocations', invocationIndex, 'when', 'execution_in'],
+          message: 'multi-agent research must be restricted to research-job execution',
+        });
+      }
     }));
   }
 });
@@ -216,6 +232,8 @@ export function parseResolvedConfig(value: unknown): CanonicalConfig {
   for (const profile of Object.values(config.profiles)) for (const stage of profile.stages) for (const invocation of stage.invocations) {
     if (invocation.when?.intent_in !== undefined) invocation.when.intent_in = canonicalIntents(invocation.when.intent_in);
     if (invocation.when?.intent_not_in !== undefined) invocation.when.intent_not_in = canonicalIntents(invocation.when.intent_not_in);
+    if (invocation.when?.execution_in !== undefined) invocation.when.execution_in = ['sync', 'research-job'].filter((item) => invocation.when?.execution_in?.includes(item as 'sync' | 'research-job')) as ('sync' | 'research-job')[];
+    if (invocation.when?.multi_agent_route_in !== undefined) invocation.when.multi_agent_route_in = ['none', 'replacement', 'overlay'].filter((item) => invocation.when?.multi_agent_route_in?.includes(item as 'none' | 'replacement' | 'overlay')) as ('none' | 'replacement' | 'overlay')[];
   }
   return config;
 }

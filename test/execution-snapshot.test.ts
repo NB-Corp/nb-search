@@ -54,13 +54,13 @@ describe('durable execution snapshots', () => {
     });
   });
 
-  it('uses selected descriptor identity and keeps secret-byte changes outside the v2 fingerprint', async () => {
+  it('uses selected descriptor identity and keeps secret-byte changes outside the v4 fingerprint', async () => {
     const root = await temporaryRoot();
     const first = snapshotFixture(root, 'https://snapshot.example/v1', 'first-secret');
     const second = snapshotFixture(root, 'https://snapshot.example/v1', 'second-secret');
     const fullFingerprint = first.registry.fingerprint();
 
-    expect(first.snapshot).toMatchObject({ snapshot_version: '3', artifact_contract_version: '2' });
+    expect(first.snapshot).toMatchObject({ snapshot_version: '4', artifact_contract_version: '3' });
     expect(first.snapshot.registry_fingerprint).not.toBe(fullFingerprint);
     expect(first.snapshot.registry_fingerprint).toBe(second.snapshot.registry_fingerprint);
     expect(first.snapshot.snapshot_fingerprint).toBe(second.snapshot.snapshot_fingerprint);

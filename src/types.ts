@@ -54,7 +54,10 @@ export interface ProviderAnswerCapabilityRequest extends ProviderCapabilityReque
 export interface ProviderResearchLightCapabilityRequest extends ProviderCapabilityRequestBase {
   capability: 'research-light'; retrieval_result_count: number;
 }
-export type ProviderCapabilityRequest = ProviderRetrievalCapabilityRequest | ProviderAnswerCapabilityRequest | ProviderResearchLightCapabilityRequest;
+export interface ProviderMultiAgentResearchCapabilityRequest extends ProviderCapabilityRequestBase {
+  capability: 'multi-agent-research'; brief: string; limit: number;
+}
+export type ProviderCapabilityRequest = ProviderRetrievalCapabilityRequest | ProviderAnswerCapabilityRequest | ProviderResearchLightCapabilityRequest | ProviderMultiAgentResearchCapabilityRequest;
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
   metadata?: Readonly<Record<string, unknown>>;
@@ -84,7 +87,33 @@ export interface ProviderAnswerCapabilityResult {
 export interface ProviderResearchLightCapabilityResult {
   capability: 'research-light'; synthesis?: string; supporting_urls: readonly SupportingUrl[]; resolved_type: string;
 }
-export type ProviderCapabilityResult = ProviderRetrievalCapabilityResult | ProviderAnswerCapabilityResult | ProviderResearchLightCapabilityResult;
+export type GmaEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type GmaConfidence = 'high' | 'medium' | 'low' | 'unknown';
+export type GmaEvidenceStrength = 'direct' | 'indirect' | 'background' | 'unknown';
+export interface GmaResultMetadata extends Readonly<Record<string, unknown>> {
+  source_type: 'web' | 'x'; supports_claim_ids: readonly string[];
+}
+export interface GmaResult extends ProviderResult { metadata: GmaResultMetadata }
+export interface GmaClaim {
+  id: string; text: string; confidence: GmaConfidence; evidence_strength: GmaEvidenceStrength; evidence_urls: readonly string[];
+}
+export interface GmaConflict { topic: string; description: string; evidence_urls: readonly string[] }
+export interface GmaOmissions {
+  results: number; angles: number; claims: number; conflicts: number; follow_up_queries: number;
+  evidence_urls: number; sensitive_semantic_items: number;
+}
+export interface GmaTrace {
+  angles: readonly string[]; claims: readonly GmaClaim[]; conflicts: readonly GmaConflict[];
+  follow_up_queries: readonly string[]; source_mix: { web: number; x: number }; linked_evidence_count: number;
+  omissions: GmaOmissions;
+}
+export interface ProviderMultiAgentResearchCapabilityResult {
+  capability: 'multi-agent-research'; completeness: 'complete' | 'partial' | 'empty'; answer?: string;
+  results: readonly GmaResult[]; trace: GmaTrace; model: string; reasoning_effort: GmaEffort;
+  api_mode: 'chat_completions'; expected_agent_count: 4 | 16; backend_trace_observable: false;
+  evidence_linkage: 'model_declared_url_matched'; semantic_verification: false;
+}
+export type ProviderCapabilityResult = ProviderRetrievalCapabilityResult | ProviderAnswerCapabilityResult | ProviderResearchLightCapabilityResult | ProviderMultiAgentResearchCapabilityResult;
 export type ProviderSearchReturn = readonly ProviderResult[] | ProviderSearchResponse;
 export interface SearchProvider {
   readonly name: ProviderName; readonly redactions?: readonly string[];
@@ -103,6 +132,11 @@ export interface ResearchLightProvider {
   readonly provider_id?: ProviderId; readonly provider_instance_id?: ProviderInstanceId; readonly credential_slot_id?: CredentialSlotId;
   researchLight(request: ProviderResearchLightCapabilityRequest): Promise<ProviderResearchLightCapabilityResult>;
 }
+export interface MultiAgentResearchProvider {
+  readonly name: 'grok-multi-agent'; readonly redactions?: readonly string[];
+  readonly provider_id: ProviderId; readonly provider_instance_id: ProviderInstanceId; readonly credential_slot_id: CredentialSlotId;
+  research(request: ProviderMultiAgentResearchCapabilityRequest): Promise<ProviderMultiAgentResearchCapabilityResult>;
+}
 export type AttemptState = 'succeeded' | 'empty' | 'failed' | 'timed_out' | 'cancelled';
 export interface SearchAttempt {
   provider: ProviderName; attempt: number; state: AttemptState; duration_ms: number; result_count: number; error?: PublicError;
@@ -111,7 +145,7 @@ export interface SearchAttempt {
   failure_policy?: 'affects-state' | 'report-only'; execution_scope?: 'per-operation' | 'once-per-job';
   upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number;
 }
-export type CapabilityOutcomeState = 'succeeded' | 'empty' | 'unavailable' | 'failed' | 'timed_out' | 'cancelled';
+export type CapabilityOutcomeState = 'succeeded' | 'partial' | 'empty' | 'unavailable' | 'failed' | 'timed_out' | 'cancelled';
 export interface CitationStatus { claim_linked_citations: false; evidence_map_available: false; semantic_verification: false }
 export interface PublicAnswerResult {
   capability: 'answer'; text: string; supporting_urls: SupportingUrl[]; supporting_urls_omitted: number; citation_status: CitationStatus;
@@ -121,7 +155,7 @@ export interface PublicResearchLightResult {
   resolved_type: string; citation_status: CitationStatus;
 }
 export interface CapabilityArtifactRef<C extends ProviderCapability = ProviderCapability> {
-  artifact_id: string; capability: C; artifact_kind: string; media_type: string; byte_length: number; sha256: string;
+  artifact_id: string; artifact_revision: number; capability: C; artifact_kind: string; media_type: string; byte_length: number; sha256: string;
 }
 export type CapabilityDelivery<C extends ProviderCapability, T> =
   | { delivery: 'inline'; value: T }
@@ -134,7 +168,31 @@ type CapabilityTerminal<C extends 'answer' | 'research-light', T> =
   | (CapabilityAugmentationBase & { capability: C; state: 'succeeded'; result: CapabilityDelivery<C, T>; error?: never })
   | (CapabilityAugmentationBase & { capability: C; state: 'empty'; result?: never; error?: never })
   | (CapabilityAugmentationBase & { capability: C; state: 'unavailable' | 'failed' | 'timed_out' | 'cancelled'; result?: never; error: PublicError });
-export type CapabilityAugmentation = CapabilityTerminal<'answer', PublicAnswerResult> | CapabilityTerminal<'research-light', PublicResearchLightResult>;
+export interface MultiAgentResearchPreview {
+  answer_available: boolean; result_count: number; angle_count: number; claim_count: number; conflict_count: number;
+  follow_up_query_count: number; expected_agent_count: 4 | 16; backend_trace_observable: false;
+  evidence_map_available: boolean; evidence_linkage: 'model_declared_url_matched'; semantic_verification: false;
+  omissions: GmaOmissions;
+}
+export type PublicMultiAgentResearchOutcome =
+  | (CapabilityAugmentationBase & { capability: 'multi-agent-research'; state: 'succeeded' | 'partial'; result: { delivery: 'artifact'; artifact: CapabilityArtifactRef<'multi-agent-research'> }; preview: MultiAgentResearchPreview; error?: never })
+  | (CapabilityAugmentationBase & { capability: 'multi-agent-research'; state: 'empty'; result?: never; preview?: never; error?: never })
+  | (CapabilityAugmentationBase & { capability: 'multi-agent-research'; state: 'unavailable' | 'failed' | 'timed_out' | 'cancelled'; result?: never; preview?: never; error: PublicError });
+export type CapabilityAugmentation = CapabilityTerminal<'answer', PublicAnswerResult> | CapabilityTerminal<'research-light', PublicResearchLightResult> | PublicMultiAgentResearchOutcome;
+export interface CapabilityCapture {
+  capability: 'multi-agent-research'; provider_id: ProviderId; provider_instance_id: ProviderInstanceId;
+  credential_slot_id?: CredentialSlotId; invocation_id: InvocationId; failure_policy: 'affects-state' | 'report-only';
+  attempt_count: number; state: CapabilityOutcomeState; result?: ProviderMultiAgentResearchCapabilityResult; error?: PublicError;
+}
+export type MultiAgentResearchArtifactItem =
+  | { schema_version: 1; kind: 'metadata'; capability: 'multi-agent-research'; provider_id: 'grok-multi-agent'; provider_instance_id: string; invocation_id: string; role: 'primary_synthesis'; model: string; reasoning_effort: GmaEffort; api_mode: 'chat_completions'; expected_agent_count: 4 | 16; backend_trace_observable: false; claim_linked_citations: false; evidence_map_available: boolean; evidence_linkage: 'model_declared_url_matched'; semantic_verification: false }
+  | { schema_version: 1; kind: 'answer'; text: string; claim_linked_citations: false; evidence_map_available: boolean; evidence_linkage: 'model_declared_url_matched'; semantic_verification: false }
+  | { schema_version: 1; kind: 'result'; index: number; title: string; url: string; snippet?: string; published_at?: string; source_type: 'web' | 'x'; supports_claim_ids: readonly string[] }
+  | { schema_version: 1; kind: 'angle'; index: number; text: string }
+  | ({ schema_version: 1; kind: 'claim'; index: number } & GmaClaim)
+  | ({ schema_version: 1; kind: 'conflict'; index: number } & GmaConflict)
+  | { schema_version: 1; kind: 'follow_up_query'; index: number; text: string }
+  | { schema_version: 1; kind: 'summary'; completeness: 'complete' | 'partial'; result_count: number; angle_count: number; claim_count: number; conflict_count: number; follow_up_query_count: number; source_mix: { web: number; x: number }; linked_evidence_count: number; omissions: GmaOmissions };
 export interface ResultProvenance {
   provider: ProviderName; rank: number; original_url: string; metadata?: Readonly<Record<string, unknown>>;
   provider_instance_id?: ProviderInstanceId; credential_slot_id?: CredentialSlotId; invocation_id?: InvocationId;
@@ -161,19 +219,22 @@ export interface Searcher {
   search(request: SearchRequest, operationRequestId?: string, executionContext?: {
     scope: 'sync' | 'research-job'; completed_once_per_job_invocation_ids: ReadonlySet<InvocationId>;
     capture_augmentations?: (items: readonly CapabilityAugmentation[]) => void;
+    capture_capabilities?: (items: readonly CapabilityCapture[]) => void;
+    research_brief?: string; operation_budget_ms?: number;
   }): Promise<SearchEnvelope>;
+  researchOperationBudgetMs?(operation: number, remainingMs: number): number;
 }
 
 export type JobState = 'queued' | 'running' | 'cancelling' | 'succeeded' | 'partial' | 'failed' | 'timed_out' | 'cancelled';
 export type TerminalJobState = Extract<JobState, 'succeeded' | 'partial' | 'failed' | 'timed_out' | 'cancelled'>;
-export type ResearchArtifact = 'summary' | 'report' | 'sources' | 'capabilities';
+export type ResearchArtifact = 'summary' | 'report' | 'sources' | 'capabilities' | 'multi_agent_research';
 export type ArtifactState = 'unavailable' | 'checkpoint' | 'final';
 export interface ResearchRequest {
   query: string; max_sources: number; max_duration_ms: number;
   profile?: ProfileId; intent?: SearchIntent; freshness?: Freshness;
 }
 export interface JobProgress { completed_units: number; total_units?: number }
-export interface JobArtifacts { summary: ArtifactState; report: ArtifactState; sources: ArtifactState; capabilities: ArtifactState }
+export interface JobArtifacts { summary: ArtifactState; report: ArtifactState; sources: ArtifactState; capabilities: ArtifactState; multi_agent_research: ArtifactState }
 export interface JobRecord {
   schema_version: typeof SCHEMA_VERSION; job_id: string; state: JobState; phase: string; request: ResearchRequest;
   request_hash: string; idempotency_hash?: string; created_at: string; updated_at: string; started_at?: string;
@@ -209,9 +270,9 @@ export interface ResearchCancelEnvelope {
 export interface CapabilityEnvelope {
   schema_version: typeof SCHEMA_VERSION; request_id: string; mode: 'capabilities'; version: '0.1.0';
   search: { max_results: 20; default_timeout_ms: 20000; max_timeout_ms: 120000 };
-  research: { max_sources: 100; max_duration_ms: 3600000; detached_worker: true; guaranteed_process_survival: false; artifacts: readonly ['summary', 'report', 'sources', 'capabilities']; capability_once_per_job: true };
+  research: { max_sources: 100; max_duration_ms: 3600000; detached_worker: true; guaranteed_process_survival: false; artifacts: readonly ['summary', 'report', 'sources', 'capabilities', 'multi_agent_research']; capability_once_per_job: true; multi_agent_async_only: true };
   providers: {
-    exa: { configured: boolean }; tavily: { configured: boolean }; grok: { configured: boolean };
+    exa: { configured: boolean }; tavily: { configured: boolean }; grok: { configured: boolean }; 'grok-multi-agent': { configured: boolean };
     instances?: Array<{
       provider_id: ProviderId; provider_instance_id: ProviderInstanceId; credential_slot_id?: CredentialSlotId;
       enabled: boolean; ready: boolean; capabilities: readonly ProviderCapability[];
@@ -219,8 +280,10 @@ export interface CapabilityEnvelope {
     }>;
   };
   capability_routes?: Array<{
-    capability: 'answer' | 'research-light'; provider_instance_id: ProviderInstanceId; profile_ids: readonly SearchProfileId[];
-    intent_in: readonly SearchIntent[]; failure_policy: 'affects-state' | 'report-only'; execution_scope: 'once-per-job'; ready: boolean;
+    capability: 'answer' | 'research-light' | 'multi-agent-research'; provider_instance_id: ProviderInstanceId; profile_ids: readonly SearchProfileId[];
+    intent_in: readonly SearchIntent[]; operations: readonly ('search' | 'research_start')[];
+    failure_policy: 'affects-state' | 'report-only'; execution_scope: 'once-per-job'; ready: boolean;
+    async_only?: true; route_mode?: 'replacement' | 'overlay';
   }>;
   profiles?: Array<{ profile_id: ProfileId; ready: boolean; stage_count: number }>;
   persistence: { durable_jobs: true; cancellation_markers: true; retention_hours: number; stale_after_ms: 30000 };

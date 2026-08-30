@@ -12,7 +12,9 @@ import type {
 } from './types.ts';
 import { normalizeUrl } from './url.ts';
 
-export const PLAN_SCHEMA_VERSION = '2' as const;
+export const PLAN_SCHEMA_VERSION = '3' as const;
+export type ExecutionSurface = 'sync' | 'research-job';
+export type MultiAgentRoute = 'none' | 'replacement' | 'overlay' | 'explicit';
 
 export interface HealthSnapshot {
   unavailable_provider_capabilities: readonly string[];
@@ -55,22 +57,29 @@ export interface PlanOmission {
   reason: 'instance-unready' | 'capability-unready' | 'health-suppressed';
 }
 export interface SearchPlan {
-  plan_version: typeof PLAN_SCHEMA_VERSION | '1'; profile_id: string; stages: readonly PlanStage[]; omissions?: readonly PlanOmission[];
-  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness }; plan_fingerprint: string;
+  plan_version: typeof PLAN_SCHEMA_VERSION | '2' | '1'; profile_id: string; stages: readonly PlanStage[]; omissions?: readonly PlanOmission[];
+  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness; execution_surface?: ExecutionSurface; multi_agent_route?: MultiAgentRoute }; plan_fingerprint: string;
 }
 export interface CompilePlanOptions {
   config: CanonicalConfig; registry: ProviderRegistry;
   readiness?: Readonly<Record<string, boolean>>;
   capability_readiness?: Readonly<Record<string, Readonly<Partial<Record<ProviderCapability, boolean>>>>>;
   health?: HealthSnapshot; profile_id?: string;
-  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness };
+  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness; execution_surface?: ExecutionSurface; multi_agent_route?: MultiAgentRoute };
 }
 
 export function compileSearchPlan(options: CompilePlanOptions): SearchPlan {
   const profileId = options.routing?.profile ?? options.profile_id ?? options.config.default_profile_id;
   const profile = options.config.profiles[profileId];
   if (profile === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} is not configured.`);
-  const routing = { profile: profileId, ...(options.routing?.intent === undefined ? {} : { intent: options.routing.intent }), ...(options.routing?.freshness === undefined ? {} : { freshness: options.routing.freshness }) };
+  const executionSurface = options.routing?.execution_surface ?? 'sync';
+  const gma = options.config.provider_instances['grok-multi-agent.default'];
+  const analysis = options.routing?.intent === 'status' || options.routing?.intent === 'comparison' || options.routing?.intent === 'exploratory' || options.routing?.intent === 'news';
+  const explicitGma = profile.stages.some((stage) => stage.invocations.some((item) => item.capability === 'multi-agent-research' && item.when?.multi_agent_route_in === undefined));
+  const derivedMultiAgentRoute: MultiAgentRoute = options.routing?.multi_agent_route ?? (executionSurface === 'research-job' && explicitGma
+    ? 'explicit' : executionSurface === 'research-job' && profileId === 'deep' && analysis && gma?.enabled === true
+      ? gma.options['replace_grok'] === true ? 'replacement' : 'overlay' : 'none');
+  const routing = { profile: profileId, ...(options.routing?.intent === undefined ? {} : { intent: options.routing.intent }), ...(options.routing?.freshness === undefined ? {} : { freshness: options.routing.freshness }), execution_surface: executionSurface, multi_agent_route: derivedMultiAgentRoute };
   const health = options.health ?? emptyHealthSnapshot();
   const usedBriefSlots = new Set<string>();
   const usedOperations = new Set<string>();
@@ -79,7 +88,7 @@ export function compileSearchPlan(options: CompilePlanOptions): SearchPlan {
   profile.stages.forEach((sourceStage, stageIndex) => {
     const invocations: PlanInvocation[] = [];
     sourceStage.invocations.forEach((sourceInvocation, invocationIndex) => {
-      if (!conditionMatches(sourceInvocation.when, routing.intent)) return;
+      if (!conditionMatches(sourceInvocation.when, routing)) return;
       const instance = options.config.provider_instances[sourceInvocation.provider_instance_id];
       if (instance === undefined) return;
       const descriptor = options.registry.descriptor(instance.provider_id);
@@ -92,6 +101,10 @@ export function compileSearchPlan(options: CompilePlanOptions): SearchPlan {
       const operationKey = `${sourceInvocation.provider_instance_id}:${sourceInvocation.capability}:${operationPath}`;
       if (usedOperations.has(operationKey)) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} selects duplicate provider operation ${operationKey}.`);
       usedOperations.add(operationKey);
+      if (sourceInvocation.capability === 'multi-agent-research') {
+        if (usedBriefSlots.size > 0) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} selects more than one multi-agent research brief.`);
+        usedBriefSlots.add(sourceInvocation.provider_instance_id);
+      }
       const healthIdentity = `${sourceInvocation.provider_instance_id}:${sourceInvocation.capability}`;
       const healthSuppressed = health.unavailable_provider_capabilities.includes(healthIdentity)
         || health.unavailable_model_instances.includes(sourceInvocation.provider_instance_id)
@@ -111,9 +124,6 @@ export function compileSearchPlan(options: CompilePlanOptions): SearchPlan {
         });
         return;
       }
-      const briefSlot = `${sourceInvocation.capability}:${sourceInvocation.role}:${sourceInvocation.trigger}`;
-      if (sourceInvocation.capability === 'multi-agent-research' && usedBriefSlots.has(briefSlot)) return;
-      usedBriefSlots.add(briefSlot);
       const capabilityPolicy = instance.capability_policies?.[sourceInvocation.capability];
       const retry: RetryPolicyConfig = { ...instance.retry, ...capabilityPolicy?.retry, ...sourceInvocation.retry };
       invocations.push({
@@ -144,6 +154,8 @@ export interface PlanExecution {
 export interface PlanExecutionContext {
   scope: 'sync' | 'research-job'; completed_once_per_job_invocation_ids: ReadonlySet<string>;
   capture_augmentations?: (items: readonly import('./types.ts').CapabilityAugmentation[]) => void;
+  capture_capabilities?: (items: readonly import('./types.ts').CapabilityCapture[]) => void;
+  research_brief?: string; operation_budget_ms?: number;
 }
 export interface PlanExecutorOptions {
   providers?: ReadonlyMap<string, SearchProvider>; ports_by_instance?: ReadonlyMap<string, ProviderPorts>;
@@ -187,14 +199,14 @@ export class PlanExecutor {
         const retrievalCount = normalizedRetrievalResultCount(outcomes);
         if (stage.kind === 'fallback') {
           for (const invocation of eligible) {
-            const outcome = await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt);
+            const outcome = await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt, context);
             outcomes.push(outcome);
             if ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job') completed.add(invocation.invocation_id);
             if (outcome.state === 'succeeded') break;
             if (signal.aborted) break;
           }
         } else {
-          const stageOutcomes = await Promise.all(eligible.map(async (invocation) => await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt)));
+          const stageOutcomes = await Promise.all(eligible.map(async (invocation) => await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt, context)));
           outcomes.push(...stageOutcomes);
           for (const invocation of eligible) if ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job') completed.add(invocation.invocation_id);
         }
@@ -220,6 +232,7 @@ export class PlanExecutor {
   private async runInvocation(
     invocation: PlanInvocation, request: Omit<ProviderSearchRequest, 'signal'>, retrievalCount: number,
     outerSignal: AbortSignal, callerSignal: AbortSignal | undefined, overallDeadline: AbortController, deadlineAt: number,
+    context: PlanExecutionContext,
   ): Promise<InvocationOutcome> {
     const ports = this.ports.get(invocation.provider_instance_id);
     const provider = capabilityPort(ports, invocation.capability);
@@ -242,14 +255,15 @@ export class PlanExecutor {
       try {
         const started = this.monotonicNow();
         try {
-          const result = await raceWithAbort(callCapability(provider, invocation.capability, request, retrievalCount, signal), signal);
-          const results = result.capability === 'retrieval' ? result.results : result.capability === 'answer' ? result.supporting_results : [];
-          const success = usableResult(result);
-          const resultCount = result.capability === 'retrieval' ? result.results.length : success ? 1 : 0;
-          attempts.push(attemptRecord(invocation, attempt, success ? 'succeeded' : 'empty', elapsed(started, this.monotonicNow()), resultCount, undefined,
+          const result = await raceWithAbort(callCapability(provider, invocation.capability, request, retrievalCount, signal, context), signal);
+          const results = result.capability === 'retrieval' ? result.results : result.capability === 'answer' ? result.supporting_results
+            : result.capability === 'multi-agent-research' ? result.results : [];
+          const resultState = capabilityResultState(result);
+          const resultCount = result.capability === 'retrieval' ? result.results.length : resultState === 'succeeded' || resultState === 'partial' ? 1 : 0;
+          attempts.push(attemptRecord(invocation, attempt, resultState === 'empty' ? 'empty' : 'succeeded', elapsed(started, this.monotonicNow()), resultCount, undefined,
             result.capability === 'retrieval' ? result.upstream_attempts : undefined,
             result.capability === 'retrieval' ? result.upstream_attempts_omitted : undefined));
-          return { invocation, attempts, state: success ? 'succeeded' : 'empty', result, results };
+          return { invocation, attempts, state: resultState, result, results };
         } catch (error) {
           const callerCancelled = callerSignal?.aborted === true;
           const overallDeadlineReached = !callerCancelled && overallDeadline.signal.aborted;
@@ -285,9 +299,14 @@ export class PlanExecutor {
   }
 }
 
-function conditionMatches(condition: { intent_in?: readonly SearchIntent[]; intent_not_in?: readonly SearchIntent[] } | undefined, intent: SearchIntent | undefined): boolean {
-  if (condition?.intent_in !== undefined) return intent !== undefined && condition.intent_in.includes(intent);
-  if (condition?.intent_not_in !== undefined) return intent === undefined || !condition.intent_not_in.includes(intent);
+function conditionMatches(
+  condition: import('./config-schema.ts').ProfileInvocationConfig['when'],
+  routing: { intent?: SearchIntent; execution_surface: ExecutionSurface; multi_agent_route: MultiAgentRoute },
+): boolean {
+  if (condition?.intent_in !== undefined && (routing.intent === undefined || !condition.intent_in.includes(routing.intent))) return false;
+  if (condition?.intent_not_in !== undefined && routing.intent !== undefined && condition.intent_not_in.includes(routing.intent)) return false;
+  if (condition?.execution_in !== undefined && !condition.execution_in.includes(routing.execution_surface)) return false;
+  if (condition?.multi_agent_route_in !== undefined && (routing.multi_agent_route === 'explicit' || !condition.multi_agent_route_in.includes(routing.multi_agent_route))) return false;
   return true;
 }
 function defaultSemantics(capability: ProviderCapability): { failure_policy: FailurePolicy; execution_scope: ExecutionScope } {
@@ -299,15 +318,16 @@ function capabilityPath(options: Readonly<Record<string, unknown>>, capability: 
   const key = capability === 'retrieval' ? 'search_path' : capability === 'answer' ? 'answer_path' : capability === 'research-light' ? 'research_light_path' : '';
   return key !== '' && typeof options[key] === 'string' ? options[key] as string : fallback;
 }
-function capabilityPort(ports: ProviderPorts | undefined, capability: ProviderCapability): SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']> | undefined {
+function capabilityPort(ports: ProviderPorts | undefined, capability: ProviderCapability): SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']> | NonNullable<ProviderPorts['multi_agent_research']> | undefined {
   if (capability === 'retrieval') return ports?.retrieval;
   if (capability === 'answer') return ports?.answer;
   if (capability === 'research-light') return ports?.research_light;
-  return undefined;
+  return ports?.multi_agent_research;
 }
 async function callCapability(
-  provider: SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']>,
+  provider: SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']> | NonNullable<ProviderPorts['multi_agent_research']>,
   capability: ProviderCapability, request: Omit<ProviderSearchRequest, 'signal'>, retrievalCount: number, signal: AbortSignal,
+  context: PlanExecutionContext,
 ): Promise<ProviderCapabilityResult> {
   const base = { query: request.query, profile: request.profile ?? 'default', ...(request.intent === undefined ? {} : { intent: request.intent }), ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc ?? new Date().toISOString(), signal };
   if (capability === 'retrieval') {
@@ -317,10 +337,17 @@ async function callCapability(
   }
   if (capability === 'answer') return await (provider as NonNullable<ProviderPorts['answer']>).answer({ ...base, capability: 'answer', limit: request.limit });
   if (capability === 'research-light') return await (provider as NonNullable<ProviderPorts['research_light']>).researchLight({ ...base, capability: 'research-light', retrieval_result_count: retrievalCount });
+  if (capability === 'multi-agent-research') {
+    if (context.scope !== 'research-job' || context.research_brief === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'Multi-agent research requires a frozen research brief.');
+    return await (provider as NonNullable<ProviderPorts['multi_agent_research']>).research({ ...base, capability: 'multi-agent-research', brief: context.research_brief, limit: request.limit });
+  }
   throw new NbSearchError('CAPABILITY_UNAVAILABLE', 'Selected capability is unavailable.');
 }
-function usableResult(result: ProviderCapabilityResult): boolean {
-  return result.capability === 'retrieval' ? result.results.length > 0 : result.capability === 'answer' ? (result.text?.trim().length ?? 0) > 0 : (result.synthesis?.trim().length ?? 0) > 0;
+function capabilityResultState(result: ProviderCapabilityResult): 'succeeded' | 'partial' | 'empty' {
+  if (result.capability === 'retrieval') return result.results.length > 0 ? 'succeeded' : 'empty';
+  if (result.capability === 'answer') return (result.text?.trim().length ?? 0) > 0 ? 'succeeded' : 'empty';
+  if (result.capability === 'research-light') return (result.synthesis?.trim().length ?? 0) > 0 ? 'succeeded' : 'empty';
+  return result.completeness === 'complete' ? 'succeeded' : result.completeness;
 }
 export function normalizedRetrievalResultCount(outcomes: readonly InvocationOutcome[]): number {
   const urls = new Set<string>();

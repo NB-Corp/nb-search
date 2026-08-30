@@ -79,7 +79,7 @@ describe('profile compiler and plan executor', () => {
               { provider_instance_id: 'tavily.default', capability: 'retrieval', role: 'second', trigger: 'always' },
             ] },
             { kind: 'augmentation', invocations: [
-              { provider_instance_id: 'fake.one', capability: 'multi-agent-research', role: 'brief', trigger: 'complex' },
+              { provider_instance_id: 'fake.one', capability: 'multi-agent-research', role: 'brief', trigger: 'complex', when: { execution_in: ['research-job'] } },
             ] },
           ] },
         },
@@ -87,7 +87,7 @@ describe('profile compiler and plan executor', () => {
     });
     const plan = compileSearchPlan({
       config: resolved.config, registry,
-      readiness: { 'exa.default': true, 'tavily.default': true, 'fake.one': true },
+      readiness: { 'exa.default': true, 'tavily.default': true, 'fake.one': true }, routing: { profile: 'default', execution_surface: 'research-job' },
     });
     expect(plan.stages[1]?.invocations).toHaveLength(1);
 

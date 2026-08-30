@@ -18,7 +18,7 @@ export async function runWorker(
   const bootstrapStore = new JobStore(jobsRoot);
   const snapshot = await bootstrapStore.readExecutionSnapshot(jobId);
   if (snapshot === undefined) {
-    const app = createRuntimeComposition({ ...env, NB_SEARCH_JOBS_ROOT: jobsRoot });
+    const app = createRuntimeComposition({ ...env, NB_SEARCH_JOBS_ROOT: jobsRoot }, { snapshotless_legacy_guard: true });
     await app.store.prune(app.config.retention_hours * 60 * 60 * 1000);
     const runner = new ResearchRunner(app.store, app.search, new Logger(app.config.log_level));
     await runner.run(jobId);
