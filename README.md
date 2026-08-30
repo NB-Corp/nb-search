@@ -8,6 +8,12 @@
 - pnpm 10.33.0 when building from source
 - At least one provider key for search: Exa, Tavily, or both
 
+Install the published package:
+
+```sh
+npm install --global @nb-corp/nb-search
+```
+
 Install dependencies and build:
 
 ```sh
@@ -87,7 +93,7 @@ The server exposes `search`, `research_start`, `research_status`, `research_read
 ## In-Process Runtime
 
 ```ts
-import { createNbSearchRuntime } from 'nb-search';
+import { createNbSearchRuntime } from '@nb-corp/nb-search';
 
 const runtime = createNbSearchRuntime({ env: process.env });
 const result = await runtime.search(

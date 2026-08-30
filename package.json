@@ -1,5 +1,5 @@
 {
-  "name": "nb-search",
+  "name": "@nb-corp/nb-search",
   "version": "0.1.0",
   "description": "Standalone synchronous search and durable research runtime",
   "license": "MIT",
