@@ -1,7 +1,7 @@
 {
   "name": "@nb-corp/nb-search",
   "version": "0.1.0",
-  "description": "Standalone synchronous search and durable research runtime",
+  "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -12,7 +12,8 @@
     ".": {
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
-    }
+    },
+    "./SKILL.md": "./SKILL.md"
   },
   "bin": {
     "nb-search": "./dist/cli.mjs",
@@ -20,7 +21,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "SKILL.md"
   ],
   "scripts": {
     "build": "tsdown",

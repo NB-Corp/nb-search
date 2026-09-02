@@ -1,125 +1,22 @@
-import type {
-  CapabilitiesInput, OperationContext, ResearchCancelInput, ResearchListInput, ResearchReadInput,
-  ResearchStartInput, ResearchStatusInput, SearchInput,
-} from './contracts.ts';
-import {
-  capabilitiesInputSchema, researchCancelInputSchema, researchListInputSchema, researchReadInputSchema,
-  researchStartInputSchema, researchStatusInputSchema, searchInputSchema,
-} from './contracts.ts';
-import type { SearchService } from './core.ts';
-import { NbSearchError } from './errors.ts';
-import type { ResearchService } from './research.ts';
-import type {
-  CapabilityEnvelope, JobStatusEnvelope, ResearchCancelEnvelope, ResearchListEnvelope, ResearchReadEnvelope,
-  ResearchStartEnvelope, SearchEnvelope,
-} from './types.ts';
+import type { AppConfiguration } from './config.ts';
+import { resultTtlSeconds } from './config-schema.ts';
+import { capabilitiesInputSchema, fetchInputSchema, searchInputSchema, type CapabilitiesInput, type FetchInput, type OperationContext, type SearchInput } from './contracts.ts';
+import { outputExceedsInlineLimit, outputTooLargeError, QueryEngine, FetchService } from './core.ts';
+import { NbSearchError, publicError } from './errors.ts';
+import { resolveSearchSelection } from './planner.ts';
+import type { QueryJobService } from './query-jobs.ts';
+import type { CapabilityEnvelope, FetchEnvelope, QueryExecution, QueryOperationOutput, SearchEnvelope, SearchRunAsyncEnvelope, SearchRunSyncEnvelope } from './types.ts';
 import { SCHEMA_VERSION } from './types.ts';
 
-export interface NbSearchRuntime {
-  search(input: SearchInput, context?: OperationContext): Promise<SearchEnvelope>;
-  researchStart(input: ResearchStartInput, context?: OperationContext): Promise<ResearchStartEnvelope>;
-  researchStatus(input: ResearchStatusInput, context?: OperationContext): Promise<JobStatusEnvelope>;
-  researchRead(input: ResearchReadInput, context?: OperationContext): Promise<ResearchReadEnvelope>;
-  researchList(input: ResearchListInput, context?: OperationContext): Promise<ResearchListEnvelope>;
-  researchCancel(input: ResearchCancelInput, context?: OperationContext): Promise<ResearchCancelEnvelope>;
-  capabilities(input?: CapabilitiesInput, context?: OperationContext): Promise<CapabilityEnvelope>;
-}
-
-interface RuntimeDependencies {
-  search: SearchService;
-  research: ResearchService;
-  requestId: () => string;
-  providerConfigured: Readonly<Record<'exa' | 'tavily', boolean> & Partial<Record<'grok' | 'grok-multi-agent', boolean>>>;
-  retentionHours: number;
-  providerInstances?: CapabilityEnvelope['providers']['instances'];
-  profiles?: CapabilityEnvelope['profiles'];
-  capabilityRoutes?: CapabilityEnvelope['capability_routes'];
-  configurationDiagnostics?: NonNullable<CapabilityEnvelope['diagnostics']['configuration']>;
-}
-
+export interface NbSearchRuntime { search(input: SearchInput, context?: OperationContext): Promise<SearchEnvelope>; fetch(input: FetchInput, context?: OperationContext): Promise<FetchEnvelope>; capabilities(input?: CapabilitiesInput, context?: OperationContext): Promise<CapabilityEnvelope> }
 export class NbSearchRuntimeImpl implements NbSearchRuntime {
-  constructor(private readonly dependencies: RuntimeDependencies) {}
-
-  async search(input: SearchInput, context: OperationContext = {}): Promise<SearchEnvelope> {
-    const parsed = searchInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.search.search({ ...parsed, signal: context.signal }, context.requestId);
-  }
-
-  async researchStart(input: ResearchStartInput, context: OperationContext = {}): Promise<ResearchStartEnvelope> {
-    const parsed = researchStartInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.research.start(parsed, context);
-  }
-
-  async researchStatus(input: ResearchStatusInput, context: OperationContext = {}): Promise<JobStatusEnvelope> {
-    const parsed = researchStatusInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.research.status(parsed.job_id, context.requestId);
-  }
-
-  async researchRead(input: ResearchReadInput, context: OperationContext = {}): Promise<ResearchReadEnvelope> {
-    const parsed = researchReadInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.research.read(parsed, context.requestId);
-  }
-
-  async researchList(input: ResearchListInput, context: OperationContext = {}): Promise<ResearchListEnvelope> {
-    const parsed = researchListInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.research.list(parsed, context.requestId);
-  }
-
-  async researchCancel(input: ResearchCancelInput, context: OperationContext = {}): Promise<ResearchCancelEnvelope> {
-    const parsed = researchCancelInputSchema.parse(input);
-    assertActive(context.signal);
-    return await this.dependencies.research.cancel(parsed.job_id, context.requestId);
-  }
-
-  async capabilities(input: CapabilitiesInput = {}, context: OperationContext = {}): Promise<CapabilityEnvelope> {
-    capabilitiesInputSchema.parse(input);
-    assertActive(context.signal);
-    return {
-      schema_version: SCHEMA_VERSION,
-      request_id: context.requestId ?? this.dependencies.requestId(),
-      mode: 'capabilities',
-      version: '0.1.0',
-      search: { max_results: 20, default_timeout_ms: 20_000, max_timeout_ms: 120_000 },
-      research: {
-        max_sources: 100,
-        max_duration_ms: 3_600_000,
-        detached_worker: true,
-        guaranteed_process_survival: false,
-        artifacts: ['summary', 'report', 'sources', 'capabilities', 'multi_agent_research'],
-        capability_once_per_job: true,
-        multi_agent_async_only: true,
-      },
-      providers: {
-        exa: { configured: this.dependencies.providerConfigured.exa },
-        tavily: { configured: this.dependencies.providerConfigured.tavily },
-        grok: { configured: this.dependencies.providerConfigured.grok === true },
-        'grok-multi-agent': { configured: this.dependencies.providerConfigured['grok-multi-agent'] === true },
-        ...(this.dependencies.providerInstances === undefined ? {} : { instances: this.dependencies.providerInstances }),
-      },
-      ...(this.dependencies.profiles === undefined ? {} : { profiles: this.dependencies.profiles }),
-      ...(this.dependencies.capabilityRoutes === undefined ? {} : { capability_routes: this.dependencies.capabilityRoutes }),
-      persistence: {
-        durable_jobs: true,
-        cancellation_markers: true,
-        retention_hours: this.dependencies.retentionHours,
-        stale_after_ms: 30_000,
-      },
-      transport: { mcp: 'stdio', cli_direct_service: true },
-      diagnostics: {
-        network_probe_performed: false,
-        ...(this.dependencies.configurationDiagnostics === undefined ? {} : {
-          configuration: this.dependencies.configurationDiagnostics,
-        }),
-      },
-    };
-  }
+  private readonly engine: QueryEngine; private readonly fetcher: FetchService;
+  constructor(private readonly app: AppConfiguration, private readonly jobs: QueryJobService, now?: () => Date) { this.engine = new QueryEngine(app, now); this.fetcher = new FetchService(app); }
+  async search(input: SearchInput, context: OperationContext = {}): Promise<SearchEnvelope> { const parsed = searchInputSchema.parse(input); assertActive(context.signal); if (parsed.action === 'get') return await this.jobs.get(parsed); if (parsed.action === 'read') return await this.jobs.read(parsed); if (parsed.action === 'cancel') return await this.jobs.cancel(parsed); const execution = parsed.execution ?? 'sync'; let selected; try { selected = resolveSearchSelection(parsed, this.app, execution); } catch (error) { return execution === 'async' ? failedAsync(error) : failedSync(error); } if (execution === 'async') return await this.jobs.start(parsed, selected); try { const output = await this.engine.execute(parsed, selected, context.signal); const maximum = this.app.resolved.config.execution.max_inline_bytes; if (outputExceedsInlineLimit(output, maximum)) return failedSync(outputTooLargeError(maximum), selected.selection); return { schema_version: SCHEMA_VERSION, action: 'run', execution: 'sync', selection: selected.selection, status: output.status, output, hints: output.hints }; } catch (error) { return failedSync(error, selected.selection); } }
+  async fetch(input: FetchInput, context: OperationContext = {}): Promise<FetchEnvelope> { const parsed = fetchInputSchema.parse(input); assertActive(context.signal); return await this.fetcher.fetch(parsed, context.signal); }
+  async capabilities(input: CapabilitiesInput = {}, context: OperationContext = {}): Promise<CapabilityEnvelope> { capabilitiesInputSchema.parse(input); assertActive(context.signal); const config = this.app.resolved.config; const searchLanes = Object.values(this.app.lanes).filter((lane) => lane.query_operation !== undefined).sort((a, b) => a.id.localeCompare(b.id)).map((lane) => ({ id: lane.id, output: projectOutput(lane.query_operation!.output), execution_modes: lane.execution_modes, availability: lane.availability, issues: lane.issues.map((code) => ({ code })), latency: lane.config.latency, cost: lane.config.cost })); const presets = Object.entries(config.presets).sort(([a], [b]) => a.localeCompare(b)).map(([name, preset]) => { const bindings = preset.lanes.map((id) => this.app.lanes[id]!); const ready = bindings.every((lane) => lane.availability === 'ready'); const asyncReady = ready && bindings.every((lane) => lane.execution_modes.includes('async')); return { name, lanes: [...preset.lanes], execution_modes: (ready ? asyncReady ? ['sync', 'async'] : ['sync'] : []) as QueryExecution[], availability: ready ? 'ready' as const : 'unavailable' as const, issues: bindings.flatMap((lane) => lane.issues.map((code) => ({ code }))) }; }); const fetchLanes = Object.values(this.app.lanes).filter((lane) => lane.fetch_operation !== undefined).sort((a, b) => a.id.localeCompare(b.id)).map((lane) => ({ id: lane.id, availability: lane.availability, issues: lane.issues.map((code) => ({ code })) })); return { schema_version: SCHEMA_VERSION, revision: this.app.resolved.config_revision, search: { ...(config.defaults.search_lane === undefined ? {} : { default_lane: config.defaults.search_lane }), lanes: searchLanes, presets, limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: config.execution.max_inline_bytes } }, fetch: { ...(config.defaults.fetch_lane === undefined ? {} : { default_lane: config.defaults.fetch_lane }), lanes: fetchLanes, limits: { max_response_bytes: config.execution.fetch.max_response_bytes, max_content_chars: config.execution.fetch.max_content_chars, max_redirects: config.execution.fetch.max_redirects, max_timeout_ms: 120_000 } }, jobs: { result_ttl_seconds: resultTtlSeconds(config.retention_hours), cancel_supported: true } }; }
 }
-
-function assertActive(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) throw new NbSearchError('CANCELLED', 'The operation was cancelled.');
-}
+function projectOutput(output: QueryOperationOutput): QueryOperationOutput { return output.channel === 'results' ? { channel: 'results', schema_id: 'nb-search.results@1' } : { channel: 'typed', schema_id: output.schema_id }; }
+function failedSync(error: unknown, selection?: import('./types.ts').SearchSelection): SearchRunSyncEnvelope { const safe = publicError(error); return { schema_version: SCHEMA_VERSION, action: 'run', execution: 'sync', ...(selection === undefined ? {} : { selection }), status: 'failed', error: safe, hints: [{ code: safe.code, message: safe.message, data: { retryable: safe.retryable } }] }; }
+function failedAsync(error: unknown): SearchRunAsyncEnvelope { const safe = publicError(error); return { schema_version: SCHEMA_VERSION, action: 'run', execution: 'async', status: 'failed', error: safe, hints: [{ code: safe.code, message: safe.message, data: { retryable: safe.retryable } }] }; }
+function assertActive(signal: AbortSignal | undefined): void { if (signal?.aborted === true) throw new NbSearchError('CANCELLED', 'The operation was cancelled.'); }

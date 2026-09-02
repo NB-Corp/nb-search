@@ -7,7 +7,7 @@ import { ResponseLimitError, type JsonTransport } from './transport.ts';
 import { normalizeUrl } from './url.ts';
 import type {
   AnswerProvider, CredentialSlotId, GmaClaim, GmaConfidence, GmaConflict, GmaEffort, GmaEvidenceStrength, GmaOmissions,
-  GmaResult, MultiAgentResearchProvider, ProfileId, ProviderAnswerCapabilityRequest, ProviderAnswerCapabilityResult,
+  GmaResult, MultiAgentResearchProvider, ProviderAnswerCapabilityRequest, ProviderAnswerCapabilityResult,
   ProviderInstanceId, ProviderName, ProviderResearchLightCapabilityRequest, ProviderResearchLightCapabilityResult,
   ProviderMultiAgentResearchCapabilityRequest, ProviderMultiAgentResearchCapabilityResult, ProviderResult,
   ProviderSearchRequest, ProviderSearchResponse, ResearchLightProvider, SearchProvider, SupportingUrl,
@@ -365,9 +365,8 @@ export class SearchGatewayProvider implements SearchProvider {
     try {
       const body = {
         query: request.query,
-        profile: resolveDownstreamProfile(this.options.downstreamProfile, request.profile, request.intent),
+        profile: this.options.downstreamProfile ?? 'default',
         num: request.limit,
-        ...(request.intent === undefined ? {} : { intent: request.intent }),
         ...(request.freshness === undefined ? {} : { freshness: request.freshness }),
       };
       const response = await this.options.transport.send<unknown>({
@@ -720,11 +719,7 @@ function validatedGrokBaseUrl(value: string): URL {
   return url;
 }
 
-function exaSearchType(request: ProviderSearchRequest): 'auto' | 'fast' | 'deep' {
-  if (request.intent === 'status' || request.intent === 'news') return 'fast';
-  if (request.intent === 'exploratory' && request.profile === 'deep') return 'deep';
-  return 'auto';
-}
+function exaSearchType(_request: ProviderSearchRequest): 'auto' { return 'auto'; }
 
 function freshnessDays(value: ProviderSearchRequest['freshness']): number | undefined {
   if (value === 'pd') return 1;
@@ -806,18 +801,6 @@ function safeProviderError(error: unknown, provider: ProviderName, redactions: r
     });
   }
   return new NbSearchError('PROVIDER_UNAVAILABLE', redactText(`${provider} provider failed.`, redactions), true, provider, { cause: error });
-}
-
-function resolveDownstreamProfile(
-  configured: string | undefined,
-  profile: ProfileId | undefined,
-  intent: ProviderSearchRequest['intent'],
-): string {
-  if (configured !== undefined) return configured;
-  if (intent === 'resource') return 'fast';
-  if (intent === 'factual' || intent === 'tutorial') return profile === 'fast' ? 'fast' : 'deep';
-  if (intent !== undefined) return 'deep';
-  return profile === 'fast' ? 'fast' : 'deep';
 }
 
 function semanticText(value: unknown, label: string): string | undefined {

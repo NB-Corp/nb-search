@@ -9,65 +9,39 @@ const root = resolve(import.meta.dirname, '..');
 const cli = resolve(root, 'dist/cli.mjs');
 const home = await mkdtemp(join(tmpdir(), 'nb-search-smoke-'));
 const configPath = join(home, 'config.json');
-const legacyPath = join(home, 'legacy.json');
-const env = {
-  NB_SEARCH_HOME: home,
-  NB_SEARCH_CONFIG: configPath,
-  SEARCH_LAYER_CREDENTIALS: legacyPath,
-};
-
+const env = { NB_SEARCH_HOME: home, NB_SEARCH_CONFIG: configPath };
 try {
-  await writeFile(configPath, JSON.stringify({
-    provider_instances: {
-      'exa.default': { enabled: false },
-      'tavily.default': { enabled: false },
-    },
-  }));
-  await writeFile(legacyPath, '{}');
-  let oneStep;
+  await writeFile(configPath, JSON.stringify({ schema_version: '3', defaults: { search_lane: 'exa.search', fetch_lane: 'direct.fetch' } }));
+  let search;
   try {
-    await execute(process.execPath, [cli, 'offline-smoke'], { cwd: root, env });
-    throw new Error('One-step search unexpectedly succeeded without a provider.');
+    await execute(process.execPath, [cli, 'search', 'offline-smoke'], { cwd: root, env });
+    throw new Error('Offline search unexpectedly succeeded.');
   } catch (error) {
     if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 2 || !('stdout' in error)) throw error;
-    oneStep = JSON.parse(String(error.stdout));
+    search = JSON.parse(String(error.stdout));
   }
-  assert(oneStep.mode === 'search' && oneStep.state === 'failed' && oneStep.error?.code === 'CONFIGURATION_ERROR', 'one-step CLI envelope');
+  assert(search.action === 'run' && search.execution === 'sync' && search.status === 'failed' && search.error?.code === 'LANE_NOT_CONFIGURED', 'offline search failure envelope');
 
-  const started = await run(['research', 'start', 'offline-research-smoke', '--max-sources', '5', '--max-duration-ms', '60000']);
-  const receipt = JSON.parse(started.stdout);
-  let terminal;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-    terminal = JSON.parse((await run(['research', 'status', receipt.job.job_id])).stdout);
-    if (['succeeded', 'partial', 'failed', 'timed_out', 'cancelled'].includes(terminal.state)) break;
-  }
-  assert(terminal?.state === 'failed' && terminal.error?.code === 'CONFIGURATION_ERROR', 'research worker terminal state');
-
-  const capabilities = JSON.parse((await run(['capabilities'])).stdout);
-  assert(capabilities.mode === 'capabilities', 'capabilities CLI envelope');
-  const cliSource = await readFile(cli, 'utf8');
-  assert(!/@modelcontextprotocol|StdioClientTransport|createNbSearchMcpServer/.test(cliSource), 'CLI artifact has no MCP construction path');
+  const capabilities = JSON.parse((await execute(process.execPath, [cli, 'capabilities'], { cwd: root, env })).stdout);
+  assert(capabilities.schema_version === '3.0' && Array.isArray(capabilities.search?.lanes) && capabilities.jobs?.cancel_supported === true, 'capabilities envelope');
+  assert(capabilities.fetch.lanes.some((lane) => lane.id === 'direct.fetch' && lane.availability === 'ready'), 'direct.fetch capability');
 
   const publicModule = await import(new URL('../dist/index.mjs', import.meta.url));
   const runtime = publicModule.createNbSearchRuntime({ env });
-  assert((await runtime.capabilities()).mode === 'capabilities', 'native public export import');
+  const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(runtime)).filter((name) => name !== 'constructor').sort();
+  assert(JSON.stringify(methods) === JSON.stringify(['capabilities', 'fetch', 'search']), 'three-method SDK');
+  for (const removed of ['answer', 'deepStart', 'deepStatus', 'deepRead', 'deepList', 'deepCancel', 'researchStart', 'listJobs']) assert(runtime[removed] === undefined, `removed SDK method ${removed}`);
+  assert(publicModule.createNodeDirectFetchIo === undefined && publicModule.createTestOnlyNodeDirectFetchIo === undefined && publicModule.nodeDirectFetchIo === undefined && publicModule.DirectFetchProvider === undefined, 'SSRF test seam is not public');
 
-  process.stdout.write(`${JSON.stringify({
-    one_step_state: oneStep.state,
-    one_step_exit: 2,
-    research_job: receipt.job.job_id,
-    research_terminal: terminal.state,
-    capabilities: capabilities.mode,
-    public_exports: Object.keys(publicModule).sort(),
-  })}\n`);
+  const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+  assert(packageJson.files.includes('SKILL.md') && packageJson.exports['./SKILL.md'] === './SKILL.md', 'skill publish shape');
+  assert((await readFile(resolve(root, 'SKILL.md'), 'utf8')).includes('nb-search 使用协议'), 'skill file');
+  const cliSource = await readFile(cli, 'utf8');
+  assert(!/@modelcontextprotocol|StdioClientTransport|createNbSearchMcpServer/.test(cliSource), 'CLI artifact has no MCP construction path');
+  process.stdout.write(`${JSON.stringify({ search_status: search.status, search_code: search.error.code, schema_version: capabilities.schema_version, sdk_methods: methods, public_exports: Object.keys(publicModule).sort(), skill: true })}\n`);
 } finally {
   const rel = relative(resolve(tmpdir()), resolve(home));
   if (rel === basename(home) && !rel.startsWith(`..${sep}`)) await rm(home, { recursive: true, force: true });
-}
-
-async function run(args) {
-  return await execute(process.execPath, [cli, ...args], { cwd: root, env });
 }
 
 function assert(condition, label) {

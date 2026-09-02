@@ -1,391 +1,56 @@
 import { setTimeout as delay } from 'node:timers/promises';
-
-import type { CanonicalConfig, RetryPolicyConfig } from './config-schema.ts';
-import { stableFingerprint } from './config-schema.ts';
+import type { AppConfiguration, LaneBinding } from './config.ts';
+import type { SearchRunInput } from './contracts.ts';
 import { NbSearchError, publicError } from './errors.ts';
-import type { ProviderPorts, ProviderRegistry } from './provider-registry.ts';
-import { safeErrorMessage } from './redaction.ts';
-import type {
-  AttemptState, CapabilityOutcomeState, Freshness, ProviderCapability, ProviderCapabilityResult, ProviderResult,
-  ProviderSearchRequest, PublicError, SearchAttempt, SearchIntent, SearchProvider, ProviderSearchResponse,
-  ProviderSearchReturn,
-} from './types.ts';
 import { normalizeUrl } from './url.ts';
+import type { LaneAttempt, PublicError, QueryExecution, ResultProvenance, SearchResult, SearchSelection } from './types.ts';
 
-export const PLAN_SCHEMA_VERSION = '3' as const;
-export type ExecutionSurface = 'sync' | 'research-job';
-export type MultiAgentRoute = 'none' | 'replacement' | 'overlay' | 'explicit';
-
-export interface HealthSnapshot {
-  unavailable_provider_capabilities: readonly string[];
-  rate_limited_credential_slots: readonly string[];
-  unavailable_model_instances: readonly string[];
-  unready_credential_slots: readonly string[];
+export interface ResolvedSearchSelection { selection: SearchSelection; lanes: LaneBinding[]; channel: 'results' | 'typed'; schema_id: string }
+export function resolveSearchSelection(input: SearchRunInput, app: AppConfiguration, execution: QueryExecution): ResolvedSearchSelection {
+  let selection: SearchSelection;
+  if (input.lane !== undefined) selection = { source: 'lane', lanes: [input.lane], requested: input.lane };
+  else if (input.lanes !== undefined) { if (new Set(input.lanes).size !== input.lanes.length) throw new NbSearchError('INVALID_INPUT', 'lanes must contain unique IDs.'); selection = { source: 'lanes', lanes: [...input.lanes], requested: [...input.lanes] }; }
+  else if (input.preset !== undefined) { const preset = app.resolved.config.presets[input.preset]; if (preset === undefined) throw new NbSearchError('PRESET_NOT_FOUND', `Preset ${input.preset} is not configured.`); selection = { source: 'preset', lanes: [...preset.lanes], requested: input.preset }; }
+  else { const lane = app.resolved.config.defaults.search_lane; if (lane === undefined) throw new NbSearchError('DEFAULT_NOT_CONFIGURED', 'Default search lane is not configured.'); selection = { source: 'default', lanes: [lane] }; }
+  const lanes = selection.lanes.map((id) => { const lane = app.lanes[id]; if (lane?.query_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Query lane ${id} is not registered.`); if (lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Query lane ${id} is unavailable.`); if (!lane.execution_modes.includes(execution)) throw new NbSearchError('LANE_EXECUTION_UNSUPPORTED', `Query lane ${id} does not support ${execution}.`); return lane; });
+  const channels = new Set(lanes.map((lane) => lane.query_operation!.output.channel)); if (channels.size !== 1) throw new NbSearchError('MIXED_OUTPUT_UNSUPPORTED', 'Mixed query output channels are not supported.'); const channel = lanes[0]!.query_operation!.output.channel;
+  if (channel === 'typed' && lanes.length !== 1) throw new NbSearchError('MIXED_OUTPUT_UNSUPPORTED', 'Typed query operations require a single lane.');
+  if ((input.lanes !== undefined || input.preset !== undefined) && channel !== 'results') throw new NbSearchError('MIXED_OUTPUT_UNSUPPORTED', 'lanes and preset support results operations only.');
+  return { selection, lanes, channel, schema_id: lanes[0]!.query_operation!.output.schema_id };
 }
-export type HealthCause = 'transient_provider_capability' | 'rate_limit_credential_slot' | 'model_instance' | 'credential_readiness';
-export interface HealthEvent { cause: HealthCause; identity: string; at: string; error_code?: string }
-export interface HealthStore { snapshot(): HealthSnapshot; record(event: HealthEvent): void }
-export class NoopHealthStore implements HealthStore { snapshot(): HealthSnapshot { return emptyHealthSnapshot(); } record(): void {} }
-export class InMemoryHealthStore implements HealthStore {
-  private readonly events: HealthEvent[] = [];
-  record(event: HealthEvent): void { this.events.push(structuredClone(event)); }
-  snapshot(): HealthSnapshot {
-    const snapshot = emptyHealthSnapshot();
-    for (const event of this.events) {
-      if (event.cause === 'transient_provider_capability') snapshot.unavailable_provider_capabilities.push(event.identity);
-      else if (event.cause === 'rate_limit_credential_slot') snapshot.rate_limited_credential_slots.push(event.identity);
-      else if (event.cause === 'model_instance') snapshot.unavailable_model_instances.push(event.identity);
-      else snapshot.unready_credential_slots.push(event.identity);
+export function resolveFetchLane(laneId: string | undefined, app: AppConfiguration): { source: 'default' | 'lane'; lane: LaneBinding } {
+  const id = laneId ?? app.resolved.config.defaults.fetch_lane; if (id === undefined) throw new NbSearchError('FETCH_DEFAULT_NOT_CONFIGURED', 'Default fetch lane is not configured.'); const lane = app.lanes[id]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch lane ${id} is not registered.`); if (lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Fetch lane ${id} is unavailable.`); return { source: laneId === undefined ? 'default' : 'lane', lane };
+}
+export function assertAttemptBudget(unitCount: number, retryCount: number, maxProviderCalls: number): void { if (unitCount * (retryCount + 1) > maxProviderCalls) throw new NbSearchError('BUDGET_EXCEEDED', 'The execution plan exceeds the provider attempt limit.'); }
+export interface ExecutionUnit<T> { lane: string; provider_instance_id: string; run(signal: AbortSignal): Promise<T> }
+export interface UnitResult<T> { lane: string; provider_instance_id: string; value?: T; error?: PublicError; state: 'succeeded' | 'failed' | 'timeout' | 'cancelled'; duration_ms: number; attempts: LaneAttempt[] }
+export async function executeUnits<T>(units: readonly ExecutionUnit<T>[], options: { timeout_ms: number; max_concurrency: number; retry_count: number; max_provider_calls: number; signal?: AbortSignal; now?: () => number; sleep?: (ms: number, signal: AbortSignal) => Promise<void> }): Promise<UnitResult<T>[]> {
+  assertAttemptBudget(units.length, options.retry_count, options.max_provider_calls); const now = options.now ?? (() => performance.now()); const sleep = options.sleep ?? (async (ms, signal) => { await delay(ms, undefined, { signal }); }); const deadline = new AbortController(); const timer = setTimeout(() => deadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Execution deadline was exceeded.', true)), options.timeout_ms); const signal = options.signal === undefined ? deadline.signal : AbortSignal.any([options.signal, deadline.signal]); const results = new Array<UnitResult<T>>(units.length); let cursor = 0; let attemptsUsed = 0;
+  const worker = async (): Promise<void> => { for (;;) { const index = cursor; cursor += 1; const unit = units[index]; if (unit === undefined) return; const started = now(); const attempts: LaneAttempt[] = []; let final: UnitResult<T> | undefined;
+    for (let attempt = 1; attempt <= options.retry_count + 1; attempt += 1) {
+      if (signal.aborted) { const terminal = classifyAbort(options.signal, deadline.signal)!; final = { lane: unit.lane, provider_instance_id: unit.provider_instance_id, state: terminal.state, duration_ms: Math.max(0, Math.round(now() - started)), error: terminal.error, attempts }; break; }
+      if (attemptsUsed >= options.max_provider_calls) { const error = new NbSearchError('BUDGET_EXCEEDED', 'The provider attempt limit was reached.').toPublic(); final = { lane: unit.lane, provider_instance_id: unit.provider_instance_id, state: 'failed', duration_ms: Math.max(0, Math.round(now() - started)), error, attempts }; break; }
+      attemptsUsed += 1; const attemptStarted = now();
+      try { const value = await raceAbort(unit.run(signal), signal); attempts.push({ lane: unit.lane, provider_instance_id: unit.provider_instance_id, attempt, state: 'succeeded', duration_ms: elapsed(attemptStarted, now()) }); final = { lane: unit.lane, provider_instance_id: unit.provider_instance_id, state: 'succeeded', duration_ms: elapsed(started, now()), value, attempts }; break; }
+      catch (error) { const terminal = classifyAbort(options.signal, deadline.signal); const safe = terminal?.error ?? publicError(error, 'Provider execution failed.'); const state = terminal?.state ?? 'failed' as const; attempts.push({ lane: unit.lane, provider_instance_id: unit.provider_instance_id, attempt, state, duration_ms: elapsed(attemptStarted, now()), error: safe }); if (terminal !== undefined || attempt > options.retry_count || !safe.retryable) { final = { lane: unit.lane, provider_instance_id: unit.provider_instance_id, state, duration_ms: elapsed(started, now()), error: safe, attempts }; break; }
+        try { await sleep(Math.min(2_000, 100 * (2 ** (attempt - 1))), signal); } catch (backoffError) { const backoff = classifyAbort(options.signal, deadline.signal); if (backoff === undefined) throw backoffError; const last = attempts.at(-1)!; last.state = backoff.state; last.error = backoff.error; last.duration_ms = elapsed(attemptStarted, now()); final = { lane: unit.lane, provider_instance_id: unit.provider_instance_id, state: backoff.state, duration_ms: elapsed(started, now()), error: backoff.error, attempts }; break; }
+      }
     }
-    return snapshot;
-  }
-  history(): readonly HealthEvent[] { return structuredClone(this.events); }
+    results[index] = final!;
+  } };
+  try { await Promise.all(Array.from({ length: Math.min(options.max_concurrency, units.length) }, worker)); } finally { clearTimeout(timer); } return results;
 }
+function classifyAbort(externalSignal: AbortSignal | undefined, deadlineSignal: AbortSignal): { state: 'cancelled' | 'timeout' | 'failed'; error: PublicError } | undefined { if (externalSignal?.aborted === true) { const reason = externalSignal.reason; if (reason instanceof NbSearchError && reason.code !== 'CANCELLED') return { state: 'failed', error: reason.toPublic() }; return { state: 'cancelled', error: new NbSearchError('CANCELLED', 'Execution was cancelled.').toPublic() }; } if (deadlineSignal.aborted) return { state: 'timeout', error: new NbSearchError('DEADLINE_EXCEEDED', 'Execution deadline was exceeded.', true).toPublic() }; return undefined; }
+async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> { if (signal.aborted) throw signal.reason; return await new Promise<T>((resolve, reject) => { const abort = (): void => reject(signal.reason); signal.addEventListener('abort', abort, { once: true }); promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort)).catch(() => undefined); }); }
+function elapsed(start: number, end: number): number { return Math.max(0, Math.round(end - start)); }
 
-export type FailurePolicy = 'affects-state' | 'report-only';
-export type ExecutionScope = 'per-operation' | 'once-per-job';
-export interface PlanInvocation {
-  invocation_id: string; provider_id: string; provider_instance_id: string; credential_slot_id?: string;
-  capability: ProviderCapability; role: string; trigger: string; timeout_ms: number; retry: RetryPolicyConfig;
-  failure_policy?: FailurePolicy; execution_scope?: ExecutionScope;
-}
-export interface PlanStage { stage_id: string; kind: 'parallel' | 'fallback' | 'augmentation'; invocations: readonly PlanInvocation[] }
-export interface PlanOmission {
-  stage_id: string; stage_index: number; invocation_index: number; invocation_id: string; provider_id: string;
-  provider_instance_id: string; credential_slot_id?: string; capability: ProviderCapability; role: string; trigger: string;
-  failure_policy: FailurePolicy; execution_scope: ExecutionScope;
-  reason: 'instance-unready' | 'capability-unready' | 'health-suppressed';
-}
-export interface SearchPlan {
-  plan_version: typeof PLAN_SCHEMA_VERSION | '2' | '1'; profile_id: string; stages: readonly PlanStage[]; omissions?: readonly PlanOmission[];
-  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness; execution_surface?: ExecutionSurface; multi_agent_route?: MultiAgentRoute }; plan_fingerprint: string;
-}
-export interface CompilePlanOptions {
-  config: CanonicalConfig; registry: ProviderRegistry;
-  readiness?: Readonly<Record<string, boolean>>;
-  capability_readiness?: Readonly<Record<string, Readonly<Partial<Record<ProviderCapability, boolean>>>>>;
-  health?: HealthSnapshot; profile_id?: string;
-  routing?: { profile: string; intent?: SearchIntent; freshness?: Freshness; execution_surface?: ExecutionSurface; multi_agent_route?: MultiAgentRoute };
-}
-
-export function compileSearchPlan(options: CompilePlanOptions): SearchPlan {
-  const profileId = options.routing?.profile ?? options.profile_id ?? options.config.default_profile_id;
-  const profile = options.config.profiles[profileId];
-  if (profile === undefined) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} is not configured.`);
-  const executionSurface = options.routing?.execution_surface ?? 'sync';
-  const gma = options.config.provider_instances['grok-multi-agent.default'];
-  const analysis = options.routing?.intent === 'status' || options.routing?.intent === 'comparison' || options.routing?.intent === 'exploratory' || options.routing?.intent === 'news';
-  const explicitGma = profile.stages.some((stage) => stage.invocations.some((item) => item.capability === 'multi-agent-research' && item.when?.multi_agent_route_in === undefined));
-  const derivedMultiAgentRoute: MultiAgentRoute = options.routing?.multi_agent_route ?? (executionSurface === 'research-job' && explicitGma
-    ? 'explicit' : executionSurface === 'research-job' && profileId === 'deep' && analysis && gma?.enabled === true
-      ? gma.options['replace_grok'] === true ? 'replacement' : 'overlay' : 'none');
-  const routing = { profile: profileId, ...(options.routing?.intent === undefined ? {} : { intent: options.routing.intent }), ...(options.routing?.freshness === undefined ? {} : { freshness: options.routing.freshness }), execution_surface: executionSurface, multi_agent_route: derivedMultiAgentRoute };
-  const health = options.health ?? emptyHealthSnapshot();
-  const usedBriefSlots = new Set<string>();
-  const usedOperations = new Set<string>();
-  const stages: PlanStage[] = [];
-  const omissions: PlanOmission[] = [];
-  profile.stages.forEach((sourceStage, stageIndex) => {
-    const invocations: PlanInvocation[] = [];
-    sourceStage.invocations.forEach((sourceInvocation, invocationIndex) => {
-      if (!conditionMatches(sourceInvocation.when, routing)) return;
-      const instance = options.config.provider_instances[sourceInvocation.provider_instance_id];
-      if (instance === undefined) return;
-      const descriptor = options.registry.descriptor(instance.provider_id);
-      const defaults = defaultSemantics(sourceInvocation.capability);
-      const failurePolicy = sourceInvocation.failure_policy ?? defaults.failure_policy;
-      const executionScope = sourceInvocation.execution_scope ?? defaults.execution_scope;
-      const seed = { profile_id: profileId, stage_index: stageIndex, invocation_index: invocationIndex, provider_instance_id: sourceInvocation.provider_instance_id, capability: sourceInvocation.capability, role: sourceInvocation.role, trigger: sourceInvocation.trigger };
-      const invocationId = `inv-${String(stageIndex + 1)}-${String(invocationIndex + 1)}-${stableFingerprint(seed).slice(0, 10)}`;
-      const operationPath = capabilityPath(instance.options, sourceInvocation.capability, descriptor?.operations.find((item) => item.capability === sourceInvocation.capability)?.path ?? '');
-      const operationKey = `${sourceInvocation.provider_instance_id}:${sourceInvocation.capability}:${operationPath}`;
-      if (usedOperations.has(operationKey)) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} selects duplicate provider operation ${operationKey}.`);
-      usedOperations.add(operationKey);
-      if (sourceInvocation.capability === 'multi-agent-research') {
-        if (usedBriefSlots.size > 0) throw new NbSearchError('CONFIGURATION_ERROR', `Search profile ${profileId} selects more than one multi-agent research brief.`);
-        usedBriefSlots.add(sourceInvocation.provider_instance_id);
-      }
-      const healthIdentity = `${sourceInvocation.provider_instance_id}:${sourceInvocation.capability}`;
-      const healthSuppressed = health.unavailable_provider_capabilities.includes(healthIdentity)
-        || health.unavailable_model_instances.includes(sourceInvocation.provider_instance_id)
-        || (instance.credential_slot_id !== undefined && (health.unready_credential_slots.includes(instance.credential_slot_id) || health.rate_limited_credential_slots.includes(instance.credential_slot_id)));
-      const instanceReady = instance.enabled && (options.readiness === undefined || options.readiness[sourceInvocation.provider_instance_id] === true);
-      const descriptorSupports = descriptor?.capabilities.includes(sourceInvocation.capability) === true;
-      const capabilityReady = options.capability_readiness?.[sourceInvocation.provider_instance_id]?.[sourceInvocation.capability]
-        ?? (instanceReady && descriptorSupports);
-      if (!instanceReady || !descriptorSupports || !capabilityReady || healthSuppressed) {
-        if (sourceInvocation.capability !== 'retrieval') omissions.push({
-          stage_id: `stage-${String(stageIndex + 1)}`, stage_index: stageIndex, invocation_index: invocationIndex,
-          invocation_id: invocationId, provider_id: instance.provider_id, provider_instance_id: sourceInvocation.provider_instance_id,
-          ...(instance.credential_slot_id === undefined ? {} : { credential_slot_id: instance.credential_slot_id }),
-          capability: sourceInvocation.capability, role: sourceInvocation.role, trigger: sourceInvocation.trigger,
-          failure_policy: failurePolicy, execution_scope: executionScope,
-          reason: healthSuppressed ? 'health-suppressed' : instanceReady && descriptorSupports ? 'capability-unready' : 'instance-unready',
-        });
-        return;
-      }
-      const capabilityPolicy = instance.capability_policies?.[sourceInvocation.capability];
-      const retry: RetryPolicyConfig = { ...instance.retry, ...capabilityPolicy?.retry, ...sourceInvocation.retry };
-      invocations.push({
-        invocation_id: invocationId, provider_id: instance.provider_id, provider_instance_id: sourceInvocation.provider_instance_id,
-        ...(instance.credential_slot_id === undefined ? {} : { credential_slot_id: instance.credential_slot_id }),
-        capability: sourceInvocation.capability, role: sourceInvocation.role, trigger: sourceInvocation.trigger,
-        timeout_ms: sourceInvocation.timeout_ms ?? capabilityPolicy?.timeout_ms ?? instance.timeout_ms, retry,
-        failure_policy: failurePolicy, execution_scope: executionScope,
-      });
-    });
-    if (invocations.length > 0) stages.push({ stage_id: `stage-${String(stageIndex + 1)}`, kind: sourceStage.kind, invocations });
+export interface ResultList { lane: LaneBinding; query_index: number; rows: readonly import('./types.ts').ProviderResult[] }
+export function mergeResultLists(lists: readonly ResultList[], limit: number): { results: SearchResult[]; input_rows: number; canonical_dedup: number; independent_evidence_groups: number } {
+  const single = lists.length === 1; const merged = new Map<string, SearchResult & { first_position: number; score_total: number }>(); let inputRows = 0; let validRows = 0;
+  lists.forEach((list, listIndex) => { const within = new Map<string, { row: import('./types.ts').ProviderResult; rank: number; groups: string[]; provenance: ResultProvenance[] }>(); list.rows.forEach((row, rank) => { inputRows += 1; const canonical = normalizeUrl(row.url); if (canonical === undefined) return; validRows += 1; const groups = evidenceGroups(row, list.lane); const provenance: ResultProvenance = { lane: list.lane.id, provider_instance_id: list.lane.config.provider_instance_id, query_index: list.query_index, rank, original_url: row.url, evidence_groups: groups, ...(row.upstream_attribution === undefined ? {} : { upstream: row.upstream_attribution }) }; const existing = within.get(canonical); if (existing !== undefined) { existing.provenance.push(provenance); existing.groups = [...new Set([...existing.groups, ...groups])].sort(); if ((existing.row.snippet ?? '') === '' && row.snippet !== undefined) existing.row = { ...existing.row, snippet: row.snippet }; return; } within.set(canonical, { row, rank, groups, provenance: [provenance] }); });
+    for (const [canonical, item] of within) { const score = single ? 0 : 1 / (60 + item.rank + 1); const position = listIndex * 1_000_000 + item.rank; const existing = merged.get(canonical); if (existing !== undefined) { existing.score_total += score; existing.provenance.push(...item.provenance); existing.evidence_groups = [...new Set([...existing.evidence_groups, ...item.groups])].sort(); if (existing.snippet === '' && item.row.snippet !== undefined) existing.snippet = clean(item.row.snippet); continue; } merged.set(canonical, { title: clean(item.row.title), url: canonical, snippet: clean(item.row.snippet ?? ''), ...(item.row.published_at === undefined ? {} : { published_at: item.row.published_at }), ...(item.row.site_name === undefined ? {} : { site_name: item.row.site_name }), evidence_groups: item.groups, provenance: item.provenance, first_position: position, score_total: score }); }
   });
-  const base = { plan_version: PLAN_SCHEMA_VERSION, profile_id: profileId, stages, omissions, routing };
-  return deepFreeze({ ...base, plan_fingerprint: stableFingerprint(base) });
+  const values = [...merged.values()]; if (!single) values.sort((a, b) => b.score_total - a.score_total || a.first_position - b.first_position || a.url.localeCompare(b.url)); const results = values.slice(0, limit).map(({ first_position: _position, score_total, ...item }) => ({ ...item, ...(single ? {} : { rrf_score: score_total }) })); return { results, input_rows: inputRows, canonical_dedup: validRows - merged.size, independent_evidence_groups: new Set(results.flatMap((item) => item.evidence_groups).filter((group) => group !== 'unknown')).size };
 }
-
-export function isSearchPlanExecutable(plan: SearchPlan): boolean { return plan.stages.some((stage) => stage.invocations.length > 0); }
-export function hasSelectedPlanWork(plan: SearchPlan): boolean { return isSearchPlanExecutable(plan) || (plan.omissions?.length ?? 0) > 0; }
-
-export interface InvocationOutcome {
-  invocation: PlanInvocation; attempts: SearchAttempt[]; state: CapabilityOutcomeState;
-  result?: ProviderCapabilityResult; results: readonly ProviderResult[]; error?: PublicError;
-}
-export interface PlanExecution {
-  outcomes: readonly InvocationOutcome[]; omissions: readonly PlanOmission[];
-  caller_cancelled: boolean; deadline_exceeded: boolean; completed_once_per_job_invocation_ids: ReadonlySet<string>;
-}
-export interface PlanExecutionContext {
-  scope: 'sync' | 'research-job'; completed_once_per_job_invocation_ids: ReadonlySet<string>;
-  capture_augmentations?: (items: readonly import('./types.ts').CapabilityAugmentation[]) => void;
-  capture_capabilities?: (items: readonly import('./types.ts').CapabilityCapture[]) => void;
-  research_brief?: string; operation_budget_ms?: number;
-}
-export interface PlanExecutorOptions {
-  providers?: ReadonlyMap<string, SearchProvider>; ports_by_instance?: ReadonlyMap<string, ProviderPorts>;
-  health?: HealthStore; now?: () => Date; monotonicNow?: () => number; sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-}
-
-export class PlanExecutor {
-  private readonly health: HealthStore;
-  private readonly now: () => Date;
-  private readonly monotonicNow: () => number;
-  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
-  private readonly ports: ReadonlyMap<string, ProviderPorts>;
-  constructor(private readonly options: PlanExecutorOptions) {
-    this.health = options.health ?? new NoopHealthStore();
-    this.now = options.now ?? (() => new Date());
-    this.monotonicNow = options.monotonicNow ?? (() => performance.now());
-    this.sleep = options.sleep ?? (async (ms, signal) => { await delay(ms, undefined, { signal }); });
-    this.ports = options.ports_by_instance ?? new Map([...(options.providers ?? new Map()).entries()].map(([id, provider]) => [id, { retrieval: provider }]));
-  }
-
-  async execute(
-    plan: SearchPlan,
-    request: Omit<ProviderSearchRequest, 'signal'>,
-    budgetMs: number,
-    callerSignal?: AbortSignal,
-    context: PlanExecutionContext = { scope: 'sync', completed_once_per_job_invocation_ids: new Set() },
-  ): Promise<PlanExecution> {
-    const deadlineAt = this.monotonicNow() + budgetMs;
-    const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true)), budgetMs);
-    const signal = callerSignal === undefined ? deadline.signal : AbortSignal.any([callerSignal, deadline.signal]);
-    const outcomes: InvocationOutcome[] = [];
-    const completed = new Set(context.completed_once_per_job_invocation_ids);
-    const selectedOmissions = (plan.omissions ?? []).filter((item) => item.execution_scope !== 'once-per-job' || !completed.has(item.invocation_id));
-    for (const omission of selectedOmissions) if (omission.execution_scope === 'once-per-job') completed.add(omission.invocation_id);
-    try {
-      for (const stage of plan.stages) {
-        if (signal.aborted) break;
-        const eligible = stage.invocations.filter((item) => (item.execution_scope ?? defaultSemantics(item.capability).execution_scope) !== 'once-per-job' || !completed.has(item.invocation_id));
-        if (eligible.length === 0) continue;
-        const retrievalCount = normalizedRetrievalResultCount(outcomes);
-        if (stage.kind === 'fallback') {
-          for (const invocation of eligible) {
-            const outcome = await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt, context);
-            outcomes.push(outcome);
-            if ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job') completed.add(invocation.invocation_id);
-            if (outcome.state === 'succeeded') break;
-            if (signal.aborted) break;
-          }
-        } else {
-          const stageOutcomes = await Promise.all(eligible.map(async (invocation) => await this.runInvocation(invocation, request, retrievalCount, signal, callerSignal, deadline, deadlineAt, context)));
-          outcomes.push(...stageOutcomes);
-          for (const invocation of eligible) if ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job') completed.add(invocation.invocation_id);
-        }
-      }
-    } finally { clearTimeout(timer); }
-    if (signal.aborted) {
-      const completedOutcomeIds = new Set(outcomes.map((item) => item.invocation.invocation_id));
-      for (const invocation of plan.stages.flatMap((stage) => stage.invocations)) {
-        if (invocation.capability === 'retrieval' || completedOutcomeIds.has(invocation.invocation_id)
-          || ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job'
-            && context.completed_once_per_job_invocation_ids.has(invocation.invocation_id))) continue;
-        const cancelled = callerSignal?.aborted === true;
-        const error = cancelled
-          ? new NbSearchError('CANCELLED', 'Search was cancelled.', false, invocation.provider_id).toPublic()
-          : new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, invocation.provider_id).toPublic();
-        outcomes.push({ invocation, attempts: [], state: cancelled ? 'cancelled' : 'timed_out', results: [], error });
-        if ((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'once-per-job') completed.add(invocation.invocation_id);
-      }
-    }
-    return { outcomes, omissions: selectedOmissions, caller_cancelled: callerSignal?.aborted === true, deadline_exceeded: callerSignal?.aborted !== true && deadline.signal.aborted, completed_once_per_job_invocation_ids: completed };
-  }
-
-  private async runInvocation(
-    invocation: PlanInvocation, request: Omit<ProviderSearchRequest, 'signal'>, retrievalCount: number,
-    outerSignal: AbortSignal, callerSignal: AbortSignal | undefined, overallDeadline: AbortController, deadlineAt: number,
-    context: PlanExecutionContext,
-  ): Promise<InvocationOutcome> {
-    const ports = this.ports.get(invocation.provider_instance_id);
-    const provider = capabilityPort(ports, invocation.capability);
-    if (provider === undefined) {
-      const error = new NbSearchError('CAPABILITY_UNAVAILABLE', `Provider capability ${invocation.provider_instance_id}:${invocation.capability} is unavailable.`, false, invocation.provider_id).toPublic();
-      return { invocation, state: 'unavailable', results: [], attempts: [], error };
-    }
-    const attempts: SearchAttempt[] = [];
-    for (let attempt = 1; attempt <= invocation.retry.max_attempts; attempt += 1) {
-      const remainingMs = Math.floor(deadlineAt - this.monotonicNow());
-      if (remainingMs <= 0) {
-        if (!overallDeadline.signal.aborted) overallDeadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true));
-        const error = new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, invocation.provider_id).toPublic();
-        attempts.push(attemptRecord(invocation, attempt, 'timed_out', 0, 0, error));
-        return { invocation, state: 'timed_out', attempts, results: [], error };
-      }
-      const attemptDeadline = new AbortController();
-      const timer = setTimeout(() => attemptDeadline.abort(new NbSearchError('DEADLINE_EXCEEDED', 'Provider invocation deadline was exceeded.', true)), Math.min(invocation.timeout_ms, remainingMs));
-      const signal = AbortSignal.any([outerSignal, attemptDeadline.signal]);
-      try {
-        const started = this.monotonicNow();
-        try {
-          const result = await raceWithAbort(callCapability(provider, invocation.capability, request, retrievalCount, signal, context), signal);
-          const results = result.capability === 'retrieval' ? result.results : result.capability === 'answer' ? result.supporting_results
-            : result.capability === 'multi-agent-research' ? result.results : [];
-          const resultState = capabilityResultState(result);
-          const resultCount = result.capability === 'retrieval' ? result.results.length : resultState === 'succeeded' || resultState === 'partial' ? 1 : 0;
-          attempts.push(attemptRecord(invocation, attempt, resultState === 'empty' ? 'empty' : 'succeeded', elapsed(started, this.monotonicNow()), resultCount, undefined,
-            result.capability === 'retrieval' ? result.upstream_attempts : undefined,
-            result.capability === 'retrieval' ? result.upstream_attempts_omitted : undefined));
-          return { invocation, attempts, state: resultState, result, results };
-        } catch (error) {
-          const callerCancelled = callerSignal?.aborted === true;
-          const overallDeadlineReached = !callerCancelled && overallDeadline.signal.aborted;
-          const localDeadline = !callerCancelled && !overallDeadlineReached && attemptDeadline.signal.aborted;
-          const safe = classifyError(error, provider, invocation, callerCancelled, overallDeadlineReached || localDeadline);
-          const state: AttemptState = callerCancelled ? 'cancelled' : overallDeadlineReached || localDeadline ? 'timed_out' : 'failed';
-          attempts.push(attemptRecord(invocation, attempt, state, elapsed(started, this.monotonicNow()), 0, publicError(safe)));
-          const terminal = attempt >= invocation.retry.max_attempts || outerSignal.aborted || !safe.retryable;
-          if (terminal) {
-            this.recordHealth(invocation, safe, callerCancelled, overallDeadlineReached, localDeadline);
-            return { invocation, attempts, state, results: [], error: publicError(safe) };
-          }
-          const exponential = Math.min(invocation.retry.max_backoff_ms, invocation.retry.backoff_ms * (2 ** (attempt - 1)));
-          const backoff = Math.min(safe.retryAfterMs ?? exponential, Math.max(0, Math.floor(deadlineAt - this.monotonicNow())));
-          if (backoff > 0) try { await this.sleep(backoff, outerSignal); } catch {
-            const cancelled = callerSignal?.aborted === true;
-            const timedOut = !cancelled && overallDeadline.signal.aborted;
-            const terminalError = cancelled
-              ? new NbSearchError('CANCELLED', 'Search was cancelled.', false, invocation.provider_id).toPublic()
-              : timedOut ? new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, invocation.provider_id).toPublic() : attempts.at(-1)?.error;
-            return { invocation, attempts, state: cancelled ? 'cancelled' : timedOut ? 'timed_out' : state, results: [], error: terminalError };
-          }
-        }
-      } finally { clearTimeout(timer); }
-    }
-    return { invocation, attempts, state: 'failed', results: [], error: attempts.at(-1)?.error };
-  }
-
-  private recordHealth(invocation: PlanInvocation, error: NbSearchError, callerCancelled: boolean, overallDeadline: boolean, localDeadline: boolean): void {
-    if (callerCancelled || overallDeadline || error.code === 'PROVIDER_AUTH' || error.code === 'CONFIGURATION_ERROR') return;
-    if (error.code === 'PROVIDER_RATE_LIMIT' && invocation.credential_slot_id !== undefined) this.health.record({ cause: 'rate_limit_credential_slot', identity: invocation.credential_slot_id, at: this.now().toISOString(), error_code: error.code });
-    else if ((error.code === 'PROVIDER_UNAVAILABLE' && error.retryable) || localDeadline) this.health.record({ cause: 'transient_provider_capability', identity: `${invocation.provider_instance_id}:${invocation.capability}`, at: this.now().toISOString(), error_code: error.code });
-  }
-}
-
-function conditionMatches(
-  condition: import('./config-schema.ts').ProfileInvocationConfig['when'],
-  routing: { intent?: SearchIntent; execution_surface: ExecutionSurface; multi_agent_route: MultiAgentRoute },
-): boolean {
-  if (condition?.intent_in !== undefined && (routing.intent === undefined || !condition.intent_in.includes(routing.intent))) return false;
-  if (condition?.intent_not_in !== undefined && routing.intent !== undefined && condition.intent_not_in.includes(routing.intent)) return false;
-  if (condition?.execution_in !== undefined && !condition.execution_in.includes(routing.execution_surface)) return false;
-  if (condition?.multi_agent_route_in !== undefined && (routing.multi_agent_route === 'explicit' || !condition.multi_agent_route_in.includes(routing.multi_agent_route))) return false;
-  return true;
-}
-function defaultSemantics(capability: ProviderCapability): { failure_policy: FailurePolicy; execution_scope: ExecutionScope } {
-  if (capability === 'research-light') return { failure_policy: 'report-only', execution_scope: 'once-per-job' };
-  if (capability === 'answer' || capability === 'multi-agent-research') return { failure_policy: 'affects-state', execution_scope: 'once-per-job' };
-  return { failure_policy: 'affects-state', execution_scope: 'per-operation' };
-}
-function capabilityPath(options: Readonly<Record<string, unknown>>, capability: ProviderCapability, fallback: string): string {
-  const key = capability === 'retrieval' ? 'search_path' : capability === 'answer' ? 'answer_path' : capability === 'research-light' ? 'research_light_path' : '';
-  return key !== '' && typeof options[key] === 'string' ? options[key] as string : fallback;
-}
-function capabilityPort(ports: ProviderPorts | undefined, capability: ProviderCapability): SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']> | NonNullable<ProviderPorts['multi_agent_research']> | undefined {
-  if (capability === 'retrieval') return ports?.retrieval;
-  if (capability === 'answer') return ports?.answer;
-  if (capability === 'research-light') return ports?.research_light;
-  return ports?.multi_agent_research;
-}
-async function callCapability(
-  provider: SearchProvider | NonNullable<ProviderPorts['answer']> | NonNullable<ProviderPorts['research_light']> | NonNullable<ProviderPorts['multi_agent_research']>,
-  capability: ProviderCapability, request: Omit<ProviderSearchRequest, 'signal'>, retrievalCount: number, signal: AbortSignal,
-  context: PlanExecutionContext,
-): Promise<ProviderCapabilityResult> {
-  const base = { query: request.query, profile: request.profile ?? 'default', ...(request.intent === undefined ? {} : { intent: request.intent }), ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc ?? new Date().toISOString(), signal };
-  if (capability === 'retrieval') {
-    const returned = await (provider as SearchProvider).search({ ...request, signal });
-    const normalized = normalizeProviderResponse(returned);
-    return { capability: 'retrieval', results: normalized.results, ...(normalized.upstream_attempts === undefined ? {} : { upstream_attempts: normalized.upstream_attempts }), ...(normalized.upstream_attempts_omitted === undefined ? {} : { upstream_attempts_omitted: normalized.upstream_attempts_omitted }) };
-  }
-  if (capability === 'answer') return await (provider as NonNullable<ProviderPorts['answer']>).answer({ ...base, capability: 'answer', limit: request.limit });
-  if (capability === 'research-light') return await (provider as NonNullable<ProviderPorts['research_light']>).researchLight({ ...base, capability: 'research-light', retrieval_result_count: retrievalCount });
-  if (capability === 'multi-agent-research') {
-    if (context.scope !== 'research-job' || context.research_brief === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'Multi-agent research requires a frozen research brief.');
-    return await (provider as NonNullable<ProviderPorts['multi_agent_research']>).research({ ...base, capability: 'multi-agent-research', brief: context.research_brief, limit: request.limit });
-  }
-  throw new NbSearchError('CAPABILITY_UNAVAILABLE', 'Selected capability is unavailable.');
-}
-function capabilityResultState(result: ProviderCapabilityResult): 'succeeded' | 'partial' | 'empty' {
-  if (result.capability === 'retrieval') return result.results.length > 0 ? 'succeeded' : 'empty';
-  if (result.capability === 'answer') return (result.text?.trim().length ?? 0) > 0 ? 'succeeded' : 'empty';
-  if (result.capability === 'research-light') return (result.synthesis?.trim().length ?? 0) > 0 ? 'succeeded' : 'empty';
-  return result.completeness === 'complete' ? 'succeeded' : result.completeness;
-}
-export function normalizedRetrievalResultCount(outcomes: readonly InvocationOutcome[]): number {
-  const urls = new Set<string>();
-  for (const outcome of outcomes) for (const item of outcome.results) { const url = normalizeUrl(item.url); if (url !== undefined) urls.add(url); }
-  return urls.size;
-}
-function classifyError(error: unknown, provider: { redactions?: readonly string[] }, invocation: PlanInvocation, cancelled: boolean, timedOut: boolean): NbSearchError {
-  if (cancelled) return new NbSearchError('CANCELLED', 'Search was cancelled.');
-  if (timedOut) return new NbSearchError('DEADLINE_EXCEEDED', 'Search deadline was exceeded.', true, invocation.provider_id);
-  if (error instanceof NbSearchError) return new NbSearchError(error.code, safeErrorMessage(error, provider.redactions), error.retryable, error.provider ?? invocation.provider_id, { cause: error, retryAfterMs: error.retryAfterMs });
-  return new NbSearchError('PROVIDER_UNAVAILABLE', safeErrorMessage(error, provider.redactions), true, invocation.provider_id);
-}
-function attemptRecord(invocation: PlanInvocation, attempt: number, state: AttemptState, durationMs: number, resultCount: number, error?: PublicError, upstreamAttempts?: SearchAttempt['upstream_attempts'], upstreamAttemptsOmitted?: number): SearchAttempt {
-  return {
-    provider: invocation.provider_id, provider_instance_id: invocation.provider_instance_id,
-    ...(invocation.credential_slot_id === undefined ? {} : { credential_slot_id: invocation.credential_slot_id }),
-    invocation_id: invocation.invocation_id, capability: invocation.capability, role: invocation.role, trigger: invocation.trigger,
-    ...((invocation.failure_policy ?? defaultSemantics(invocation.capability).failure_policy) === 'affects-state' ? {} : { failure_policy: invocation.failure_policy ?? defaultSemantics(invocation.capability).failure_policy }),
-    ...((invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope) === 'per-operation' ? {} : { execution_scope: invocation.execution_scope ?? defaultSemantics(invocation.capability).execution_scope }),
-    attempt, state, duration_ms: durationMs, result_count: resultCount, ...(error === undefined ? {} : { error }),
-    ...(upstreamAttempts === undefined || upstreamAttempts.length === 0 ? {} : { upstream_attempts: upstreamAttempts }),
-    ...(upstreamAttemptsOmitted === undefined || upstreamAttemptsOmitted === 0 ? {} : { upstream_attempts_omitted: upstreamAttemptsOmitted }),
-  };
-}
-function emptyHealthSnapshot(): { unavailable_provider_capabilities: string[]; rate_limited_credential_slots: string[]; unavailable_model_instances: string[]; unready_credential_slots: string[] } {
-  return { unavailable_provider_capabilities: [], rate_limited_credential_slots: [], unavailable_model_instances: [], unready_credential_slots: [] };
-}
-function elapsed(started: number, completed: number): number { return Math.max(0, Math.round(completed - started)); }
-function normalizeProviderResponse(value: ProviderSearchReturn): ProviderSearchResponse { return Array.isArray(value) ? { results: value } : value as ProviderSearchResponse; }
-async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw signal.reason;
-  return await new Promise<T>((resolve, reject) => {
-    const abort = (): void => reject(signal.reason);
-    signal.addEventListener('abort', abort, { once: true });
-    operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort)).catch(() => undefined);
-  });
-}
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) { Object.freeze(value); for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item); }
-  return value;
-}
+function evidenceGroups(row: import('./types.ts').ProviderResult, lane: LaneBinding): string[] { const upstream = row.upstream_attribution?.map((item) => item.provider) ?? []; if (upstream.length > 0) return [...new Set(upstream)].sort(); if (lane.provider_id === 'search-gateway') return ['unknown']; if ((lane.config.evidence_groups?.length ?? 0) > 0) return [...new Set(lane.config.evidence_groups)].sort(); return [lane.config.provider_instance_id]; }
+function clean(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
