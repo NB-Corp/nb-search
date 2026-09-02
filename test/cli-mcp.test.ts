@@ -93,7 +93,7 @@ function fakeRuntime(): NbSearchRuntime & { search: ReturnType<typeof vi.fn>; fe
     return { schema_version: '3.0', action: 'run', execution: 'sync', selection, status: 'empty', output: { channel: 'results', schema_id: 'nb-search.results@1', status: 'empty', lanes: ['exa.search'], results: [], lane_outcomes: [], merge_summary: { input_rows: 0, canonical_dedup: 0, independent_evidence_groups: 0, result_count: 0 }, hints: [] }, hints: [] };
   });
   const fetch = vi.fn(async (): Promise<FetchEnvelope> => ({ schema_version: '3.0', mode: 'fetch', selection: { source: 'lane', lane: 'direct.fetch' }, status: 'succeeded', lane_outcomes: [], documents: [], hints: [] }));
-  const capabilities = vi.fn(async (): Promise<CapabilityEnvelope> => ({ schema_version: '3.0', revision: 'r', search: { lanes: [], presets: [], limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 1024 } }, fetch: { lanes: [], limits: { max_response_bytes: 1024, max_content_chars: 256, max_redirects: 5, max_timeout_ms: 120_000 } }, jobs: { result_ttl_seconds: 3600, cancel_supported: true } }));
+  const capabilities = vi.fn(async (): Promise<CapabilityEnvelope> => ({ schema_version: '3.0', revision: 'r', search: { lanes: [], presets: [], limits: { max_queries: 64, max_results: 100, max_timeout_ms: 3_600_000, max_inline_bytes: 1024 } }, fetch: { chain: [], lanes: [], limits: { max_response_bytes: 1024, max_content_chars: 256, max_redirects: 5, max_timeout_ms: 120_000, quality: { min_content_chars: 0, blocked_markers: 0 } } }, jobs: { result_ttl_seconds: 3600, cancel_supported: true } }));
   return { search, fetch, capabilities };
 }
 

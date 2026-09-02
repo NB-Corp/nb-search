@@ -1,0 +1,116 @@
+import { NbSearchError } from './errors.ts';
+import { resolveOperationUrl, validateProviderBaseUrl } from './providers.ts';
+import { ResponseLimitError, type HttpTransport } from './transport.ts';
+import type { FetchProvider, FetchProviderRequest, FetchProviderResult, FetchWarning, ProviderName } from './types.ts';
+
+export interface RemoteFetchProviderOptions { apiKey?: string; transport: HttpTransport; baseUrl?: string }
+
+export class JinaReaderFetchProvider implements FetchProvider {
+  readonly name = 'jina-reader' as const;
+  readonly redactions: readonly string[];
+  private readonly baseUrl: string;
+  constructor(private readonly options: RemoteFetchProviderOptions) {
+    this.baseUrl = options.baseUrl ?? 'https://r.jina.ai';
+    validateProviderBaseUrl(this.baseUrl);
+    this.redactions = options.apiKey === undefined ? [this.baseUrl] : [options.apiKey, this.baseUrl];
+  }
+  async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
+    try {
+      const response = await this.options.transport.send<string>({
+        url: `${this.baseUrl.replace(/\/+$/, '')}/${request.url}`, method: 'GET',
+        headers: { Accept: 'text/plain', ...(this.options.apiKey === undefined ? {} : { Authorization: `Bearer ${this.options.apiKey}` }) },
+        response_type: 'text', max_response_bytes: request.max_response_bytes, signal: request.signal,
+      });
+      assertFetchStatus(response.status, this.name);
+      if (typeof response.body !== 'string') throw malformed(this.name);
+      return normalized(request, request.url, response.body, response.headers?.['content-type'] ?? 'text/plain');
+    } catch (error) { throw fetchProviderError(error, this.name); }
+  }
+}
+
+export class TavilyExtractFetchProvider implements FetchProvider {
+  readonly name = 'tavily' as const;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  constructor(private readonly options: RemoteFetchProviderOptions & { apiKey: string }) {
+    this.endpoint = options.baseUrl === undefined ? 'https://api.tavily.com/extract' : resolveOperationUrl(options.baseUrl, '/extract');
+    this.redactions = [options.apiKey, this.endpoint];
+  }
+  async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
+    try {
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
+        body: { urls: [request.url], format: 'text' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+      });
+      assertFetchStatus(response.status, this.name);
+      if (!isRecord(response.body) || !Array.isArray(response.body['results'])) throw malformed(this.name);
+      const item = response.body['results'].find(isRecord);
+      if (item === undefined) { const failures = Array.isArray(response.body['failed_results']) ? response.body['failed_results'].length : 0; if (failures > 0) throw businessFailure(this.name, { failed_results: failures }); throw malformed(this.name); }
+      return normalized(request, stringValue(item['url']) || request.url, stringValue(item['raw_content']) || stringValue(item['content']), 'text/plain', stringValue(item['title']));
+    } catch (error) { throw fetchProviderError(error, this.name); }
+  }
+}
+
+export class ExaContentsFetchProvider implements FetchProvider {
+  readonly name = 'exa' as const;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  constructor(private readonly options: RemoteFetchProviderOptions & { apiKey: string }) {
+    this.endpoint = options.baseUrl === undefined ? 'https://api.exa.ai/contents' : resolveOperationUrl(options.baseUrl, '/contents');
+    this.redactions = [options.apiKey, this.endpoint];
+  }
+  async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
+    try {
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': this.options.apiKey },
+        body: { urls: [request.url], text: { maxCharacters: request.max_content_chars } }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+      });
+      assertFetchStatus(response.status, this.name);
+      if (!isRecord(response.body)) throw malformed(this.name);
+      const failure = exaFailure(response.body['statuses']); if (failure !== undefined) { if (failure.http_status !== undefined) throw fetchHttpError(failure.http_status, this.name); throw businessFailure(this.name); }
+      const results = Array.isArray(response.body['results']) ? response.body['results'] : [];
+      const item = results.find(isRecord); if (item === undefined) throw malformed(this.name);
+      return normalized(request, stringValue(item['url']) || request.url, stringValue(item['text']), 'text/plain', stringValue(item['title']));
+    } catch (error) { throw fetchProviderError(error, this.name); }
+  }
+}
+
+export class FirecrawlScrapeFetchProvider implements FetchProvider {
+  readonly name = 'firecrawl' as const;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  constructor(private readonly options: RemoteFetchProviderOptions & { apiKey: string }) {
+    this.endpoint = options.baseUrl === undefined ? 'https://api.firecrawl.dev/v2/scrape' : resolveOperationUrl(options.baseUrl, '/v2/scrape');
+    this.redactions = [options.apiKey, this.endpoint];
+  }
+  async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
+    try {
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
+        body: { url: request.url, formats: ['markdown'] }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+      });
+      assertFetchStatus(response.status, this.name);
+      if (!isRecord(response.body) || response.body['success'] !== true || !isRecord(response.body['data'])) throw businessFailure(this.name);
+      const data = response.body['data']; const metadata = isRecord(data['metadata']) ? data['metadata'] : {};
+      return normalized(request, stringValue(metadata['sourceURL']) || stringValue(metadata['url']) || request.url, stringValue(data['markdown']), 'text/markdown', stringValue(metadata['title']));
+    } catch (error) { throw fetchProviderError(error, this.name); }
+  }
+}
+
+function normalized(request: FetchProviderRequest, finalUrl: string, rawContent: string, contentType: string, rawTitle = ''): FetchProviderResult {
+  const byteLength = Buffer.byteLength(rawContent, 'utf8'); const truncated = rawContent.length > request.max_content_chars; const content = truncated ? rawContent.slice(0, request.max_content_chars) : rawContent; const warnings: FetchWarning[] = [];
+  if (truncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: request.max_content_chars } });
+  return { url: request.url, final_url: finalUrl, ...(rawTitle === '' ? {} : { title: rawTitle }), content, content_type: contentType.split(';')[0]?.trim().toLowerCase() || 'text/plain', format: 'text', byte_length: byteLength, truncated, warnings };
+}
+function assertFetchStatus(status: number, provider: ProviderName): void { if (status < 200 || status >= 300) throw fetchHttpError(status, provider); }
+function fetchHttpError(status: number, provider: ProviderName): NbSearchError { return new NbSearchError('FETCH_HTTP_ERROR', `${provider} fetch failed with status ${String(status)}.`, status >= 500, provider, { data: { status } }); }
+function businessFailure(provider: ProviderName, data?: Readonly<Record<string, unknown>>): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} did not return usable fetch content.`, false, provider, data === undefined ? undefined : { data }); }
+function exaFailure(value: unknown): { http_status?: number } | undefined { if (!Array.isArray(value)) return undefined; for (const item of value) { if (!isRecord(item) || item['status'] !== 'error') continue; const error = isRecord(item['error']) ? item['error'] : {}; const status = error['httpStatusCode']; return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { http_status: status } : {}; } return undefined; }
+function fetchProviderError(error: unknown, provider: ProviderName): NbSearchError {
+  if (error instanceof NbSearchError) return error;
+  if (error instanceof ResponseLimitError) return new NbSearchError('FETCH_BYTES_LIMIT', 'Fetch provider response exceeded the configured byte limit.', false, provider, { cause: error, data: { max_response_bytes: error.maximum } });
+  return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} fetch failed.`, true, provider, { cause: error });
+}
+function malformed(provider: ProviderName): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} returned malformed fetch content.`, false, provider); }
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function stringValue(value: unknown): string { return typeof value === 'string' ? value : ''; }

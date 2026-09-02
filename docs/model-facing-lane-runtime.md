@@ -1,6 +1,6 @@
 # Model-facing query lane runtime
 
-The package implements the schema v3 contract with three public capabilities: `search`, `fetch`, and `capabilities`. SDK, CLI, and MCP call the same runtime; MCP registers exactly those three tools.
+The package implements configuration schema v4 with three public capabilities: `search`, `fetch`, and `capabilities`. SDK, CLI, and MCP call the same runtime; MCP registers exactly those three tools.
 
 ## Query operations
 
@@ -29,10 +29,10 @@ Snapshots and artifact manifests start at contract version 1. A snapshot freezes
 
 ## Fetch
 
-`fetch` accepts one URL and one fetch lane. Successful execution returns one document; failure remains in `lane_outcomes` and does not create a placeholder document.
+`fetch` accepts one URL and an optional fetch lane. Without `lane`, the configured `fetch_chain` runs serially, preserving configuration order and stopping at the first 2xx document that passes the minimum-content-length and blocked-marker rules. Unavailable lanes are recorded as `skipped`; explicit `lane` bypasses the chain. Terminal failures (`FETCH_BLOCKED`, HTTP 404/410, `FETCH_CONTENT_TYPE_REJECTED`, cancellation, or total deadline) do not fall through. Successful execution returns one document; failure remains in `lane_outcomes` and does not create a placeholder document.
 
-The built-in `direct.fetch` lane uses Node HTTP, HTTPS, and DNS APIs. It rejects credentialed and non-HTTP(S) URLs, metadata hosts, non-public address ranges, and mixed/private DNS answers. It connects to a validated address while preserving Host and TLS SNI, validates every redirect, bounds bytes/characters/redirects, accepts text MIME types, and performs deterministic HTML-to-text conversion. Production always connects to the validated public address. The native oracle uses a package-internal test composition seam that is absent from package exports and generated public declarations.
+The built-in fetch lanes are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`. The built-in chain is `direct.fetch` then `jina.reader`; the latter is also keyless, while Tavily, Exa, and Firecrawl require credentials. `direct.fetch` uses Node HTTP, HTTPS, and DNS APIs. It rejects credentialed and non-HTTP(S) URLs, metadata hosts, non-public address ranges, and mixed/private DNS answers. It connects to a validated address while preserving Host and TLS SNI, validates every redirect, bounds bytes/characters/redirects, accepts text MIME types, and performs deterministic HTML-to-text conversion. Production always connects to the validated public address. The native oracle uses a package-internal test composition seam that is absent from package exports and generated public declarations.
 
 ## Capabilities
 
-`capabilities` is a static model-facing catalog. It contains schema/revision, query lanes and presets, fetch lanes, effective execution modes, availability issues, public limits, result retention, and cancellation support. It performs no network probe and does not expose provider-instance configuration, credential values, retry internals, heartbeat internals, storage paths, or configuration provenance.
+`capabilities` is a static model-facing catalog. It contains schema/revision, query lanes and presets, fetch lanes and configured chain order, quality-limit values (with blocked markers reported only as a count), effective execution modes, availability issues, public limits, result retention, and cancellation support. It performs no network probe and does not expose provider-instance configuration, credential values, retry internals, heartbeat internals, storage paths, or configuration provenance.

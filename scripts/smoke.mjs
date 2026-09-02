@@ -11,7 +11,7 @@ const home = await mkdtemp(join(tmpdir(), 'nb-search-smoke-'));
 const configPath = join(home, 'config.json');
 const env = { NB_SEARCH_HOME: home, NB_SEARCH_CONFIG: configPath };
 try {
-  await writeFile(configPath, JSON.stringify({ schema_version: '3', defaults: { search_lane: 'exa.search', fetch_lane: 'direct.fetch' } }));
+  await writeFile(configPath, JSON.stringify({ schema_version: '4', defaults: { search_lane: 'exa.search', fetch_chain: ['direct.fetch', 'jina.reader'] } }));
   let search;
   try {
     await execute(process.execPath, [cli, 'search', 'offline-smoke'], { cwd: root, env });

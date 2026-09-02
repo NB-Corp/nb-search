@@ -14,7 +14,7 @@ export function createNbSearchMcpServer(runtime: NbSearchRuntime = createNbSearc
   const server = new Server({ name: 'nb-search', version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     { name: 'search', description: 'Run or manage a query operation. Use action run/get/read/cancel. Results operations may use lanes or preset; typed operations require one lane. Execution defaults to sync; async requires idempotency_key.', inputSchema: searchJsonSchema },
-    { name: 'fetch', description: 'Fetch one HTTP(S) URL through one fetch lane. No lane batch or preset is supported.', inputSchema: fetchJsonSchema },
+    { name: 'fetch', description: 'Fetch one HTTP(S) URL. Omit lane to run the configured serial fetch chain and return the first qualified document; provide lane to bypass the chain.', inputSchema: fetchJsonSchema },
     { name: 'capabilities', description: 'Return the static query/fetch lane catalog and limits without network probes.', inputSchema: capabilitiesJsonSchema },
   ] }));
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {

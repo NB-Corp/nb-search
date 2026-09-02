@@ -2,7 +2,7 @@
 
 `@nb-corp/nb-search` is a deterministic query-lane runtime with three public capabilities: `search`, `fetch`, and `capabilities`.
 
-The caller selects lanes. The runtime does not inspect a query to choose an engine, replace an unavailable lane, or run an unselected fallback. Selecting `execution: "async"` changes delivery only; it does not change the lane or query plan.
+For `search`, the caller selects lanes and the runtime does not inspect a query to choose an engine, replace an unavailable lane, or run an unselected fallback. Selecting `execution: "async"` changes delivery only; it does not change the lane or query plan. For `fetch`, omitting `lane` runs the configured fetch chain in order; an explicit `lane` bypasses the chain.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ pnpm smoke
 
 ## Configuration
 
-Configuration uses schema v3 and resolves in this order:
+Configuration uses schema v4 and resolves in this order:
 
 1. built-in structure;
 2. `$NB_SEARCH_HOME/config.json`, or `NB_SEARCH_CONFIG`;
@@ -28,10 +28,10 @@ Configuration uses schema v3 and resolves in this order:
 
 ```json
 {
-  "schema_version": "3",
+  "schema_version": "4",
   "defaults": {
     "search_lane": "exa.search",
-    "fetch_lane": "direct.fetch"
+    "fetch_chain": ["direct.fetch", "jina.reader"]
   },
   "presets": {
     "cross-check": {
@@ -41,9 +41,9 @@ Configuration uses schema v3 and resolves in this order:
 }
 ```
 
-Built-in lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, `gma.research`, `gateway.search`, and `direct.fetch`. A default is optional; a call without a selector fails when its default is absent.
+Built-in fetch lane IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; the built-in chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, `gma.research`, and `gateway.search`. A search default is optional; a search call without a selector fails when it is absent.
 
-Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, `NB_SEARCH_GATEWAY_TOKEN`, `NB_SEARCH_GATEWAY_BASE_URL`, `NB_SEARCH_GROK_MULTI_AGENT_API_KEY`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
+Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, optional `NB_SEARCH_JINA_API_KEY`, `NB_SEARCH_FIRECRAWL_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, `NB_SEARCH_GATEWAY_TOKEN`, `NB_SEARCH_GATEWAY_BASE_URL`, `NB_SEARCH_GROK_MULTI_AGENT_API_KEY`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
 
 A lane binds `provider_instance_id` to `operation_id`. Its registration declares either a results output or a typed JSON output with a `schema_id`. Presets contain results lanes only; typed operations use one lane.
 
@@ -96,7 +96,7 @@ An async job publishes one immutable logical-output artifact. Its normalized int
 
 ## Fetch safety
 
-`fetch` accepts one HTTP(S) URL and one lane. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
+`fetch` accepts one HTTP(S) URL. Without `lane`, it runs `defaults.fetch_chain` serially and returns the first document that passes the configured minimum-length and blocked-marker quality rules; unavailable lanes are recorded as skipped. An explicit `lane` bypasses the chain. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
 
 - rejects credentialed URLs and non-public targets, including loopback, private, link-local, metadata, multicast, reserved, unspecified, CGNAT, and IPv4-mapped IPv6 addresses;
 - connects to a validated resolved address while preserving the original HTTP Host and TLS SNI;

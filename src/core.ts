@@ -1,8 +1,10 @@
 import type { AppConfiguration, LaneBinding } from './config.ts';
 import type { FetchInput, SearchRunInput } from './contracts.ts';
 import { NbSearchError, publicError } from './errors.ts';
-import { assertAttemptBudget, executeUnits, mergeResultLists, resolveFetchLane, type ResolvedSearchSelection, type UnitResult } from './planner.ts';
-import type { FetchEnvelope, Hint, JsonValue, LaneOutcome, LogicalStatus, QueryProviderValue, SearchLogicalOutput, SearchResultsOutput, SearchTypedOutput } from './types.ts';
+import { assertFetchQuality } from './fetch-quality.ts';
+import { parsePublicUrl } from './fetch-security.ts';
+import { assertAttemptBudget, executeUnits, mergeResultLists, resolveFetchLanes, type ResolvedSearchSelection, type UnitResult } from './planner.ts';
+import type { FetchEnvelope, Hint, JsonValue, LaneOutcome, LogicalStatus, PublicError, QueryProviderValue, SearchLogicalOutput, SearchResultsOutput, SearchTypedOutput } from './types.ts';
 import { SCHEMA_VERSION } from './types.ts';
 
 export class QueryEngine {
@@ -32,14 +34,33 @@ function validateProviderOutput(value: QueryProviderValue, expected: 'results' |
 export class FetchService {
   constructor(private readonly app: AppConfiguration) {}
   async fetch(input: FetchInput, signal?: AbortSignal): Promise<FetchEnvelope> {
-    let resolved; try { resolved = resolveFetchLane(input.lane, this.app); } catch (error) { return failedFetch(input.lane, error); }
-    const execution = this.app.resolved.config.execution; const policy = execution.fetch; const maxChars = Math.min(input.max_content_chars ?? policy.max_content_chars, policy.max_content_chars); const lane = resolved.lane;
-    const results = await executeUnits([{ lane: lane.id, provider_instance_id: lane.config.provider_instance_id, run: async (unitSignal) => await lane.fetch_provider!.fetch({ url: input.url, signal: unitSignal, max_response_bytes: policy.max_response_bytes, max_content_chars: maxChars, max_redirects: policy.max_redirects }) }], { timeout_ms: input.timeout_ms ?? execution.fetch_timeout_ms, max_concurrency: 1, retry_count: execution.retry_count, max_provider_calls: execution.max_provider_calls, signal }); const item = results[0]!; const documents = item.value === undefined ? [] : [{ source_lane: lane.id, ...item.value }]; const status = deriveStatus(results, documents.length); const warnings = item.value?.warnings ?? []; return { schema_version: SCHEMA_VERSION, mode: 'fetch', selection: { source: resolved.source, lane: lane.id }, status, lane_outcomes: [{ lane: lane.id, ok: item.state === 'succeeded', state: item.state, duration_ms: item.duration_ms, result_count: documents.length, warnings, ...(item.error === undefined ? {} : { error: item.error }) }], documents, hints: [...results.flatMap(errorHint), ...warnings] };
+    let resolved; try { parsePublicUrl(input.url); resolved = resolveFetchLanes(input.lane, this.app); } catch (error) { return failedFetch(input.lane, error); }
+    const execution = this.app.resolved.config.execution; const policy = execution.fetch; const maxChars = Math.min(input.max_content_chars ?? policy.max_content_chars, policy.max_content_chars); const timeout = input.timeout_ms ?? execution.fetch_timeout_ms; const deadlineAt = performance.now() + timeout; const budget = { used: 0 }; const outcomes: LaneOutcome[] = []; const hints: Hint[] = []; let terminalStatus: LogicalStatus = 'failed'; let attempted = false;
+    for (const lane of resolved.lanes) {
+      if (lane.availability !== 'ready') { const error = new NbSearchError('LANE_NOT_CONFIGURED', `Fetch lane ${lane.id} is unavailable.`).toPublic(); outcomes.push({ lane: lane.id, ok: false, state: 'skipped', duration_ms: 0, result_count: 0, warnings: [], error }); hints.push({ code: error.code, message: error.message, data: { lane: lane.id, retryable: false } }); continue; }
+      attempted = true;
+      const results = await executeUnits([{ lane: lane.id, provider_instance_id: lane.config.provider_instance_id, run: async (unitSignal) => { const value = await lane.fetch_provider!.fetch({ url: input.url, signal: unitSignal, max_response_bytes: policy.max_response_bytes, max_content_chars: maxChars, max_redirects: policy.max_redirects }); assertFetchQuality(value.content, policy.quality); return value; } }], { timeout_ms: timeout, deadline_at: deadlineAt, attempt_budget: budget, max_concurrency: 1, retry_count: execution.retry_count, max_provider_calls: execution.max_provider_calls, signal });
+      const item = results[0]!; const warnings = item.value?.warnings ?? []; outcomes.push({ lane: lane.id, ok: item.state === 'succeeded', state: item.state, duration_ms: item.duration_ms, result_count: item.value === undefined ? 0 : 1, warnings, ...(item.error === undefined ? {} : { error: item.error }) }); hints.push(...errorHint(item), ...warnings);
+      if (item.value !== undefined) return { schema_version: SCHEMA_VERSION, mode: 'fetch', selection: resolved.source === 'lane' ? { source: 'lane', lane: lane.id } : { source: 'default' }, status: 'succeeded', lane_outcomes: outcomes, documents: [{ source_lane: lane.id, ...item.value }], hints };
+      if (item.state === 'timeout') terminalStatus = 'timed_out'; else if (item.state === 'cancelled') terminalStatus = 'cancelled';
+      if (item.error === undefined || fetchFailureAction(item.error) === 'terminal') break;
+      if (budget.used >= execution.max_provider_calls) { const error = new NbSearchError('BUDGET_EXCEEDED', 'The provider attempt limit was reached.').toPublic(); hints.push({ code: error.code, message: error.message, data: { retryable: false } }); break; }
+    }
+    if (!attempted) hints.push({ code: 'FETCH_CHAIN_UNAVAILABLE', message: 'No configured fetch lane is available.' });
+    return { schema_version: SCHEMA_VERSION, mode: 'fetch', selection: resolved.source === 'lane' ? { source: 'lane', lane: resolved.requested } : { source: 'default' }, status: terminalStatus, lane_outcomes: outcomes, documents: [], hints };
+  }
+}
+function fetchFailureAction(error: PublicError): 'fallback' | 'terminal' {
+  switch (error.code) {
+    case 'FETCH_BLOCKED': case 'FETCH_CONTENT_TYPE_REJECTED': case 'CANCELLED': case 'DEADLINE_EXCEEDED': case 'BUDGET_EXCEEDED': return 'terminal';
+    case 'FETCH_HTTP_ERROR': { const status = error.data?.['status']; return status === 404 || status === 410 ? 'terminal' : 'fallback'; }
+    case 'QUALITY_GATE_FAILED': case 'FETCH_BYTES_LIMIT': case 'PROVIDER_AUTH': case 'PROVIDER_RATE_LIMIT': case 'PROVIDER_UNAVAILABLE': case 'INTERNAL': return 'fallback';
+    default: return 'fallback';
   }
 }
 function aggregateOutcomes<T>(lanes: readonly LaneBinding[], results: readonly UnitResult<T>[], count: (item: UnitResult<T>) => number): LaneOutcome[] { return lanes.map((lane) => { const items = results.filter((item) => item.lane === lane.id); const failed = items.find((item) => item.state !== 'succeeded'); const resultCount = items.reduce((sum, item) => sum + count(item), 0); return { lane: lane.id, ok: failed === undefined, state: failed?.state ?? (resultCount === 0 ? 'empty' : 'succeeded'), duration_ms: items.reduce((sum, item) => sum + item.duration_ms, 0), result_count: resultCount, warnings: [], ...(failed?.error === undefined ? {} : { error: failed.error }) }; }); }
 function deriveStatus<T>(execution: readonly UnitResult<T>[], outputCount: number): LogicalStatus { const failed = execution.filter((item) => item.state !== 'succeeded'); if (failed.length === 0) return outputCount === 0 ? 'empty' : 'succeeded'; if (outputCount > 0) return 'partial'; if (failed.every((item) => item.state === 'timeout')) return 'timed_out'; if (failed.every((item) => item.state === 'cancelled')) return 'cancelled'; return 'failed'; }
-function errorHint<T>(item: UnitResult<T>): Hint[] { return item.error === undefined ? [] : [{ code: item.error.code, message: item.error.message, data: { lane: item.lane, retryable: item.error.retryable } }]; }
+function errorHint<T>(item: UnitResult<T>): Hint[] { return item.error === undefined ? [] : [{ code: item.error.code, message: item.error.message, data: { lane: item.lane, retryable: item.error.retryable, ...item.error.data } }]; }
 function failedFetch(lane: string | undefined, error: unknown): FetchEnvelope { const safe = publicError(error); return { schema_version: SCHEMA_VERSION, mode: 'fetch', selection: { source: lane === undefined ? 'default' : 'lane', ...(lane === undefined ? {} : { lane }) }, status: 'failed', lane_outcomes: [], documents: [], hints: [{ code: safe.code, message: safe.message, data: { retryable: safe.retryable } }] }; }
 export function outputByteLength(value: unknown): number { return Buffer.byteLength(JSON.stringify(value), 'utf8'); }
 export function outputExceedsInlineLimit(value: unknown, maximum: number): boolean { return outputByteLength(value) > maximum; }

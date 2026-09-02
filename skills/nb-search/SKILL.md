@@ -7,7 +7,7 @@ description: "Deterministic query/fetch lane runtime for AI models. Use when the
 
 `nb-search` is a deterministic lane runtime with exactly three public capabilities: `search`, `fetch`, `capabilities`.
 
-The caller selects lanes explicitly. The runtime never inspects a query to pick an engine, never replaces an unavailable lane, and never runs an unselected fallback. Execution mode changes delivery only, not lane or plan.
+For `search`, the caller selects lanes explicitly; the runtime never inspects a query to pick an engine, replace an unavailable lane, or run an unselected fallback. For `fetch`, omitting `lane` runs the configured serial chain, while an explicit `lane` bypasses it. Search execution mode changes delivery only, not lane or plan.
 
 ## Workflow
 
@@ -49,8 +49,10 @@ The caller selects lanes explicitly. The runtime never inspects a query to pick 
 ## `fetch`
 
 - Pass exactly one `url` and optionally one `lane`. No URL arrays, lane arrays, or presets.
+- Without `lane`, lanes run serially in `capabilities.fetch.chain` order; an explicit `lane` invokes only that lane.
+- HTTP 403/429/5xx, transport failures, and quality-gate failures may fall through. `FETCH_BLOCKED`, HTTP 404/410, and `FETCH_CONTENT_TYPE_REJECTED` terminate the chain.
 - `direct.fetch` provides bounded text extraction and deterministic HTML→text; it is not browser rendering or high-fidelity layout reconstruction.
-- Successful content lives in `documents`; failures live in `lane_outcomes` / `hints`. There is no failed-document placeholder.
+- Successful content lives in `documents`; attempts and skipped lanes live in `lane_outcomes`, with failures also represented in `hints`. There is no failed-document placeholder.
 - The production SDK has no DNS/request replacement or connect-address remap seams. Production fetch connects only to a validated public IP.
 
 ## `capabilities`

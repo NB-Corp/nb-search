@@ -17,10 +17,11 @@ export type PublicErrorCode =
   | 'LANE_NOT_SELECTABLE' | 'LANE_EXECUTION_UNSUPPORTED' | 'MIXED_OUTPUT_UNSUPPORTED'
   | 'PRESET_NOT_FOUND' | 'PRESET_UNAVAILABLE' | 'DEFAULT_NOT_CONFIGURED' | 'FETCH_DEFAULT_NOT_CONFIGURED'
   | 'BUDGET_EXCEEDED' | 'OUTPUT_TOO_LARGE' | 'FETCH_BLOCKED' | 'FETCH_BYTES_LIMIT'
-  | 'FETCH_CONTENT_TYPE_REJECTED' | 'PROVIDER_AUTH' | 'PROVIDER_RATE_LIMIT' | 'PROVIDER_UNAVAILABLE'
+  | 'FETCH_CONTENT_TYPE_REJECTED' | 'FETCH_HTTP_ERROR' | 'QUALITY_GATE_FAILED'
+  | 'PROVIDER_AUTH' | 'PROVIDER_RATE_LIMIT' | 'PROVIDER_UNAVAILABLE'
   | 'DEADLINE_EXCEEDED' | 'CANCELLED' | 'JOB_NOT_FOUND' | 'JOB_CONFLICT' | 'JOB_STORE_ERROR'
   | 'WORKER_START_FAILED' | 'WORKER_LOST' | 'INTERNAL';
-export interface PublicError { code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName; retry_after_ms?: number }
+export interface PublicError { code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName; retry_after_ms?: number; data?: Readonly<Record<string, unknown>> }
 export interface Hint { code: string; message: string; data?: Readonly<Record<string, unknown>> }
 
 export type QueryOperationOutput = { channel: 'results'; schema_id: 'nb-search.results@1' } | { channel: 'typed'; schema_id: string };
@@ -71,8 +72,9 @@ export interface ProviderMultiAgentResearchCapabilityResult { capability: 'multi
 export interface MultiAgentResearchProvider { readonly name: 'grok-multi-agent'; readonly redactions?: readonly string[]; research(request: ProviderMultiAgentResearchCapabilityRequest): Promise<ProviderMultiAgentResearchCapabilityResult> }
 
 export type LaneAttemptState = 'succeeded' | 'empty' | 'failed' | 'timeout' | 'cancelled';
+export type LaneOutcomeState = LaneAttemptState | 'skipped';
 export interface LaneAttempt { lane: string; provider_instance_id: string; attempt: number; state: LaneAttemptState; duration_ms: number; error?: PublicError }
-export interface LaneOutcome { lane: string; ok: boolean; state: LaneAttemptState; duration_ms: number; result_count: number; warnings: Hint[]; error?: PublicError }
+export interface LaneOutcome { lane: string; ok: boolean; state: LaneOutcomeState; duration_ms: number; result_count: number; warnings: Hint[]; error?: PublicError }
 export interface SearchSelection { source: 'default' | 'lane' | 'lanes' | 'preset'; lanes: string[]; requested?: string | string[] }
 export interface ResultProvenance { lane: string; provider_instance_id: string; query_index: number; rank: number; original_url: string; evidence_groups: string[]; upstream?: readonly UpstreamResultAttribution[] }
 export interface SearchResult { title: string; url: string; snippet: string; published_at?: string; site_name?: string; rrf_score?: number; evidence_groups: string[]; provenance: ResultProvenance[] }
@@ -97,7 +99,7 @@ export interface CapabilityIssue { code: string; execution?: QueryExecution }
 export interface CapabilityEnvelope {
   schema_version: typeof SCHEMA_VERSION; revision: string;
   search: { default_lane?: string; lanes: Array<{ id: string; output: QueryOperationOutput; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; latency: LaneLatency; cost: LaneCost }>; presets: Array<{ name: string; lanes: string[]; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_queries: number; max_results: number; max_timeout_ms: number; max_inline_bytes: number } };
-  fetch: { default_lane?: string; lanes: Array<{ id: string; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_response_bytes: number; max_content_chars: number; max_redirects: number; max_timeout_ms: number } };
+  fetch: { chain: string[]; lanes: Array<{ id: string; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_response_bytes: number; max_content_chars: number; max_redirects: number; max_timeout_ms: number; quality: { min_content_chars: number; blocked_markers: number } } };
   jobs: { result_ttl_seconds: number; cancel_supported: true };
 }
 export interface ErrorEnvelope { error: PublicError }

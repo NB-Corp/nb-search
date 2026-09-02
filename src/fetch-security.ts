@@ -15,41 +15,40 @@ export class DirectFetchProvider implements FetchProvider {
   constructor(private readonly io: DirectFetchIo = nodeDirectFetchIo) {}
 
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
-    const original = parsePublicUrl(request.url);
-    let current = original;
-    for (let redirects = 0; ; redirects += 1) {
-      const addresses = await this.io.resolve(current.hostname);
-      if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address))) throw blocked('Target resolved to a non-public address.');
-      const address = addresses[0]!;
-      const response = await this.io.request({ url: current, address, signal: request.signal, max_response_bytes: request.max_response_bytes });
-      const location = response.headers['location'];
-      if (response.status >= 300 && response.status < 400 && location !== undefined) {
-        if (redirects >= request.max_redirects) {
-          return {
-            url: request.url, final_url: current.toString(), content: '', content_type: mediaType(response.headers['content-type']) ?? 'text/plain',
-            format: 'text', byte_length: response.body.byteLength, truncated: true,
-            warnings: [{ code: 'FETCH_REDIRECT_LIMIT', message: 'The redirect limit was reached.', data: { max_redirects: request.max_redirects } }],
-          };
+    try {
+      const original = parsePublicUrl(request.url);
+      let current = original;
+      for (let redirects = 0; ; redirects += 1) {
+        const addresses = await this.io.resolve(current.hostname);
+        if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address))) throw blocked('Target resolved to a non-public address.');
+        const address = addresses[0]!;
+        const response = await this.io.request({ url: current, address, signal: request.signal, max_response_bytes: request.max_response_bytes });
+        const location = response.headers['location'];
+        if (response.status >= 300 && response.status < 400 && location !== undefined) {
+          if (redirects >= request.max_redirects) throw new NbSearchError('FETCH_HTTP_ERROR', 'The redirect limit was reached.', false, this.name, { data: { status: response.status, max_redirects: request.max_redirects } });
+          current = parsePublicUrl(new URL(location, current).toString());
+          continue;
         }
-        current = parsePublicUrl(new URL(location, current).toString());
-        continue;
+        if (response.status < 200 || response.status >= 300) throw new NbSearchError('FETCH_HTTP_ERROR', `HTTP fetch failed with status ${String(response.status)}.`, response.status >= 500, this.name, { data: { status: response.status } });
+        const contentType = mediaType(response.headers['content-type']);
+        if (contentType === undefined || !TEXT_TYPES.has(contentType)) throw new NbSearchError('FETCH_CONTENT_TYPE_REJECTED', 'The response content type is not allowed.', false, this.name);
+        const decoded = new TextDecoder('utf-8', { fatal: false }).decode(response.body);
+        const projected = contentType === 'text/html' || contentType === 'application/xhtml+xml' ? htmlToText(decoded) : { content: normalizeText(decoded), title: undefined };
+        const maximumChars = Math.min(request.max_content_chars, Number.MAX_SAFE_INTEGER);
+        const charTruncated = projected.content.length > maximumChars;
+        const content = charTruncated ? projected.content.slice(0, maximumChars) : projected.content;
+        const warnings: FetchWarning[] = [];
+        if (response.truncated) warnings.push({ code: 'FETCH_BYTES_LIMIT', message: 'The response byte limit was reached.', data: { max_response_bytes: request.max_response_bytes } });
+        if (charTruncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: maximumChars } });
+        return {
+          url: request.url, final_url: current.toString(), ...(projected.title === undefined ? {} : { title: projected.title }),
+          content, content_type: contentType, format: 'text', byte_length: response.body.byteLength,
+          truncated: response.truncated || charTruncated, warnings,
+        };
       }
-      if (response.status < 200 || response.status >= 300) throw new NbSearchError('PROVIDER_UNAVAILABLE', `HTTP fetch failed with status ${String(response.status)}.`, response.status >= 500, this.name);
-      const contentType = mediaType(response.headers['content-type']);
-      if (contentType === undefined || !TEXT_TYPES.has(contentType)) throw new NbSearchError('FETCH_CONTENT_TYPE_REJECTED', 'The response content type is not allowed.', false, this.name);
-      const decoded = new TextDecoder('utf-8', { fatal: false }).decode(response.body);
-      const projected = contentType === 'text/html' || contentType === 'application/xhtml+xml' ? htmlToText(decoded) : { content: normalizeText(decoded), title: undefined };
-      const maximumChars = Math.min(request.max_content_chars, Number.MAX_SAFE_INTEGER);
-      const charTruncated = projected.content.length > maximumChars;
-      const content = charTruncated ? projected.content.slice(0, maximumChars) : projected.content;
-      const warnings: FetchWarning[] = [];
-      if (response.truncated) warnings.push({ code: 'FETCH_BYTES_LIMIT', message: 'The response byte limit was reached.', data: { max_response_bytes: request.max_response_bytes } });
-      if (charTruncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: maximumChars } });
-      return {
-        url: request.url, final_url: current.toString(), ...(projected.title === undefined ? {} : { title: projected.title }),
-        content, content_type: contentType, format: 'text', byte_length: response.body.byteLength,
-        truncated: response.truncated || charTruncated, warnings,
-      };
+    } catch (error) {
+      if (error instanceof NbSearchError || request.signal.aborted) throw error;
+      throw new NbSearchError('PROVIDER_UNAVAILABLE', 'Direct HTTP fetch failed.', true, this.name, { cause: error });
     }
   }
 }
