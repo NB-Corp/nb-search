@@ -1,8 +1,9 @@
 import { NbSearchError } from '../errors.ts';
 import { redactText } from '../redaction.ts';
-import type { JsonTransport } from '../transport.ts';
+import { ResponseLimitError, type JsonTransport } from '../transport.ts';
 import type { Hint, ProviderInstanceId, ProviderName, ProviderResult, ProviderSearchRequest, ProviderSearchResponse, SearchProvider } from '../types.ts';
 import { normalizeUrl } from '../url.ts';
+import { SEARCH_RESPONSE_MAX_BYTES } from './search-adapter.ts';
 
 export interface SearxngProviderOptions {
   baseUrl: string;
@@ -33,6 +34,7 @@ export class SearxngSearchProvider implements SearchProvider {
         url: url.toString(),
         method: 'GET',
         response_type: 'json',
+        max_response_bytes: SEARCH_RESPONSE_MAX_BYTES,
         signal: request.signal,
       });
       assertStatus(response.status, this.name, response.headers, this.options.clock);
@@ -142,6 +144,7 @@ function retryAfter(headers: Readonly<Record<string, string>> | undefined, clock
 }
 
 function safeError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
+  if (error instanceof ResponseLimitError) return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} response exceeded the configured limit.`, false, provider, { cause: error, data: { max_response_bytes: error.maximum } });
   if (error instanceof NbSearchError) return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, { cause: error, retryAfterMs: error.retryAfterMs, data: error.data });
   return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} provider failed.`, true, provider, { cause: error });
 }

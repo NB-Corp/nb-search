@@ -7,7 +7,8 @@ import { NbSearchError } from '../src/errors.ts';
 import { OpenAiCompatibleSynthesisProvider } from '../src/providers/openai-compatible.ts';
 import { ParallelSearchProvider } from '../src/providers/parallel.ts';
 import { SearxngSearchProvider } from '../src/providers/searxng.ts';
-import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
+import { SEARCH_RESPONSE_MAX_BYTES } from '../src/providers/search-adapter.ts';
+import { ResponseLimitError, type JsonRequest, type JsonResponse, type JsonTransport } from '../src/transport.ts';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -59,6 +60,13 @@ describe('parallel.search adapter', () => {
     await expect(provider.search(searchRequest())).resolves.toEqual([]);
   });
 
+  it('limits response bytes and maps overflow as non-retryable', async () => {
+    const transport = new SequenceTransport([new ResponseLimitError(SEARCH_RESPONSE_MAX_BYTES)]);
+    const provider = new ParallelSearchProvider({ apiKey: 'secret', transport });
+    await expect(provider.search(searchRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, provider: 'parallel', data: { max_response_bytes: SEARCH_RESPONSE_MAX_BYTES } });
+    expect(transport.requests[0]?.max_response_bytes).toBe(SEARCH_RESPONSE_MAX_BYTES);
+  });
+
   it.each([[401, 'PROVIDER_AUTH', false], [403, 'PROVIDER_AUTH', false], [429, 'PROVIDER_RATE_LIMIT', true], [503, 'PROVIDER_UNAVAILABLE', true]] as const)('maps HTTP %s', async (status, code, retryable) => {
     const provider = new ParallelSearchProvider({ apiKey: 'secret', transport: new SequenceTransport([{ status, body: {}, headers: status === 429 ? { 'retry-after': '2' } : {} }]) });
     await expect(provider.search(searchRequest())).rejects.toMatchObject({ code, retryable, provider: 'parallel', data: { status }, ...(status === 429 ? { retryAfterMs: 2000 } : {}) });
@@ -88,6 +96,13 @@ describe('searxng.search adapter', () => {
   it('returns empty only when no engine failure is reported', async () => {
     const provider = new SearxngSearchProvider({ baseUrl: 'https://search.internal', transport: new SequenceTransport([{ status: 200, body: { results: [], unresponsive_engines: [] } }]) });
     await expect(provider.search(searchRequest())).resolves.toEqual({ results: [] });
+  });
+
+  it('limits response bytes and maps overflow as non-retryable', async () => {
+    const transport = new SequenceTransport([new ResponseLimitError(SEARCH_RESPONSE_MAX_BYTES)]);
+    const provider = new SearxngSearchProvider({ baseUrl: 'https://search.internal', transport });
+    await expect(provider.search(searchRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, provider: 'searxng', data: { max_response_bytes: SEARCH_RESPONSE_MAX_BYTES } });
+    expect(transport.requests[0]?.max_response_bytes).toBe(SEARCH_RESPONSE_MAX_BYTES);
   });
 
   it('does not disguise all-engine failure as empty success', async () => {
@@ -120,14 +135,35 @@ describe('oac.synthesis adapter', () => {
     expect(transport.requests[0]).toMatchObject({ url: 'https://oac.test/v1/chat/completions', method: 'POST', headers: { Authorization: 'Bearer oac-secret', 'Content-Type': 'application/json' }, body: { model: 'search-model', stream: false } });
   });
 
-  it('accepts an explicit empty synthesis structure', async () => {
+  it('merges OpenRouter message annotation URL citations and deduplicates sources', async () => {
+    const body = { choices: [{ message: { content: JSON.stringify({ answer: 'answer', sources: [{ url: 'https://source.test/a', title: 'JSON source' }] }), annotations: [{ type: 'url_citation', url_citation: { url: 'https://source.test/a', title: 'Duplicate annotation', start_index: 0, end_index: 6 } }, { type: 'url_citation', url_citation: { url: 'https://source.test/annotation', title: 'Annotated source', start_index: 7, end_index: 13 } }] } }] };
+    const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://openrouter.ai/api/v1', model: 'model', transport: new SequenceTransport([{ status: 200, body }]) });
+    await expect(provider.synthesize(synthesisRequest())).resolves.toEqual({ answer: 'answer', sources: [{ url: 'https://source.test/a', title: 'JSON source' }, { url: 'https://source.test/annotation', title: 'Annotated source' }] });
+  });
+
+  it('rejects an explicit empty synthesis answer', async () => {
     const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'model', transport: new SequenceTransport([{ status: 200, body: completion('', []) }]) });
-    await expect(provider.synthesize(synthesisRequest())).resolves.toEqual({ answer: '', sources: [] });
+    await expect(provider.synthesize(synthesisRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, provider: 'openai-compatible' });
   });
 
   it.each([[401, 'PROVIDER_AUTH', false], [403, 'PROVIDER_AUTH', false], [429, 'PROVIDER_RATE_LIMIT', true], [502, 'PROVIDER_UNAVAILABLE', true]] as const)('maps HTTP %s', async (status, code, retryable) => {
     const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'model', transport: new SequenceTransport([{ status, body: {} }]) });
     await expect(provider.synthesize(synthesisRequest())).rejects.toMatchObject({ code, retryable, provider: 'openai-compatible', data: { status } });
+  });
+
+  it('stops fallback_models after a 401 response', async () => {
+    const transport = new SequenceTransport([{ status: 401, body: {} }, { status: 200, body: completion('must not run') }]);
+    const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'primary', fallbackModels: ['fallback'], transport });
+    await expect(provider.synthesize(synthesisRequest())).rejects.toMatchObject({ code: 'PROVIDER_AUTH', retryable: false });
+    expect(transport.requests.map((item) => (item.body as { model: string }).model)).toEqual(['primary']);
+  });
+
+  it('does not fallback after a response byte overflow', async () => {
+    const transport = new SequenceTransport([new ResponseLimitError(SEARCH_RESPONSE_MAX_BYTES), { status: 200, body: completion('must not run') }]);
+    const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'primary', fallbackModels: ['fallback'], transport });
+    await expect(provider.synthesize(synthesisRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, data: { max_response_bytes: SEARCH_RESPONSE_MAX_BYTES } });
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]?.max_response_bytes).toBe(SEARCH_RESPONSE_MAX_BYTES);
   });
 
   it('rejects missing content and malformed structured content', async () => {

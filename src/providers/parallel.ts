@@ -1,8 +1,9 @@
 import { NbSearchError } from '../errors.ts';
 import { redactText } from '../redaction.ts';
-import type { JsonTransport } from '../transport.ts';
+import { ResponseLimitError, type JsonTransport } from '../transport.ts';
 import type { CredentialSlotId, ProviderInstanceId, ProviderName, ProviderResult, ProviderSearchRequest, SearchProvider } from '../types.ts';
 import { normalizeUrl } from '../url.ts';
+import { SEARCH_RESPONSE_MAX_BYTES } from './search-adapter.ts';
 
 export const PARALLEL_SEARCH_URL = 'https://api.parallel.ai/v1/search';
 
@@ -40,6 +41,7 @@ export class ParallelSearchProvider implements SearchProvider {
           advanced_settings: { max_results: Math.min(request.limit, 20) },
         },
         response_type: 'json',
+        max_response_bytes: SEARCH_RESPONSE_MAX_BYTES,
         signal: request.signal,
       });
       assertStatus(response.status, this.name, response.headers, this.options.clock);
@@ -101,6 +103,7 @@ function retryAfter(headers: Readonly<Record<string, string>> | undefined, clock
 }
 
 function safeError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
+  if (error instanceof ResponseLimitError) return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} response exceeded the configured limit.`, false, provider, { cause: error, data: { max_response_bytes: error.maximum } });
   if (error instanceof NbSearchError) return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, { cause: error, retryAfterMs: error.retryAfterMs, data: error.data });
   return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} provider failed.`, true, provider, { cause: error });
 }

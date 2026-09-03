@@ -1,8 +1,9 @@
 import { NbSearchError } from '../errors.ts';
 import { redactText } from '../redaction.ts';
-import type { JsonTransport } from '../transport.ts';
+import { ResponseLimitError, type JsonTransport } from '../transport.ts';
 import type { CredentialSlotId, ProviderInstanceId, ProviderName, QueryExecutionRequest, SupportingUrl } from '../types.ts';
 import { normalizeUrl } from '../url.ts';
+import { SEARCH_RESPONSE_MAX_BYTES } from './search-adapter.ts';
 
 export interface OpenAiCompatibleProviderOptions {
   apiKey: string;
@@ -59,7 +60,7 @@ export class OpenAiCompatibleSynthesisProvider {
             stream: false,
           },
           response_type: 'json',
-          max_response_bytes: 1_048_576,
+          max_response_bytes: SEARCH_RESPONSE_MAX_BYTES,
           signal: request.signal,
         });
         assertStatus(response.status, this.name, response.headers, this.options.clock);
@@ -67,7 +68,7 @@ export class OpenAiCompatibleSynthesisProvider {
       } catch (error) {
         if (request.signal.aborted) throw error;
         const safe = safeError(error, this.name, this.redactions);
-        if (safe.code === 'PROVIDER_AUTH') throw safe;
+        if (!safe.retryable) throw safe;
         lastError = safe;
       }
     }
@@ -122,12 +123,15 @@ function parseResponse(value: unknown): OpenAiCompatibleSynthesis {
   let parsed: unknown;
   try { parsed = JSON.parse(stripFence(content)); } catch (error) { throw malformed(error); }
   if (!isRecord(parsed) || typeof parsed['answer'] !== 'string' || !Array.isArray(parsed['sources'])) throw malformed();
+  const answer = parsed['answer'].trim();
+  if (answer === '') throw malformed();
   const sources = normalizeSources([
     ...parsed['sources'],
     ...citationItems(value['citations']),
     ...citationItems(message['citations']),
+    ...annotationCitationItems(message['annotations']),
   ]);
-  return { answer: parsed['answer'].trim(), sources };
+  return { answer, sources };
 }
 
 function stripFence(value: string): string {
@@ -139,6 +143,11 @@ function stripFence(value: string): string {
 function citationItems(value: unknown): unknown[] {
   if (value === undefined || value === null) return [];
   return Array.isArray(value) ? value : [value];
+}
+
+function annotationCitationItems(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((annotation): unknown[] => isRecord(annotation) && annotation['type'] === 'url_citation' && isRecord(annotation['url_citation']) ? [annotation['url_citation']] : []);
 }
 
 function normalizeSources(items: readonly unknown[]): Array<Omit<SupportingUrl, 'source'>> {
@@ -188,6 +197,7 @@ function retryAfter(headers: Readonly<Record<string, string>> | undefined, clock
 }
 
 function safeError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
+  if (error instanceof ResponseLimitError) return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} response exceeded the configured limit.`, false, provider, { cause: error, data: { max_response_bytes: error.maximum } });
   if (error instanceof NbSearchError) return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, { cause: error, retryAfterMs: error.retryAfterMs, data: error.data });
   return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} provider failed.`, true, provider, { cause: error });
 }
