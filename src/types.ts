@@ -28,7 +28,7 @@ export type QueryOperationOutput = { channel: 'results'; schema_id: 'nb-search.r
 export interface QueryOperationDescriptor { operation_id: string; output: QueryOperationOutput; built_in_async: boolean }
 export interface FetchOperationDescriptor { operation_id: string; schema_id: 'nb-search.fetch@1' }
 export interface QueryExecutionRequest { query: string; limit: number; freshness?: Freshness; request_time_utc: string; signal: AbortSignal }
-export interface QueryResultsValue { results: readonly ProviderResult[]; upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number }
+export interface QueryResultsValue { results: readonly ProviderResult[]; hints?: readonly Hint[]; upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number }
 export type QueryProviderValue = { channel: 'results'; value: QueryResultsValue } | { channel: 'typed'; data: JsonValue };
 export interface QueryProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; execute(request: QueryExecutionRequest): Promise<QueryProviderValue> }
 
@@ -46,7 +46,7 @@ export interface UpstreamResultAttribution { provider: ProviderName }
 export type UpstreamAttemptState = 'succeeded' | 'empty' | 'skipped' | 'failed' | 'timed_out' | 'cancelled' | 'unknown';
 export interface UpstreamError { code?: string; message?: string; retryable?: boolean }
 export interface UpstreamAttempt { provider: ProviderName; state: UpstreamAttemptState; duration_ms: number; result_count: number; attempt?: number; capability?: string; role?: string; trigger?: string; error?: UpstreamError }
-export interface ProviderSearchResponse { results: readonly ProviderResult[]; upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number }
+export interface ProviderSearchResponse { results: readonly ProviderResult[]; hints?: readonly Hint[]; upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number }
 export type ProviderSearchReturn = readonly ProviderResult[] | ProviderSearchResponse;
 export interface ProviderSearchRequest { query: string; limit: number; signal: AbortSignal; freshness?: Freshness; request_time_utc?: string }
 export interface SearchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; search(request: ProviderSearchRequest): Promise<ProviderSearchReturn> }

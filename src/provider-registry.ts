@@ -11,6 +11,9 @@ import { Context7DocsProvider } from './providers/context7.ts';
 import { GitHubRepositoriesProvider } from './providers/github.ts';
 import { ZhipuSearchProvider } from './providers/zhipu.ts';
 import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyProvider, validateGmaEffort, validateGrokBaseUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
+import { OpenAiCompatibleSynthesisProvider, validateOpenAiCompatibleBaseUrl, validateOpenAiCompatibleFallbackModels, validateOpenAiCompatibleModel } from './providers/openai-compatible.ts';
+import { ParallelSearchProvider } from './providers/parallel.ts';
+import { SearxngSearchProvider, validateSearxngBaseUrl } from './providers/searxng.ts';
 import type { HttpTransport } from './transport.ts';
 import type { FetchOperationDescriptor, FetchProvider, JsonValue, ProviderId, QueryOperationDescriptor, QueryProvider, QueryProviderValue } from './types.ts';
 
@@ -61,7 +64,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 function invalidDescriptor(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Provider registration descriptor is invalid.'); }
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(undefined); }
 export function builtInProviderRegistrationsForInternalTest(testIo: DirectFetchIo): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(testIo); }
-function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, grokRegistration, gmaRegistration]; }
+function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration]; }
 function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'fetch', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: new DirectFetchProvider(io) }) }; }
 const jinaRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'jina-reader', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'reader', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
@@ -102,6 +105,21 @@ const githubRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'github', adapter_version: '1', query_operations: [{ operation_id: 'repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
   validate: (id, instance) => validateKnownOptions(id, instance, []),
   create(context) { const provider = new GitHubRepositoriesProvider({ ...(context.credential === undefined ? {} : { token: context.credential.value }), transport: context.transports.http, clock: context.clock }); return { query: { repositories: resultsProvider(provider) } }; },
+};
+const parallelRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'parallel', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'none' }, option_keys: [] },
+  validate: (id, instance) => validateKnownOptions(id, instance, []),
+  create(context) { const credential = requireCredential(context); const provider = new ParallelSearchProvider({ apiKey: credential.value, transport: context.transports.http, providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id, clock: context.clock }); return { query: { search: resultsProvider(provider) } }; },
+};
+const searxngRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'searxng', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'none', endpoint: 'required' }, option_keys: [] },
+  validate(id, instance) { validateKnownOptions(id, instance, []); if (instance.base_url !== undefined) validateSearxngBaseUrl(instance.base_url); },
+  create(context) { if (context.instance.base_url === undefined) throw incomplete(context.instance_id); const provider = new SearxngSearchProvider({ baseUrl: context.instance.base_url, transport: context.transports.http, providerInstanceId: context.instance_id, clock: context.clock }); return { query: { search: resultsProvider(provider) } }; },
+};
+const openAiCompatibleRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'openai-compatible', adapter_version: '1', query_operations: [{ operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'required' }, option_keys: ['model', 'fallback_models'] },
+  validate(id, instance) { validateKnownOptions(id, instance, ['model', 'fallback_models']); if (instance.base_url !== undefined) validateOpenAiCompatibleBaseUrl(instance.base_url); if (instance.options['model'] !== undefined) validateOpenAiCompatibleModel(instance.options['model']); validateOpenAiCompatibleFallbackModels(instance.options['fallback_models']); },
+  create(context) { const credential = requireCredential(context); if (context.instance.base_url === undefined || context.instance.options['model'] === undefined) return { query: {} as Readonly<Record<string, QueryProvider>> }; const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: credential.value, baseUrl: context.instance.base_url, model: context.instance.options['model'] as string, fallbackModels: context.instance.options['fallback_models'] as readonly string[] | undefined, transport: context.transports.http, providerInstanceId: context.instance_id, credentialSlotId: credential.credential_slot_id, clock: context.clock }); return { query: { synthesis: { name: provider.name, redactions: provider.redactions, async execute(request) { return typed(await provider.synthesize(request)); } } } }; },
 };
 const grokRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'grok', adapter_version: '2', query_operations: [{ operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }, { operation_id: 'x-synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['model', 'synthesis_model', 'x_synthesis_model'] },
