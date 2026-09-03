@@ -19,6 +19,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
     provider_instances: {
       'exa.default': instance('exa', 'exa.default'), 'tavily.default': instance('tavily', 'tavily.default'),
       'jina-reader.default': instance('jina-reader', 'jina-reader.default'), 'firecrawl.default': instance('firecrawl', 'firecrawl.default'),
+      'brave.default': instance('brave', 'brave.default'),
       'grok.default': instance('grok', 'grok.default', { model: DEFAULT_GROK_MODEL }),
       'grok-multi-agent.default': instance('grok-multi-agent', 'grok.default', { model: DEFAULT_GMA_MODEL, reasoning_effort: DEFAULT_GMA_EFFORT }),
       'direct-http.default': instance('direct-http', undefined),
@@ -26,6 +27,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
     credential_slots: {
       'exa.default': { provider_id: 'exa', env: 'NB_SEARCH_EXA_API_KEY' }, 'tavily.default': { provider_id: 'tavily', env: 'NB_SEARCH_TAVILY_API_KEY' },
       'jina-reader.default': { provider_id: 'jina-reader', env: 'NB_SEARCH_JINA_API_KEY' }, 'firecrawl.default': { provider_id: 'firecrawl', env: 'NB_SEARCH_FIRECRAWL_API_KEY' },
+      'brave.default': { provider_id: 'brave', env: 'NB_SEARCH_BRAVE_API_KEY' },
       'grok.default': { provider_id: 'grok', env: 'NB_SEARCH_GROK_API_KEY' },
     },
     lanes: {
@@ -36,9 +38,11 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'tavily.synthesis': { provider_instance_id: 'tavily.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
       'tavily.extract': { provider_instance_id: 'tavily.default', operation_id: 'extract', latency: 'fast', cost: 'cheap' },
       'jina.reader': { provider_instance_id: 'jina-reader.default', operation_id: 'reader', latency: 'medium', cost: 'free' },
+      'firecrawl.search': { provider_instance_id: 'firecrawl.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['firecrawl'] },
       'firecrawl.scrape': { provider_instance_id: 'firecrawl.default', operation_id: 'scrape', latency: 'medium', cost: 'cheap' },
       'grok.synthesis': { provider_instance_id: 'grok.default', operation_id: 'synthesis', latency: 'slow', cost: 'expensive' },
       'grok.x-synthesis': { provider_instance_id: 'grok.default', operation_id: 'x-synthesis', latency: 'slow', cost: 'expensive' },
+      'brave.search': { provider_instance_id: 'brave.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['brave'] },
       'gma.research': { provider_instance_id: 'grok-multi-agent.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
       'direct.fetch': { provider_instance_id: 'direct-http.default', operation_id: 'fetch', latency: 'fast', cost: 'free' },
     },
@@ -59,7 +63,7 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
 function environmentPatch(env: NodeJS.ProcessEnv): CanonicalConfigPatch {
   const provider_instances: Record<string, Record<string, unknown>> = {};
   const set = (id: string, key: string, value: unknown): void => { if (value !== undefined) (provider_instances[id] ??= {})[key] = value; };
-  set('exa.default', 'base_url', nonempty(env['NB_SEARCH_EXA_BASE_URL'])); set('tavily.default', 'base_url', nonempty(env['NB_SEARCH_TAVILY_BASE_URL'])); set('jina-reader.default', 'base_url', nonempty(env['NB_SEARCH_JINA_BASE_URL'])); set('firecrawl.default', 'base_url', nonempty(env['NB_SEARCH_FIRECRAWL_BASE_URL'])); set('grok.default', 'base_url', nonempty(env['NB_SEARCH_GROK_BASE_URL'])); set('grok-multi-agent.default', 'base_url', nonempty(env['NB_SEARCH_GROK_MULTI_AGENT_BASE_URL']));
+  set('exa.default', 'base_url', nonempty(env['NB_SEARCH_EXA_BASE_URL'])); set('tavily.default', 'base_url', nonempty(env['NB_SEARCH_TAVILY_BASE_URL'])); set('jina-reader.default', 'base_url', nonempty(env['NB_SEARCH_JINA_BASE_URL'])); set('firecrawl.default', 'base_url', nonempty(env['NB_SEARCH_FIRECRAWL_BASE_URL'])); set('brave.default', 'base_url', nonempty(env['NB_SEARCH_BRAVE_BASE_URL'])); set('grok.default', 'base_url', nonempty(env['NB_SEARCH_GROK_BASE_URL'])); set('grok-multi-agent.default', 'base_url', nonempty(env['NB_SEARCH_GROK_MULTI_AGENT_BASE_URL']));
   const grokModel = nonempty(env['NB_SEARCH_GROK_MODEL']); if (grokModel !== undefined) set('grok.default', 'options', { model: grokModel });
   const gmaModel = nonempty(env['NB_SEARCH_GROK_MULTI_AGENT_MODEL']); if (gmaModel !== undefined) set('grok-multi-agent.default', 'options', { model: gmaModel });
   return { ...(Object.keys(provider_instances).length === 0 ? {} : { provider_instances }), ...(nonempty(env['NB_SEARCH_JOBS_ROOT']) === undefined ? {} : { jobs_root: nonempty(env['NB_SEARCH_JOBS_ROOT']) }), ...(integer(env['NB_SEARCH_RETENTION_HOURS'], 'NB_SEARCH_RETENTION_HOURS') === undefined ? {} : { retention_hours: integer(env['NB_SEARCH_RETENTION_HOURS'], 'NB_SEARCH_RETENTION_HOURS') }), ...(nonempty(env['NB_SEARCH_LOG_LEVEL']) === undefined ? {} : { log_level: nonempty(env['NB_SEARCH_LOG_LEVEL']) as CanonicalConfig['log_level'] }) };

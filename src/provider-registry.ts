@@ -5,6 +5,8 @@ import { NbSearchError } from './errors.ts';
 import { ExaContentsFetchProvider, FirecrawlScrapeFetchProvider, JinaReaderFetchProvider, TavilyExtractFetchProvider } from './fetch-providers.ts';
 import { DirectFetchProvider, type DirectFetchIo } from './fetch-security.ts';
 import { GrokResponsesProvider, resolveGrokResponsesUrl } from './providers/grok-responses.ts';
+import { BraveSearchProvider } from './providers/brave.ts';
+import { FirecrawlSearchProvider } from './providers/firecrawl-search.ts';
 import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyProvider, validateGmaEffort, validateGrokBaseUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
 import type { FetchOperationDescriptor, FetchProvider, JsonValue, ProviderId, QueryOperationDescriptor, QueryProvider, QueryProviderValue } from './types.ts';
@@ -56,7 +58,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 function invalidDescriptor(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Provider registration descriptor is invalid.'); }
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(undefined); }
 export function builtInProviderRegistrationsForInternalTest(testIo: DirectFetchIo): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(testIo); }
-function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, grokRegistration, gmaRegistration]; }
+function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, grokRegistration, gmaRegistration]; }
 function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'fetch', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: new DirectFetchProvider(io) }) }; }
 const jinaRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'jina-reader', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'reader', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
@@ -74,9 +76,14 @@ const tavilyRegistration: ProviderRegistration = {
   create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); const searchPath = option(context.instance, 'search_path'); const synthesisPath = option(context.instance, 'synthesis_path'); const results = new TavilyProvider({ ...common, ...(searchPath === undefined ? {} : { searchPath }) }); const synthesis = new TavilyAnswerProvider({ ...common, ...(synthesisPath === undefined ? {} : { operationPath: synthesisPath }) }); return { query: { search: resultsProvider(results), synthesis: { name: 'tavily', redactions: synthesis.redactions, async execute(request) { const value = await synthesis.answer({ capability: 'answer', query: request.query, limit: request.limit, ...(request.freshness === undefined ? {} : { freshness: request.freshness }), request_time_utc: request.request_time_utc, signal: request.signal }); return typed({ text: value.text ?? '', supporting_urls: value.supporting_results.map((item) => ({ url: item.url, ...(item.title === '' ? {} : { title: item.title }), source: 'provider-result' })), citation_status: citationStatus() }); } } }, fetch: new TavilyExtractFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) }; },
 };
 const firecrawlRegistration: ProviderRegistration = {
-  descriptor: { provider_id: 'firecrawl', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'scrape', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+  descriptor: { provider_id: 'firecrawl', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operation: { operation_id: 'scrape', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
   validate(id, instance) { validateKnownOptions(id, instance, []); if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url); },
-  create(context) { const credential = requireCredential(context); return { query: {}, fetch: new FirecrawlScrapeFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) }; },
+  create(context) { const credential = requireCredential(context); const common = commonOptions(context, credential); return { query: { search: resultsProvider(new FirecrawlSearchProvider(common)) }, fetch: new FirecrawlScrapeFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) }; },
+};
+const braveRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'brave', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+  validate(id, instance) { validateKnownOptions(id, instance, []); if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url); },
+  create(context) { const credential = requireCredential(context); return { query: { search: resultsProvider(new BraveSearchProvider(commonOptions(context, credential))) } }; },
 };
 const grokRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'grok', adapter_version: '2', query_operations: [{ operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }, { operation_id: 'x-synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'optional' }, option_keys: ['model', 'synthesis_model', 'x_synthesis_model'] },
