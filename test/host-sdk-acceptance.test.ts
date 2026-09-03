@@ -106,6 +106,31 @@ describe('host SDK package acceptance', () => {
     expect(partial).toMatchObject({ action: 'run', execution: 'sync', status: 'partial', output: { status: 'partial', lane_outcomes: [{ lane: 'host.override', state: 'succeeded' }, { lane: 'host.failure', state: 'failed', error: { code: 'INTERNAL' } }] } });
   });
 
+  it.each(['sync', 'async'] as const)('rejects cross-provider credentials before %s factory execution', async (execution) => {
+    const root = await mkdtemp(join(tmpdir(), `nb-search-host-credential-${execution}-`));
+    roots.push(root);
+    const leakedSecret = `must-not-leave-${execution}`;
+    const config = { ...hostConfig(root), credential_slots: { 'host-sdk.default': { provider_id: 'other-provider', env: 'HOST_SDK_SECRET' } } } satisfies CanonicalConfigPatch;
+    let factoryCalls = 0;
+    const trackedRegistration: ProviderRegistration = { ...registration, create(context) { factoryCalls += 1; return registration.create(context); } };
+    const attempt = async () => { const runtime = createNbSearchRuntime({ env: { HOST_SDK_SECRET: leakedSecret }, config, provider_registrations: [trackedRegistration] }); return await runtime.search({ action: 'run', query: 'must-not-run', lane: 'host.base', ...(execution === 'async' ? { execution, idempotency_key: 'must-not-run' } : { execution }) }); };
+    let caught: unknown;
+    try { await attempt(); } catch (error) { caught = error; }
+    expect(caught).toMatchObject({ code: 'CONFIGURATION_ERROR' });
+    expect(String(caught)).not.toContain(leakedSecret);
+    expect(factoryCalls).toBe(0);
+  });
+
+  it('reports a generic provider with no realized ports as unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nb-search-host-empty-ports-'));
+    roots.push(root);
+    const emptyRegistration: ProviderRegistration = { ...registration, create() { return { query: {}, fetch: {} }; } };
+    const runtime = createNbSearchRuntime({ env: { HOST_SDK_SECRET: secret }, config: hostConfig(root), provider_registrations: [emptyRegistration] });
+    const capabilities = await runtime.capabilities();
+    expect(capabilities.providers.instances.find((item) => item.id === 'host-sdk.default')).toMatchObject({ availability: 'unavailable', issues: expect.arrayContaining([{ code: 'PROVIDER_PORTS_UNAVAILABLE' }, { code: 'LANE_NOT_CONFIGURED' }]), credential: { requirement: 'required', configured: true } });
+    expect(JSON.stringify(capabilities)).not.toContain(secret);
+  });
+
   it('classifies AbortSignal cancellation and execution deadlines', async () => {
     const { runtime } = await createHostRuntime();
     const controller = new AbortController();

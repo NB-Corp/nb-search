@@ -25,7 +25,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'parallel.default': instance('parallel', 'parallel.default'), 'searxng.default': instance('searxng', undefined),
       'openai-compatible.default': instance('openai-compatible', 'openai-compatible.default'),
       'grok.default': instance('grok', 'grok.default', { model: DEFAULT_GROK_MODEL }),
-      'grok-multi-agent.default': instance('grok-multi-agent', 'grok.default', { model: DEFAULT_GMA_MODEL, reasoning_effort: DEFAULT_GMA_EFFORT }),
+      'grok-multi-agent.default': instance('grok-multi-agent', 'grok-multi-agent.default', { model: DEFAULT_GMA_MODEL, reasoning_effort: DEFAULT_GMA_EFFORT }),
       'direct-http.default': instance('direct-http', undefined), 'wayback.default': instance('wayback', undefined),
       'browser-render.default': instance('browser-render', undefined),
     },
@@ -36,7 +36,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'context7.default': { provider_id: 'context7', env: 'NB_SEARCH_CONTEXT7_API_KEY' }, 'zhipu.default': { provider_id: 'zhipu', env: 'NB_SEARCH_ZHIPU_API_KEY' },
       'github.default': { provider_id: 'github', env: 'NB_SEARCH_GITHUB_TOKEN' },
       'parallel.default': { provider_id: 'parallel', env: 'NB_SEARCH_PARALLEL_API_KEY' }, 'openai-compatible.default': { provider_id: 'openai-compatible', env: 'NB_SEARCH_OAC_API_KEY' },
-      'grok.default': { provider_id: 'grok', env: 'NB_SEARCH_GROK_API_KEY' },
+      'grok.default': { provider_id: 'grok', env: 'NB_SEARCH_GROK_API_KEY' }, 'grok-multi-agent.default': { provider_id: 'grok-multi-agent', env: 'NB_SEARCH_GROK_API_KEY' },
     },
     lanes: {
       'exa.search': { provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['exa'] },

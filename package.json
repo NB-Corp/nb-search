@@ -3,6 +3,14 @@
   "version": "0.2.0",
   "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
+  "homepage": "https://github.com/NB-Corp/nb-search#readme",
+  "bugs": {
+    "url": "https://github.com/NB-Corp/nb-search/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NB-Corp/nb-search.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=24.15.0"
@@ -23,7 +31,9 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
-    "SKILL.md"
+    "SKILL.md",
+    ".env.example",
+    "docs/model-facing-lane-runtime.md"
   ],
   "scripts": {
     "build": "tsdown",
