@@ -4,6 +4,9 @@ import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
 import { ExaContentsFetchProvider, FirecrawlScrapeFetchProvider, JinaReaderFetchProvider, TavilyExtractFetchProvider } from './fetch-providers.ts';
 import { DirectFetchProvider, type DirectFetchIo } from './fetch-security.ts';
+import { Context7DocsProvider } from './providers/context7.ts';
+import { GitHubRepositoriesProvider } from './providers/github.ts';
+import { ZhipuSearchProvider } from './providers/zhipu.ts';
 import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, GrokProvider, TavilyAnswerProvider, TavilyProvider, validateGmaEffort, validateGrokBaseUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
 import type { FetchOperationDescriptor, FetchProvider, JsonValue, ProviderId, QueryOperationDescriptor, QueryProvider, QueryProviderValue } from './types.ts';
@@ -55,7 +58,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 function invalidDescriptor(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Provider registration descriptor is invalid.'); }
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(undefined); }
 export function builtInProviderRegistrationsForInternalTest(testIo: DirectFetchIo): readonly ProviderRegistration[] { return registrationsWithDirectFetchIo(testIo); }
-function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, grokRegistration, gmaRegistration]; }
+function registrationsWithDirectFetchIo(io: DirectFetchIo | undefined): readonly ProviderRegistration[] { return [directRegistration(io), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, context7Registration, zhipuRegistration, githubRegistration, grokRegistration, gmaRegistration]; }
 function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'fetch', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: new DirectFetchProvider(io) }) }; }
 const jinaRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'jina-reader', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'reader', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
@@ -76,6 +79,21 @@ const firecrawlRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'firecrawl', adapter_version: '1', query_operations: [], fetch_operation: { operation_id: 'scrape', schema_id: 'nb-search.fetch@1' }, activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
   validate(id, instance) { validateKnownOptions(id, instance, []); if (instance.base_url !== undefined) validateProviderBaseUrl(instance.base_url); },
   create(context) { const credential = requireCredential(context); return { query: {}, fetch: new FirecrawlScrapeFetchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }) }) }; },
+};
+const context7Registration: ProviderRegistration = {
+  descriptor: { provider_id: 'context7', adapter_version: '1', query_operations: [{ operation_id: 'docs', output: { channel: 'typed', schema_id: 'nb-search.docs-context@1' }, built_in_async: true }], activation: { credential: 'none', endpoint: 'optional' }, option_keys: [] },
+  validate: (id, instance) => validateKnownOptions(id, instance, []),
+  create(context) { const provider = new Context7DocsProvider({ ...(context.credential === undefined ? {} : { apiKey: context.credential.value }), transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }), clock: context.clock }); return { query: { docs: provider } }; },
+};
+const zhipuRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'zhipu', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
+  validate: (id, instance) => validateKnownOptions(id, instance, []),
+  create(context) { const credential = requireCredential(context); const provider = new ZhipuSearchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }), clock: context.clock }); return { query: { search: resultsProvider(provider) } }; },
+};
+const githubRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'github', adapter_version: '1', query_operations: [{ operation_id: 'repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
+  validate: (id, instance) => validateKnownOptions(id, instance, []),
+  create(context) { const provider = new GitHubRepositoriesProvider({ ...(context.credential === undefined ? {} : { token: context.credential.value }), transport: context.transports.http, clock: context.clock }); return { query: { repositories: resultsProvider(provider) } }; },
 };
 const grokRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'grok', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], activation: { credential: 'required', endpoint: 'required' }, option_keys: ['model'] },
