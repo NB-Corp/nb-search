@@ -66,7 +66,7 @@ description: 使用显式 lane 执行查询，并以 pipeline 将 URL、内联�
 
 ## `fetch`
 
-内置 pipeline 是 `direct.fetch`、`direct.local`、`jina.reader`、`exa.contents`、`tavily.extract`、`firecrawl.scrape`。默认 URL 链为 `direct.fetch` → `jina.reader`；`inline_text`、`inline_bytes` 和 `file` 默认使用 `direct.local`。
+内置 pipeline 是 `direct.fetch`、`direct.local`、`jina.reader`、`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`wayback.fetch`、`browser.render` 和 `oac.fetch`。默认 URL 链仍为 `direct.fetch` → `jina.reader`；`inline_text`、`inline_bytes` 和 `file` 默认使用 `direct.local`；新增三条 pipeline 均需显式选择。
 
 ### `action: "run"`
 
@@ -74,7 +74,7 @@ description: 使用显式 lane 执行查询，并以 pipeline 将 URL、内联�
 - `representation` 是 `markdown`（默认）或 `text`。
 - 不传 `pipeline` 时按 `capabilities.fetch.chains` 的 input kind 与 representation 匹配并串行尝试；显式 `pipeline` 只调用该 pipeline，且必须支持请求的 source、representation 与 execution mode。
 - file 与 inline source 只能进入 `egress: none` pipeline；file 使用 capabilities 暴露的 scope id 与 scope 内相对路径，未配置 scope 时 file input 不可用。
-- 内置 `direct.local` 支持 sync/async；其余内置 fetch pipeline 仅支持 sync。以 `capabilities.fetch.pipelines[].execution_modes` 为准。
+- 内置 `direct.local` 支持 sync/async，`browser.render` 仅支持 async，其余内置 fetch pipeline 仅支持 sync。以 `capabilities.fetch.pipelines[].execution_modes` 为准。
 - 非 404/410 的 HTTP 失败、provider/auth/rate-limit、transport、字节上限或质量门失败可进入下一 pipeline；`FETCH_BLOCKED`、404、410、`FETCH_CONTENT_TYPE_REJECTED`、取消、deadline 或预算耗尽会终止。
 - `direct.fetch` 只提供受限文本抓取和确定性 HTML→text，不代表浏览器渲染或高保真版面还原。
 - 成功内容位于 `documents`；每次尝试或跳过记录在 `lane_outcomes`，document 同时报告 `representation` 与 source `media_type`。

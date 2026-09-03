@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import type { BrowserRenderIo } from './browser-render.ts';
 import type { CanonicalConfigPatch, FetchChainConfig, LaneConfig, ProviderInstanceConfig } from './config-schema.ts';
 import { resolveConfiguration, type ResolvedConfiguration } from './config-sources.ts';
 import type { DirectFetchIo } from './fetch-security.ts';
@@ -13,10 +14,10 @@ export interface LaneBinding {
   availability: 'ready' | 'unavailable'; issues: string[]; execution_modes: QueryExecution[];
 }
 export interface AppConfiguration { home: string; jobs_root: string; retention_hours: number; log_level: 'error' | 'warn' | 'info' | 'debug'; resolved: ResolvedConfiguration; registry: ProviderRegistry; ports_by_instance: ReadonlyMap<string, ProviderPorts>; lanes: Readonly<Record<string, LaneBinding>> }
-export interface LoadConfigurationOptions { config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; test_only_direct_fetch_io?: DirectFetchIo; cwd?: string; homeDirectory?: string; now?: () => Date }
+export interface LoadConfigurationOptions { config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; test_only_direct_fetch_io?: DirectFetchIo; test_only_browser_render_io?: BrowserRenderIo; cwd?: string; homeDirectory?: string; now?: () => Date }
 export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const resolved = resolveConfiguration({ env, ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.homeDirectory === undefined ? {} : { homeDirectory: options.homeDirectory }) });
-  const builtIns = options.test_only_direct_fetch_io === undefined ? builtInProviderRegistrations() : builtInProviderRegistrationsForInternalTest(options.test_only_direct_fetch_io);
+  const builtIns = options.test_only_direct_fetch_io === undefined && options.test_only_browser_render_io === undefined ? builtInProviderRegistrations() : builtInProviderRegistrationsForInternalTest(options.test_only_direct_fetch_io, options.test_only_browser_render_io);
   const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>();
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances)) {
     const descriptor = registry.descriptor(instance.provider_id); if (descriptor === undefined || !instance.enabled) continue;
@@ -30,6 +31,7 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
     const instance = resolved.config.provider_instances[lane.provider_instance_id]!; const descriptor = registry.descriptor(instance.provider_id); const queryOperation = descriptor?.query_operations.find((item) => item.operation_id === lane.operation_id); const fetchOperation = descriptor?.fetch_operations.find((item) => item.operation_id === lane.operation_id); const instancePorts = ports.get(lane.provider_instance_id); const queryProvider = instancePorts?.query[lane.operation_id]; const fetchProvider = instancePorts?.fetch[lane.operation_id]; const issues: string[] = [];
     if (descriptor === undefined) issues.push('LANE_NOT_REGISTERED'); else if (queryOperation === undefined && fetchOperation === undefined) issues.push('OPERATION_NOT_REGISTERED');
     if (!instance.enabled) issues.push('LANE_NOT_CONFIGURED');
+    else if (instance.provider_id === 'browser-render' && fetchOperation !== undefined && fetchProvider === undefined) issues.push('BROWSER_NOT_INSTALLED');
     else if ((queryOperation !== undefined && queryProvider === undefined) || (fetchOperation !== undefined && fetchProvider === undefined)) issues.push(descriptor?.activation.endpoint === 'required' && instance.base_url === undefined ? 'ENDPOINT_NOT_CONFIGURED' : 'LANE_NOT_CONFIGURED');
     const ready = issues.length === 0;
     if (id === 'github.repositories' && (instance.credential_slot_id === undefined || resolved.secret_bindings.get(instance.credential_slot_id) === undefined) && ready) issues.push('RATE_LIMIT_UNAUTHENTICATED');

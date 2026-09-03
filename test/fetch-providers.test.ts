@@ -60,7 +60,7 @@ describe('fetch provider adapters', () => {
     ['exa', (transport: JsonTransport) => new ExaContentsFetchProvider({ apiKey: 'secret', transport })],
     ['firecrawl', (transport: JsonTransport) => new FirecrawlScrapeFetchProvider({ apiKey: 'secret', transport })],
   ] as const)('maps %s upstream errors to FETCH_HTTP_ERROR', async (_name, create) => {
-    for (const status of [404, 429, 500]) await expect(create(new CaptureTransport({ status, body: {} })).fetch(request())).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', retryable: status >= 500, data: { status } });
+    for (const status of [404, 429, 500]) await expect(create(new CaptureTransport({ status, body: {} })).fetch(request())).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', retryable: status === 429 || status >= 500, data: { status } });
   });
 
   it('gates credentialed built-in lanes while keeping direct and Jina ready without keys', async () => {
