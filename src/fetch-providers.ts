@@ -17,13 +17,13 @@ export class JinaReaderFetchProvider implements FetchProvider {
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
     try {
       const response = await this.options.transport.send<string>({
-        url: `${this.baseUrl.replace(/\/+$/, '')}/${request.url}`, method: 'GET',
+        url: `${this.baseUrl.replace(/\/+$/, '')}/${fetchUrl(request)}`, method: 'GET',
         headers: { Accept: 'text/plain', ...(this.options.apiKey === undefined ? {} : { Authorization: `Bearer ${this.options.apiKey}` }) },
         response_type: 'text', max_response_bytes: request.max_response_bytes, signal: request.signal,
       });
       assertFetchStatus(response.status, this.name);
       if (typeof response.body !== 'string') throw malformed(this.name);
-      return normalized(request, request.url, response.body, response.headers?.['content-type'] ?? 'text/plain');
+      return normalized(request, fetchUrl(request), response.body, response.headers?.['content-type'] ?? 'text/plain');
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }
@@ -40,13 +40,13 @@ export class TavilyExtractFetchProvider implements FetchProvider {
     try {
       const response = await this.options.transport.send<unknown>({
         url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
-        body: { urls: [request.url], format: 'text' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+        body: { urls: [fetchUrl(request)], format: 'text' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
       });
       assertFetchStatus(response.status, this.name);
       if (!isRecord(response.body) || !Array.isArray(response.body['results'])) throw malformed(this.name);
       const item = response.body['results'].find(isRecord);
       if (item === undefined) { const failures = Array.isArray(response.body['failed_results']) ? response.body['failed_results'].length : 0; if (failures > 0) throw businessFailure(this.name, { failed_results: failures }); throw malformed(this.name); }
-      return normalized(request, stringValue(item['url']) || request.url, stringValue(item['raw_content']) || stringValue(item['content']), 'text/plain', stringValue(item['title']));
+      return normalized(request, stringValue(item['url']) || fetchUrl(request), stringValue(item['raw_content']) || stringValue(item['content']), 'text/plain', stringValue(item['title']));
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }
@@ -63,14 +63,14 @@ export class ExaContentsFetchProvider implements FetchProvider {
     try {
       const response = await this.options.transport.send<unknown>({
         url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': this.options.apiKey },
-        body: { urls: [request.url], text: { maxCharacters: request.max_content_chars } }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+        body: { urls: [fetchUrl(request)], text: { maxCharacters: request.max_content_chars } }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
       });
       assertFetchStatus(response.status, this.name);
       if (!isRecord(response.body)) throw malformed(this.name);
       const failure = exaFailure(response.body['statuses']); if (failure !== undefined) { if (failure.http_status !== undefined) throw fetchHttpError(failure.http_status, this.name); throw businessFailure(this.name); }
       const results = Array.isArray(response.body['results']) ? response.body['results'] : [];
       const item = results.find(isRecord); if (item === undefined) throw malformed(this.name);
-      return normalized(request, stringValue(item['url']) || request.url, stringValue(item['text']), 'text/plain', stringValue(item['title']));
+      return normalized(request, stringValue(item['url']) || fetchUrl(request), stringValue(item['text']), 'text/plain', stringValue(item['title']));
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }
@@ -87,21 +87,22 @@ export class FirecrawlScrapeFetchProvider implements FetchProvider {
     try {
       const response = await this.options.transport.send<unknown>({
         url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
-        body: { url: request.url, formats: ['markdown'] }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+        body: { url: fetchUrl(request), formats: ['markdown'] }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
       });
       assertFetchStatus(response.status, this.name);
       if (!isRecord(response.body) || response.body['success'] !== true || !isRecord(response.body['data'])) throw businessFailure(this.name);
       const data = response.body['data']; const metadata = isRecord(data['metadata']) ? data['metadata'] : {};
-      return normalized(request, stringValue(metadata['sourceURL']) || stringValue(metadata['url']) || request.url, stringValue(data['markdown']), 'text/markdown', stringValue(metadata['title']));
+      return normalized(request, stringValue(metadata['sourceURL']) || stringValue(metadata['url']) || fetchUrl(request), stringValue(data['markdown']), 'text/markdown', stringValue(metadata['title']));
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }
 
 function normalized(request: FetchProviderRequest, finalUrl: string, rawContent: string, contentType: string, rawTitle = ''): FetchProviderResult {
-  const byteLength = Buffer.byteLength(rawContent, 'utf8'); const truncated = rawContent.length > request.max_content_chars; const content = truncated ? rawContent.slice(0, request.max_content_chars) : rawContent; const warnings: FetchWarning[] = [];
+  const byteLength = Buffer.byteLength(rawContent, 'utf8'); const truncated = rawContent.length > request.max_content_chars; const content = truncated ? rawContent.slice(0, request.max_content_chars) : rawContent; const warnings: FetchWarning[] = []; const mediaType = contentType.split(';')[0]?.trim().toLowerCase() || 'text/plain';
   if (truncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: request.max_content_chars } });
-  return { url: request.url, final_url: finalUrl, ...(rawTitle === '' ? {} : { title: rawTitle }), content, content_type: contentType.split(';')[0]?.trim().toLowerCase() || 'text/plain', format: 'text', byte_length: byteLength, truncated, warnings };
+  return { url: fetchUrl(request), final_url: finalUrl, ...(rawTitle === '' ? {} : { title: rawTitle }), content, content_type: mediaType, media_type: mediaType, representation: request.representation, format: 'text', byte_length: byteLength, truncated, warnings };
 }
+function fetchUrl(request: FetchProviderRequest): string { if (request.source.kind !== 'url') throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', 'The remote fetch pipeline accepts URL input only.'); return request.source.url; }
 function assertFetchStatus(status: number, provider: ProviderName): void { if (status < 200 || status >= 300) throw fetchHttpError(status, provider); }
 function fetchHttpError(status: number, provider: ProviderName): NbSearchError { return new NbSearchError('FETCH_HTTP_ERROR', `${provider} fetch failed with status ${String(status)}.`, status >= 500, provider, { data: { status } }); }
 function businessFailure(provider: ProviderName, data?: Readonly<Record<string, unknown>>): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} did not return usable fetch content.`, false, provider, data === undefined ? undefined : { data }); }

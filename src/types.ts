@@ -1,6 +1,11 @@
 export const SCHEMA_VERSION = '3.0' as const;
 export const FRESHNESS_VALUES = ['pd', 'pw', 'pm', 'py'] as const;
+export const FETCH_INPUT_KINDS = ['url', 'inline_text', 'inline_bytes', 'file'] as const;
+export const FETCH_REPRESENTATIONS = ['markdown', 'text'] as const;
+export const FETCH_EXECUTION_MODES = ['sync', 'async'] as const;
 export type Freshness = typeof FRESHNESS_VALUES[number];
+export type FetchInputKind = typeof FETCH_INPUT_KINDS[number];
+export type FetchRepresentation = typeof FETCH_REPRESENTATIONS[number];
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type ProviderName = string;
@@ -16,6 +21,7 @@ export type PublicErrorCode =
   | 'INVALID_INPUT' | 'CONFIGURATION_ERROR' | 'LANE_NOT_REGISTERED' | 'LANE_NOT_CONFIGURED'
   | 'LANE_NOT_SELECTABLE' | 'LANE_EXECUTION_UNSUPPORTED' | 'MIXED_OUTPUT_UNSUPPORTED'
   | 'PRESET_NOT_FOUND' | 'PRESET_UNAVAILABLE' | 'DEFAULT_NOT_CONFIGURED' | 'FETCH_DEFAULT_NOT_CONFIGURED'
+  | 'FETCH_CHAIN_UNAVAILABLE' | 'FETCH_PIPELINE_UNSUPPORTED' | 'FETCH_EGRESS_DENIED' | 'FETCH_SCOPE_NOT_FOUND' | 'FETCH_FILE_BLOCKED'
   | 'BUDGET_EXCEEDED' | 'OUTPUT_TOO_LARGE' | 'FETCH_BLOCKED' | 'FETCH_BYTES_LIMIT'
   | 'FETCH_CONTENT_TYPE_REJECTED' | 'FETCH_HTTP_ERROR' | 'QUALITY_GATE_FAILED'
   | 'PROVIDER_AUTH' | 'PROVIDER_RATE_LIMIT' | 'PROVIDER_UNAVAILABLE'
@@ -24,19 +30,36 @@ export type PublicErrorCode =
 export interface PublicError { code: PublicErrorCode; message: string; retryable: boolean; provider?: ProviderName; retry_after_ms?: number; data?: Readonly<Record<string, unknown>> }
 export interface Hint { code: string; message: string; data?: Readonly<Record<string, unknown>> }
 
+export type FetchSource =
+  | { kind: 'url'; url: string }
+  | { kind: 'inline_text'; content: string; media_type: 'text/html' | 'text/plain' | 'text/markdown'; base_url?: string }
+  | { kind: 'inline_bytes'; content_base64: string; media_type: string; filename?: string }
+  | { kind: 'file'; path: string; scope: string };
+export type FetchStageRole = 'acquire' | 'extract' | 'convert' | 'reader';
+export interface FetchPipelineDescriptor {
+  operation_id: string;
+  schema_id: 'nb-search.fetch@1';
+  input_kinds: readonly FetchInputKind[];
+  media_types: readonly string[];
+  representations: readonly FetchRepresentation[];
+  execution_modes: readonly QueryExecution[];
+  egress: 'none' | 'url' | 'content';
+  stages: readonly { id: string; role: FetchStageRole }[];
+}
+export type FetchOperationDescriptor = FetchPipelineDescriptor;
 export type QueryOperationOutput = { channel: 'results'; schema_id: 'nb-search.results@1' } | { channel: 'typed'; schema_id: string };
 export interface QueryOperationDescriptor { operation_id: string; output: QueryOperationOutput; built_in_async: boolean }
-export interface FetchOperationDescriptor { operation_id: string; schema_id: 'nb-search.fetch@1' }
 export interface QueryExecutionRequest { query: string; limit: number; freshness?: Freshness; request_time_utc: string; signal: AbortSignal }
 export interface QueryResultsValue { results: readonly ProviderResult[]; upstream_attempts?: readonly UpstreamAttempt[]; upstream_attempts_omitted?: number }
 export type QueryProviderValue = { channel: 'results'; value: QueryResultsValue } | { channel: 'typed'; data: JsonValue };
 export interface QueryProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; execute(request: QueryExecutionRequest): Promise<QueryProviderValue> }
 
 export interface FetchWarning extends Hint {}
-export interface FetchProviderRequest { url: string; signal: AbortSignal; max_response_bytes: number; max_content_chars: number; max_redirects: number }
-export interface FetchProviderResult { url: string; final_url: string; title?: string; content: string; content_type: string; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
+export interface FetchProviderRequest { source: FetchSource; representation: FetchRepresentation; signal: AbortSignal; max_source_bytes: number; max_response_bytes: number; max_content_chars: number; max_redirects: number; file_scopes: readonly FetchFileScope[] }
+export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
 export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
 export interface FetchDocument extends FetchProviderResult { source_lane: string }
+export interface FetchFileScope { id: string; root: string; media_types?: readonly string[] }
 
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
@@ -85,6 +108,7 @@ export type SearchLogicalOutput = SearchResultsOutput | SearchTypedOutput;
 export interface SearchRunSyncEnvelope { schema_version: typeof SCHEMA_VERSION; action: 'run'; execution: 'sync'; selection?: SearchSelection; status: LogicalStatus; output?: SearchLogicalOutput; error?: PublicError; hints: Hint[] }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type JobKind = 'search' | 'fetch';
 export interface ArtifactRef { media_type: 'application/json'; byte_length: number; sha256: string; expires_at: string }
 export interface JobReceipt { job_id: string; state: JobState; created_at: string }
 export interface SearchRunAsyncEnvelope { schema_version: typeof SCHEMA_VERSION; action: 'run'; execution: 'async'; selection?: SearchSelection; status: 'queued' | 'failed'; channel?: OutputChannel; schema_id?: string; job?: JobReceipt; reused?: boolean; poll_after_ms?: number; error?: PublicError; hints: Hint[] }
@@ -94,12 +118,23 @@ export interface SearchReadEnvelope { schema_version: typeof SCHEMA_VERSION; act
 export interface SearchCancelEnvelope { schema_version: typeof SCHEMA_VERSION; action: 'cancel'; job_id: string; state: JobState; cancel_requested: boolean }
 export type SearchEnvelope = SearchRunSyncEnvelope | SearchRunAsyncEnvelope | SearchGetEnvelope | SearchReadEnvelope | SearchCancelEnvelope;
 
-export interface FetchEnvelope { schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; selection: { source: 'default' | 'lane'; lane?: string }; status: LogicalStatus; lane_outcomes: LaneOutcome[]; documents: FetchDocument[]; hints: Hint[] }
+export interface FetchRunSyncEnvelope { schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'sync'; selection: { source: 'default' | 'pipeline'; pipeline?: string }; status: LogicalStatus; lane_outcomes: LaneOutcome[]; documents: FetchDocument[]; hints: Hint[]; error?: PublicError }
+export interface FetchRunAsyncEnvelope { schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'async'; selection?: { source: 'default' | 'pipeline'; pipeline?: string }; status: 'queued' | 'failed'; schema_id?: 'nb-search.fetch@1'; job?: JobReceipt; reused?: boolean; poll_after_ms?: number; error?: PublicError; hints: Hint[] }
+export interface FetchGetEnvelope extends SearchGetEnvelope { mode: 'fetch' }
+export interface FetchReadEnvelope extends SearchReadEnvelope { mode: 'fetch' }
+export interface FetchCancelEnvelope extends SearchCancelEnvelope { mode: 'fetch' }
+export type FetchEnvelope = FetchRunSyncEnvelope | FetchRunAsyncEnvelope | FetchGetEnvelope | FetchReadEnvelope | FetchCancelEnvelope;
 export interface CapabilityIssue { code: string; execution?: QueryExecution }
 export interface CapabilityEnvelope {
   schema_version: typeof SCHEMA_VERSION; revision: string;
   search: { default_lane?: string; lanes: Array<{ id: string; output: QueryOperationOutput; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; latency: LaneLatency; cost: LaneCost }>; presets: Array<{ name: string; lanes: string[]; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_queries: number; max_results: number; max_timeout_ms: number; max_inline_bytes: number } };
-  fetch: { chain: string[]; lanes: Array<{ id: string; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_response_bytes: number; max_content_chars: number; max_redirects: number; max_timeout_ms: number; quality: { min_content_chars: number; blocked_markers: number } } };
+  fetch: {
+    default_representation: 'markdown';
+    inputs: Array<{ kind: FetchInputKind; enabled: boolean; max_bytes: number; media_types?: string[]; scope_ids?: string[] }>;
+    chains: Array<{ input_kind: FetchInputKind; representation: FetchRepresentation; pipelines: string[] }>;
+    pipelines: Array<{ id: string; input_kinds: FetchInputKind[]; media_types: string[]; representations: FetchRepresentation[]; execution_modes: QueryExecution[]; egress: 'none' | 'url' | 'content'; stages: Array<{ id: string; role: FetchStageRole }>; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; latency: LaneLatency; cost: LaneCost }>;
+    limits: { max_source_bytes: number; max_response_bytes: number; max_content_chars: number; max_redirects: number; max_timeout_ms: number; max_inline_bytes: number };
+  };
   jobs: { result_ttl_seconds: number; cancel_supported: true };
 }
 export interface ErrorEnvelope { error: PublicError }

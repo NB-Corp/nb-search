@@ -1,19 +1,19 @@
 ---
 name: nb-search
-description: "Deterministic query/fetch lane runtime for AI models. Use when the user needs explicit search lanes, typed synthesis or research output, async query jobs with idempotency, safe single-URL fetch with SSRF protection, or static capability inspection via the nb-search CLI/SDK/MCP."
+description: "Deterministic search-lane and fetch-pipeline runtime for AI models. Use for explicit search lanes, typed or async jobs, and safe conversion of URLs, inline content, or scoped files into model-readable documents."
 ---
 
 # nb-search
 
 `nb-search` is a deterministic lane runtime with exactly three public capabilities: `search`, `fetch`, `capabilities`.
 
-For `search`, the caller selects lanes explicitly; the runtime never inspects a query to pick an engine, replace an unavailable lane, or run an unselected fallback. For `fetch`, omitting `lane` runs the configured serial chain, while an explicit `lane` bypasses it. Search execution mode changes delivery only, not lane or plan.
+For `search`, the caller selects lanes explicitly; the runtime never inspects a query to pick an engine, replace an unavailable lane, or run an unselected fallback. For `fetch`, omitting `pipeline` matches the configured chain by input kind and representation, while an explicit `pipeline` bypasses it. Execution mode changes delivery only, not the selected plan.
 
 ## Workflow
 
-1. Determine whether the request is a query (search), a URL read (fetch), or a capability check (capabilities).
-2. Choose the lane explicitly, or omit the selector to use the configured default.
-3. For async search, supply a stable `idempotency_key` and reuse it for retries.
+1. Determine whether the request is a query (search), a source conversion (fetch), or a capability check (capabilities).
+2. Choose the search lane or fetch pipeline explicitly, or omit the selector to use the configured default chain.
+3. For async search or fetch, supply a stable `idempotency_key` and reuse it for retries.
 4. Validate output shape before reporting: results use ranked `results`, typed uses `schema_id` + `data`, fetch uses `documents`.
 
 ## `search`
@@ -48,16 +48,17 @@ For `search`, the caller selects lanes explicitly; the runtime never inspects a 
 
 ## `fetch`
 
-- Pass exactly one `url` and optionally one `lane`. No URL arrays, lane arrays, or presets.
-- Without `lane`, lanes run serially in `capabilities.fetch.chain` order; an explicit `lane` invokes only that lane.
+- Use the `run | get | read | cancel` action union. `run.source` is `url | inline_text | inline_bytes | file`; `representation` defaults to `markdown`.
+- Without `pipeline`, pipelines run serially from the matching `capabilities.fetch.chains` entry; an explicit `pipeline` invokes only that pipeline.
+- File and inline sources may enter only `egress: none` pipelines. File paths are relative to a capability-advertised scope id.
 - HTTP 403/429/5xx, transport failures, and quality-gate failures may fall through. `FETCH_BLOCKED`, HTTP 404/410, and `FETCH_CONTENT_TYPE_REJECTED` terminate the chain.
 - `direct.fetch` provides bounded text extraction and deterministic HTML→text; it is not browser rendering or high-fidelity layout reconstruction.
-- Successful content lives in `documents`; attempts and skipped lanes live in `lane_outcomes`, with failures also represented in `hints`. There is no failed-document placeholder.
-- The production SDK has no DNS/request replacement or connect-address remap seams. Production fetch connects only to a validated public IP.
+- Successful documents report `representation` and source `media_type`; attempts and skips remain in `lane_outcomes`.
+- Async fetch requires `idempotency_key` and uses fetch `get/read/cancel` for job management.
 
 ## `capabilities`
 
-- Returns a static catalog of query/fetch lanes, output schemas, effective execution modes, availability, presets, and runtime limits.
+- Returns a static catalog of query lanes, fetch pipeline descriptors, chains, inputs, execution modes, availability, and runtime limits.
 - It performs no network probe. Do not use it to auto-select lanes.
 
 ## Forbidden patterns
@@ -77,7 +78,10 @@ nb-search search run "brief" --lane gma.research --execution async --idempotency
 nb-search search get <job_id>
 nb-search search read <job_id> --page-size 8
 nb-search search cancel <job_id>
-nb-search fetch "https://example.com" --lane direct.fetch
+nb-search fetch "https://example.com" --pipeline direct.fetch --representation markdown
+nb-search fetch get <job_id>
+nb-search fetch read <job_id> --page-size 8
+nb-search fetch cancel <job_id>
 nb-search capabilities
 ```
 
