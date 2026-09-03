@@ -14,7 +14,7 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('xAI Responses adapter', () => {
-  it('normalizes official xAI citation annotations without treating labels as page titles', async () => {
+  it('normalizes official xAI citations to URL-only sources without labels or unmapped offsets', async () => {
     const transport = new CaptureTransport({
       status: 200,
       body: {
@@ -34,7 +34,7 @@ describe('xAI Responses adapter', () => {
     const provider = new GrokResponsesProvider({ apiKey: 'grok-secret', model: 'grok-4.1-fast', tool: 'web_search', transport });
     await expect(provider.synthesize(queryRequest())).resolves.toEqual({
       answer: 'First\n\nSecond',
-      sources: [{ url: 'https://example.test/page', start_index: 208, end_index: 235 }],
+      sources: [{ url: 'https://example.test/page' }],
     });
     expect(transport.requests).toEqual([{
       url: DEFAULT_GROK_RESPONSES_URL,
