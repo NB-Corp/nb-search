@@ -41,12 +41,6 @@ export class FetchJsonTransport implements HttpTransport {
       throw new NbSearchError('PROVIDER_UNAVAILABLE', 'Provider connection failed.', true, undefined, { cause: error });
     }
     const headers = Object.fromEntries(response.headers.entries());
-    if (response.status < 200 || response.status >= 300) {
-      if (request.max_response_bytes !== undefined) {
-        await response.body?.cancel().catch(() => undefined);
-        return { status: response.status, body: '' as T, headers };
-      }
-    }
     const text = request.max_response_bytes === undefined
       ? await response.text()
       : await readBoundedText(response, request.max_response_bytes);

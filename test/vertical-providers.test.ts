@@ -1,3 +1,6 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
 import { describe, expect, it } from 'vitest';
 
 import { loadConfiguration } from '../src/config.ts';
@@ -5,7 +8,7 @@ import { NbSearchError } from '../src/errors.ts';
 import { Context7DocsProvider } from '../src/providers/context7.ts';
 import { GitHubRepositoriesProvider } from '../src/providers/github.ts';
 import { ZhipuSearchProvider } from '../src/providers/zhipu.ts';
-import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
+import { FetchJsonTransport, type JsonRequest, type JsonResponse, type JsonTransport } from '../src/transport.ts';
 
 const clock = () => new Date('2026-01-01T00:00:00.000Z');
 
@@ -152,6 +155,26 @@ describe('GitHub repository search adapter', () => {
     await expect(primary.search(searchRequest())).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true, retryAfterMs: 5000, data: { status: 403 } });
     const secondary = new GitHubRepositoriesProvider({ transport: new QueueTransport([{ status: 403, body: { message: 'You have exceeded a secondary rate limit.' }, headers: { 'retry-after': '7' } }]), clock });
     await expect(secondary.search(searchRequest())).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true, retryAfterMs: 7000, data: { status: 403 } });
+  });
+
+  it('classifies a body-only GitHub 403 rate limit through FetchJsonTransport', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(403, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ message: 'API rate limit exceeded for this client.' }));
+    });
+    await new Promise<void>((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject));
+    const address = server.address() as AddressInfo;
+    const endpoint = `http://127.0.0.1:${String(address.port)}/search/repositories`;
+    const nativeFetch = globalThis.fetch;
+    globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => await nativeFetch(endpoint, init);
+    try {
+      const provider = new GitHubRepositoriesProvider({ transport: new FetchJsonTransport(), clock });
+      await expect(provider.search(searchRequest())).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true, provider: 'github', data: { status: 403 } });
+    } finally {
+      globalThis.fetch = nativeFetch;
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+    }
   });
 
   it('rejects malformed content', async () => {

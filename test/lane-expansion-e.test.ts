@@ -166,6 +166,17 @@ describe('oac.synthesis adapter', () => {
     expect(transport.requests[0]?.max_response_bytes).toBe(SEARCH_RESPONSE_MAX_BYTES);
   });
 
+  it.each([
+    { failure: 'HTTP 404', response: { status: 404, body: {} } },
+    { failure: 'malformed content', response: { status: 200, body: { choices: [{ message: { content: '{"answer":1}' } }] } } },
+    { failure: 'an empty answer', response: { status: 200, body: completion('', []) } },
+  ])('falls back after $failure from the primary model', async ({ response }) => {
+    const transport = new SequenceTransport([response, { status: 200, body: completion('fallback answer') }]);
+    const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'primary', fallbackModels: ['fallback'], transport });
+    await expect(provider.synthesize(synthesisRequest())).resolves.toEqual({ answer: 'fallback answer', sources: [{ title: 'Source', url: 'https://source.test/path' }] });
+    expect(transport.requests.map((item) => (item.body as { model: string }).model)).toEqual(['primary', 'fallback']);
+  });
+
   it('rejects missing content and malformed structured content', async () => {
     for (const body of [{ choices: [{ message: {} }] }, { choices: [{ message: { content: '{"answer":1}' } }] }]) {
       const provider = new OpenAiCompatibleSynthesisProvider({ apiKey: 'secret', baseUrl: 'https://oac.test/v1', model: 'model', transport: new SequenceTransport([{ status: 200, body }]) });

@@ -68,7 +68,7 @@ export class OpenAiCompatibleSynthesisProvider {
       } catch (error) {
         if (request.signal.aborted) throw error;
         const safe = safeError(error, this.name, this.redactions);
-        if (!safe.retryable) throw safe;
+        if (error instanceof ResponseLimitError || safe.code === 'PROVIDER_AUTH') throw safe;
         lastError = safe;
       }
     }
