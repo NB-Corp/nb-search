@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { NbSearchError } from './errors.ts';
@@ -7,8 +8,9 @@ import type { FetchFileScope, FetchProvider, FetchProviderRequest, FetchProvider
 const TEXT_MEDIA_TYPES = ['text/html', 'text/plain', 'text/markdown'] as const;
 interface FileIdentity { dev: number; ino: number; size: number; isFile(): boolean }
 interface OpenFile { stat(): Promise<FileIdentity>; read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number }>; close(): Promise<void> }
-export interface LocalFetchFileIo { realpath(path: string): Promise<string>; stat(path: string): Promise<FileIdentity>; open(path: string): Promise<OpenFile> }
-const nodeFileIo: LocalFetchFileIo = { realpath, stat, async open(path) { return await open(path, 'r') as FileHandle; } };
+export interface LocalFetchFileIo { realpath(path: string): Promise<string>; stat(path: string): Promise<FileIdentity>; open(path: string, flags: number): Promise<OpenFile> }
+export function localFileOpenFlags(platform: NodeJS.Platform): number { return platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW; }
+const nodeFileIo: LocalFetchFileIo = { realpath, stat, async open(path, flags) { return await open(path, flags) as FileHandle; } };
 export class LocalFetchProvider implements FetchProvider {
   readonly name = 'local-reader';
   constructor(private readonly fileIo: LocalFetchFileIo = nodeFileIo) {}
@@ -41,7 +43,7 @@ async function acquireLocalSource(request: FetchProviderRequest, fileIo: LocalFe
 async function readScopedFile(scopeId: string, path: string, scopes: readonly FetchFileScope[], maxBytes: number, fileIo: LocalFetchFileIo): Promise<{ bytes: Buffer; scope: FetchFileScope }> {
   const scope = scopes.find((item) => item.id === scopeId); if (scope === undefined) throw new NbSearchError('FETCH_SCOPE_NOT_FOUND', `File scope ${scopeId} is not configured.`);
   if (isAbsolute(path)) throw blockedFile(); let root: string; try { root = await fileIo.realpath(resolve(scope.root)); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The file scope root is unavailable.', false, undefined, { cause: error }); } const candidate = resolve(root, path); assertContained(root, candidate);
-  let handle: OpenFile; try { handle = await fileIo.open(candidate); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The requested file is unavailable.', false, undefined, { cause: error }); }
+  let handle: OpenFile; try { handle = await fileIo.open(candidate, localFileOpenFlags(process.platform)); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The requested file is unavailable.', false, undefined, { cause: error }); }
   try {
     const opened = await handle.stat(); if (!opened.isFile()) throw blockedFile(); assertSize(opened.size, maxBytes);
     let canonical: string; try { canonical = await fileIo.realpath(candidate); } catch (error) { throw new NbSearchError('FETCH_FILE_BLOCKED', 'The requested file identity is unavailable.', false, undefined, { cause: error }); } assertContained(root, canonical);
