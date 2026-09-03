@@ -125,8 +125,11 @@ export interface FetchReadEnvelope extends SearchReadEnvelope { mode: 'fetch' }
 export interface FetchCancelEnvelope extends SearchCancelEnvelope { mode: 'fetch' }
 export type FetchEnvelope = FetchRunSyncEnvelope | FetchRunAsyncEnvelope | FetchGetEnvelope | FetchReadEnvelope | FetchCancelEnvelope;
 export interface CapabilityIssue { code: string; execution?: QueryExecution }
+export interface CapabilityProviderDescriptor { provider_id: ProviderId; adapter_version: string; query_operations: QueryOperationDescriptor[]; fetch_operations: FetchOperationDescriptor[]; activation: { credential: 'required' | 'none'; endpoint: 'required' | 'optional' | 'none' }; option_keys: string[] }
+export interface CapabilityProviderInstance { id: ProviderInstanceId; provider_id: ProviderId; enabled: boolean; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; credential: { requirement: 'required' | 'none' | 'unknown'; configured: boolean; slot_id?: string }; endpoint: { requirement: 'required' | 'optional' | 'none' | 'unknown'; configured: boolean } }
 export interface CapabilityEnvelope {
   schema_version: typeof SCHEMA_VERSION; revision: string;
+  providers: { descriptors: CapabilityProviderDescriptor[]; instances: CapabilityProviderInstance[] };
   search: { default_lane?: string; lanes: Array<{ id: string; output: QueryOperationOutput; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; latency: LaneLatency; cost: LaneCost }>; presets: Array<{ name: string; lanes: string[]; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_queries: number; max_results: number; max_timeout_ms: number; max_inline_bytes: number } };
   fetch: {
     default_representation: 'markdown';

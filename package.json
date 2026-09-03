@@ -1,6 +1,6 @@
 {
   "name": "@nb-corp/nb-search",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
   "type": "module",
@@ -22,6 +22,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "SKILL.md"
   ],
   "scripts": {

@@ -88,14 +88,26 @@ The built-in URL chain is `direct.fetch` then `jina.reader`; inline and scoped-f
 ## SDK
 
 ```ts
-import { createNbSearchRuntime } from '@nb-corp/nb-search';
+import {
+  createNbSearchRuntime,
+  parseConfigPatch,
+  type CanonicalConfigPatch
+} from '@nb-corp/nb-search';
 
-const runtime = createNbSearchRuntime({ env: process.env });
+const savedConfig = parseConfigPatch(hostSettings.nbSearch, 'host settings');
+const sessionOverrides: CanonicalConfigPatch = {
+  defaults: { search_lane: 'exa.search' }
+};
+
+const runtime = createNbSearchRuntime({
+  env: process.env,
+  config: savedConfig,
+  overrides: sessionOverrides
+});
 
 const results = await runtime.search({
   action: 'run',
-  query: ['Node.js ESM resolution', 'TypeScript bundler resolution'],
-  preset: 'cross-check',
+  query: 'Node.js ESM resolution',
   execution: 'sync'
 });
 
@@ -116,12 +128,13 @@ const started = await runtime.search({
 const page = await runtime.fetch({
   action: 'run',
   source: { kind: 'url', url: 'https://example.com/spec' },
-  pipeline: 'direct.fetch',
   representation: 'markdown'
 });
 
 const catalog = await runtime.capabilities();
 ```
+
+`config` is the host's validated saved patch and `overrides` is the higher-precedence runtime patch. `capabilities()` returns registered provider descriptors, configured provider-instance readiness, search-lane and fetch-pipeline descriptors, configured defaults, limits, and credential readiness. Credential entries contain only requirement, slot identifier, and configured status; secret values and endpoint values are not returned.
 
 `search` is an action union:
 
@@ -131,6 +144,8 @@ const catalog = await runtime.capabilities();
 - `cancel` records a cancellation request; it does not claim that an upstream request stopped or avoided billing.
 
 Results operations support one lane, ordered `lanes`, or a results-only `preset`. One query and one results lane preserve provider order. Multiple query/lane lists use per-list canonical deduplication, RRF, independent evidence groups, and stable tie-breaking. Typed operations require one lane and return schema-bound JSON. Oversized sync output returns `OUTPUT_TOO_LARGE`; it is not truncated or changed to async.
+
+Operational failures use stable `PublicErrorCode` values in run envelopes and lane outcomes. No configured search default returns a failed envelope with `DEFAULT_NOT_CONFIGURED`; an unavailable fetch default returns `FETCH_CHAIN_UNAVAILABLE`. Successful work from some selected search lanes produces `partial`. Host cancellation produces `cancelled` with `CANCELLED`, and the execution budget produces `timed_out` with `DEADLINE_EXCEEDED`.
 
 An async job publishes one immutable logical-output artifact. Its normalized integer-second TTL begins when the successful artifact is published. A `get` response may cross the expiry boundary before a later `read`; `read` at or after `artifact.expires_at` returns `JOB_NOT_FOUND`. There is no public job enumeration, artifact selector, checkpoint, or artifact revision.
 

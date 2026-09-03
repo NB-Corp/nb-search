@@ -27,6 +27,6 @@ describe('public surface', () => {
   it('publishes the skill and only root plus skill subpath', async () => {
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { exports: Record<string, unknown>; files: string[] };
     expect(Object.keys(pkg.exports).sort()).toEqual(['.', './SKILL.md']);
-    expect(pkg.files).toEqual(['dist', 'README.md', 'SKILL.md']);
+    expect(pkg.files).toEqual(['dist', 'README.md', 'CHANGELOG.md', 'SKILL.md']);
   });
 });
