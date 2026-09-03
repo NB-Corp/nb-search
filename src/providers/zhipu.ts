@@ -44,7 +44,7 @@ export class ZhipuSearchProvider implements SearchProvider {
         url: this.endpoint,
         method: 'POST',
         headers: { Authorization: this.authorization, Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: { search_query: request.query, search_engine: 'search_std' },
+        body: { search_query: request.query, search_engine: 'search_std', search_intent: false, count: Math.min(50, Math.max(1, request.limit)) },
         response_type: 'json',
         max_response_bytes: MAX_RESPONSE_BYTES,
         signal: request.signal,

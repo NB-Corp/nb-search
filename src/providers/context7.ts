@@ -58,6 +58,8 @@ export class Context7DocsProvider implements QueryProvider {
   async execute(request: QueryExecutionRequest): Promise<QueryProviderValue> {
     try {
       const searchUrl = new URL('/api/v2/libs/search', this.baseUrl);
+      // The unified lane query doubles as the required library name and the relevance-ranking query.
+      searchUrl.searchParams.set('libraryName', request.query);
       searchUrl.searchParams.set('query', request.query);
       const searchResponse = await this.options.transport.send<unknown>({
         url: searchUrl.toString(), method: 'GET', headers: this.headers, response_type: 'json',

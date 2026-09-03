@@ -43,7 +43,7 @@ export class GitHubRepositoriesProvider implements SearchProvider {
         url: url.toString(), method: 'GET', headers: this.headers, response_type: 'json',
         max_response_bytes: MAX_RESPONSE_BYTES, signal: request.signal,
       });
-      assertStatus(response.status, this.name, response.headers, this.options.clock);
+      assertStatus(response.status, this.name, response.headers, response.body, this.options.clock);
       const parsed = responseSchema.safeParse(response.body);
       if (!parsed.success) throw malformed(this.name);
       const results: ProviderResult[] = [];
@@ -68,11 +68,12 @@ export class GitHubRepositoriesProvider implements SearchProvider {
   }
 }
 
-function assertStatus(status: number, provider: string, headers?: Readonly<Record<string, string>>, clock: () => Date = () => new Date()): void {
+function assertStatus(status: number, provider: string, headers: Readonly<Record<string, string>> | undefined, body: unknown, clock: () => Date = () => new Date()): void {
   if (status >= 200 && status < 300) return;
   const data = { status };
+  const rateLimited = status === 429 || (status === 403 && hasRateLimitSignal(headers, body));
+  if (rateLimited) throw new NbSearchError('PROVIDER_RATE_LIMIT', `${provider} rate limit was reached.`, true, provider, { data, retryAfterMs: rateLimitDelay(headers, clock()) });
   if (status === 401 || status === 403) throw new NbSearchError('PROVIDER_AUTH', `${provider} authentication failed.`, false, provider, { data });
-  if (status === 429) throw new NbSearchError('PROVIDER_RATE_LIMIT', `${provider} rate limit was reached.`, true, provider, { data, retryAfterMs: parseRetryAfter(header(headers, 'retry-after'), clock()) });
   throw new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} request failed (HTTP ${String(status)}).`, status >= 500, provider, { data });
 }
 function safeProviderError(error: unknown, provider: string): NbSearchError {
@@ -81,6 +82,18 @@ function safeProviderError(error: unknown, provider: string): NbSearchError {
   return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} provider connection failed.`, true, provider, { cause: error });
 }
 function malformed(provider: string): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} returned malformed content.`, false, provider); }
+function hasRateLimitSignal(headers: Readonly<Record<string, string>> | undefined, body: unknown): boolean {
+  if (header(headers, 'x-ratelimit-remaining') === '0' || header(headers, 'retry-after') !== undefined) return true;
+  const message = isRecord(body) && typeof body['message'] === 'string' ? body['message'] : '';
+  return /rate.?limit|abuse detection/iu.test(message);
+}
+function rateLimitDelay(headers: Readonly<Record<string, string>> | undefined, clock: Date): number | undefined {
+  const retryAfter = parseRetryAfter(header(headers, 'retry-after'), clock);
+  if (retryAfter !== undefined) return retryAfter;
+  const resetSeconds = Number(header(headers, 'x-ratelimit-reset'));
+  return Number.isFinite(resetSeconds) ? Math.max(0, Math.round(resetSeconds * 1000 - clock.getTime())) : undefined;
+}
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function header(headers: Readonly<Record<string, string>> | undefined, name: string): string | undefined { return Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1]; }
 function parseRetryAfter(value: string | undefined, clock: Date): number | undefined {
   if (value === undefined) return undefined;
