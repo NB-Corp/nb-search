@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { CONFIG_SCHEMA_VERSION, parseConfigPatch, parseResolvedConfig, stableFingerprint, type CanonicalConfig, type CanonicalConfigPatch, type ProviderInstanceConfig } from './config-schema.ts';
 import { NbSearchError } from './errors.ts';
-import { DEFAULT_GMA_EFFORT, DEFAULT_GMA_MODEL, DEFAULT_GROK_MODEL } from './providers.ts';
+import { DEFAULT_GROK_MODEL } from './providers/grok-responses.ts';
+import { DEFAULT_GMA_EFFORT, DEFAULT_GMA_MODEL } from './providers.ts';
 
 export type WorkerGrant = { kind: 'environment'; name: string } | { kind: 'opaque'; id: string };
 export interface SecretBinding { credential_slot_id: string; provider_id: string; value: string; worker_grant: WorkerGrant }
@@ -36,7 +37,8 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'tavily.extract': { provider_instance_id: 'tavily.default', operation_id: 'extract', latency: 'fast', cost: 'cheap' },
       'jina.reader': { provider_instance_id: 'jina-reader.default', operation_id: 'reader', latency: 'medium', cost: 'free' },
       'firecrawl.scrape': { provider_instance_id: 'firecrawl.default', operation_id: 'scrape', latency: 'medium', cost: 'cheap' },
-      'grok.search': { provider_instance_id: 'grok.default', operation_id: 'search', latency: 'medium', cost: 'expensive', evidence_groups: ['grok'] },
+      'grok.synthesis': { provider_instance_id: 'grok.default', operation_id: 'synthesis', latency: 'slow', cost: 'expensive' },
+      'grok.x-synthesis': { provider_instance_id: 'grok.default', operation_id: 'x-synthesis', latency: 'slow', cost: 'expensive' },
       'gma.research': { provider_instance_id: 'grok-multi-agent.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
       'direct.fetch': { provider_instance_id: 'direct-http.default', operation_id: 'fetch', latency: 'fast', cost: 'free' },
     },
