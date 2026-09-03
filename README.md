@@ -79,8 +79,11 @@ All built-in search operations advertise both sync and async execution when conf
 | `exa.contents` | URL | sync | `url` | `NB_SEARCH_EXA_API_KEY` |
 | `tavily.extract` | URL | sync | `url` | `NB_SEARCH_TAVILY_API_KEY` |
 | `firecrawl.scrape` | URL | sync | `url` | `NB_SEARCH_FIRECRAWL_API_KEY` |
+| `wayback.fetch` | URL | sync | `url` | None; keyless |
+| `browser.render` | URL | async | `none` | None; optional Playwright/Chromium installation |
+| `oac.fetch` | URL | sync | `url` | `NB_SEARCH_OAC_API_KEY`; requires `NB_SEARCH_OAC_BASE_URL` and `NB_SEARCH_OAC_MODEL` |
 
-The built-in URL chain is `direct.fetch` then `jina.reader`; inline and scoped-file sources use `direct.local`. Both `markdown` and `text` representations are supported. Scoped-file input is disabled until the host configures at least one read-only file scope. See `.env.example` for the complete canonical environment-variable set.
+The built-in URL chain is `direct.fetch` then `jina.reader`; inline and scoped-file sources use `direct.local`. `wayback.fetch`, `browser.render`, and `oac.fetch` require explicit pipeline selection and are not in the default chain. Both `markdown` and `text` representations are supported. Scoped-file input is disabled until the host configures at least one read-only file scope. See `.env.example` for the complete canonical environment-variable set.
 
 ## SDK
 
@@ -133,7 +136,7 @@ An async job publishes one immutable logical-output artifact. Its normalized int
 
 ## Fetch safety
 
-`fetch` is a strict `run | get | read | cancel` action union. `run.source` is one of `{ kind: "url", url }`, `{ kind: "inline_text", content, media_type, base_url? }`, `{ kind: "inline_bytes", content_base64, media_type, filename? }`, or `{ kind: "file", scope, path }`; `representation` is `markdown` (default) or `text`. Without `pipeline`, the runtime matches `defaults.fetch_chain` by input kind and representation and tries its pipelines serially. An explicit `pipeline` bypasses the chain and must support the requested source, representation, and execution mode. Execution defaults to sync; async requires `idempotency_key` and currently applies to built-in `direct.local`, as reported by `capabilities.fetch.pipelines[].execution_modes`. Fetch `get`, `read`, and `cancel` use the resulting `job_id` and the same immutable-artifact protocol as search jobs.
+`fetch` is a strict `run | get | read | cancel` action union. `run.source` is one of `{ kind: "url", url }`, `{ kind: "inline_text", content, media_type, base_url? }`, `{ kind: "inline_bytes", content_base64, media_type, filename? }`, or `{ kind: "file", scope, path }`; `representation` is `markdown` (default) or `text`. Without `pipeline`, the runtime matches `defaults.fetch_chain` by input kind and representation and tries its pipelines serially. An explicit `pipeline` bypasses the chain and must support the requested source, representation, and execution mode. Execution defaults to sync; async requires `idempotency_key` and applies to built-in `direct.local` and async-only `browser.render`, as reported by `capabilities.fetch.pipelines[].execution_modes`. Fetch `get`, `read`, and `cancel` use the resulting `job_id` and the same immutable-artifact protocol as search jobs.
 
 File and inline sources can use only `egress: "none"` pipelines. File paths remain within configured read-only scopes, including lexical and realpath checks against symlink escape; capabilities expose scope IDs, not host roots. Chain fallback continues after non-404/410 HTTP failures, provider/auth/rate-limit or transport failures, byte-limit failures, and quality-gate failures; it stops for `FETCH_BLOCKED`, HTTP 404/410, `FETCH_CONTENT_TYPE_REJECTED`, cancellation, deadline, or budget exhaustion. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
 
