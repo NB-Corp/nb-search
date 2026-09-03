@@ -41,9 +41,9 @@ Configuration uses schema v4 and resolves in this order:
 }
 ```
 
-Built-in fetch lane IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; the built-in chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, `gma.research`, and `gateway.search`. A search default is optional; a search call without a selector fails when it is absent.
+Built-in fetch lane IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; the built-in chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, and `gma.research`. A search default is optional; a search call without a selector fails when it is absent.
 
-Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, optional `NB_SEARCH_JINA_API_KEY`, `NB_SEARCH_FIRECRAWL_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, `NB_SEARCH_GATEWAY_TOKEN`, `NB_SEARCH_GATEWAY_BASE_URL`, `NB_SEARCH_GROK_MULTI_AGENT_API_KEY`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
+Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, optional `NB_SEARCH_JINA_API_KEY`, `NB_SEARCH_FIRECRAWL_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`; both Grok provider instances use `NB_SEARCH_GROK_API_KEY`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
 
 A lane binds `provider_instance_id` to `operation_id`. Its registration declares either a results output or a typed JSON output with a `schema_id`. Presets contain results lanes only; typed operations use one lane.
 

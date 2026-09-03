@@ -10,8 +10,7 @@ import type {
   GmaResult, MultiAgentResearchProvider, ProviderAnswerCapabilityRequest, ProviderAnswerCapabilityResult,
   ProviderInstanceId, ProviderName, ProviderResearchLightCapabilityRequest, ProviderResearchLightCapabilityResult,
   ProviderMultiAgentResearchCapabilityRequest, ProviderMultiAgentResearchCapabilityResult, ProviderResult,
-  ProviderSearchRequest, ProviderSearchResponse, ResearchLightProvider, SearchProvider, SupportingUrl,
-  UpstreamAttempt, UpstreamAttemptState, UpstreamResultAttribution,
+  ProviderSearchRequest, ResearchLightProvider, SearchProvider, SupportingUrl,
 } from './types.ts';
 
 export const EXA_SEARCH_URL = 'https://api.exa.ai/search';
@@ -117,7 +116,7 @@ export class GrokMultiAgentProvider implements MultiAgentResearchProvider {
     validateGrokModel(options.model);
     validateGmaEffort(options.reasoningEffort);
     this.provider_instance_id = options.providerInstanceId ?? 'grok-multi-agent.default';
-    this.credential_slot_id = options.credentialSlotId ?? 'grok-multi-agent.default';
+    this.credential_slot_id = options.credentialSlotId ?? 'grok.default';
     this.endpoint = resolveGrokUrl(options.baseUrl);
     this.authorization = `Bearer ${options.apiKey}`;
     this.redactions = [options.apiKey, options.baseUrl, this.endpoint, this.authorization];
@@ -336,63 +335,6 @@ export class ExaResearchLightProvider implements ResearchLightProvider {
     } catch (error) {
       if (request.signal.aborted) throw error;
       if (error instanceof ResponseLimitError) throw malformedCapabilityError('exa', error);
-      throw safeProviderError(error, this.name, this.redactions);
-    }
-  }
-}
-
-export interface SearchGatewayProviderOptions extends ProviderOptions {
-  downstreamProfile?: string;
-}
-
-export class SearchGatewayProvider implements SearchProvider {
-  readonly name = 'search-gateway' as const;
-  readonly provider_id = 'search-gateway' as const;
-  readonly provider_instance_id: string;
-  readonly credential_slot_id?: string;
-  readonly redactions: readonly string[];
-  private readonly endpoint: string;
-  constructor(private readonly options: SearchGatewayProviderOptions) {
-    this.provider_instance_id = options.providerInstanceId ?? 'search-gateway.aggregate';
-    this.credential_slot_id = options.credentialSlotId;
-    if (options.baseUrl === undefined) {
-      throw new NbSearchError('CONFIGURATION_ERROR', 'Aggregate gateway endpoint is required.');
-    }
-    this.endpoint = resolveOperationUrl(options.baseUrl, '/v1/aggregate/search');
-    this.redactions = [options.apiKey, this.endpoint];
-  }
-  async search(request: ProviderSearchRequest): Promise<ProviderSearchResponse> {
-    try {
-      const body = {
-        query: request.query,
-        profile: this.options.downstreamProfile ?? 'default',
-        num: request.limit,
-        ...(request.freshness === undefined ? {} : { freshness: request.freshness }),
-      };
-      const response = await this.options.transport.send<unknown>({
-        url: this.endpoint,
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
-        body,
-        signal: request.signal,
-      });
-      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
-      if (!isRecord(response.body)) return { results: [] };
-      const rows = Array.isArray(response.body['results']) ? response.body['results'] : [];
-      const gatewayRedactions = [this.options.apiKey, this.endpoint, request.query];
-      const results = rows.flatMap((item): ProviderResult[] => projectGatewayResult(
-        item, [this.options.apiKey, this.endpoint], gatewayRedactions,
-      ));
-      const normalizedAttempts = normalizeUpstreamAttempts(
-        response.body['attempts'], gatewayRedactions,
-      );
-      return {
-        results,
-        ...(normalizedAttempts.items.length === 0 ? {} : { upstream_attempts: normalizedAttempts.items }),
-        ...(normalizedAttempts.omitted === 0 ? {} : { upstream_attempts_omitted: normalizedAttempts.omitted }),
-      };
-    } catch (error) {
-      if (request.signal.aborted) throw error;
       throw safeProviderError(error, this.name, this.redactions);
     }
   }
@@ -879,133 +821,6 @@ function truncateBytes(value: string, maximum: number): string {
   return value.slice(0, end);
 }
 
-function projectGatewayResult(
-  value: unknown,
-  urlRedactions: readonly string[],
-  redactions: readonly string[],
-): ProviderResult[] {
-  if (!isRecord(value)) return [];
-  const url = firstString(value, ['url', 'link']);
-  if (url === '' || urlRedactions.some((item) => item !== '' && url.includes(item))) return [];
-  const attribution = normalizeAttribution(selectAttributionInput(value), redactions);
-  const published = firstString(value, ['published_at', 'published_date', 'publishedDate']);
-  return [{
-    title: redactText(stringValue(value['title']), redactions),
-    url,
-    snippet: redactText(firstString(value, ['snippet', 'content']), redactions),
-    ...(published === '' ? {} : { published_at: redactText(published, redactions) }),
-    ...(attribution.items.length === 0 ? {} : { upstream_attribution: attribution.items }),
-    ...(attribution.omitted === 0 ? {} : { upstream_attribution_omitted: attribution.omitted }),
-  }];
-}
-
-function selectAttributionInput(record: Record<string, unknown>): unknown {
-  const providers = record['providers'];
-  if (Array.isArray(providers) && providers.length > 0 && providers.every((item) => {
-    if (typeof item !== 'string') return false;
-    const provider = stringValue(item);
-    return provider !== '' && provider.length <= 128;
-  })) return providers;
-  return typeof record['source'] === 'string' ? record['source'] : undefined;
-}
-
-function normalizeAttribution(value: unknown, redactions: readonly string[]): { items: UpstreamResultAttribution[]; omitted: number } {
-  const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
-  const seen = new Set<string>();
-  const all: UpstreamResultAttribution[] = [];
-  for (const value of values) {
-    const provider = safeBoundedString(value, 128, redactions);
-    if (provider === undefined || seen.has(provider)) continue;
-    seen.add(provider);
-    all.push({ provider });
-  }
-  return { items: all.slice(0, 16), omitted: Math.max(0, all.length - 16) };
-}
-
-function normalizeUpstreamAttempts(value: unknown, redactions: readonly string[]): { items: UpstreamAttempt[]; omitted: number } {
-  if (!Array.isArray(value)) return { items: [], omitted: 0 };
-  const all = value.flatMap((item): UpstreamAttempt[] => {
-    if (!isRecord(item)) return [];
-    const error = normalizeUpstreamError(item['error'], item['error_type'], redactions);
-    const status = boundedString(item['status'], 128)?.toLowerCase();
-    const state = normalizeUpstreamState(status, error !== undefined);
-    const capability = item['capability'] === 'search' ? 'retrieval' : isProviderCapability(item['capability']) ? item['capability'] : undefined;
-    const attempt = positiveSafeInteger(item['attempt']);
-    const role = safeBoundedString(item['role'], 128, redactions);
-    const trigger = safeBoundedString(item['trigger'], 128, redactions);
-    return [{
-      provider: safeBoundedString(item['provider'], 128, redactions) ?? safeBoundedString(item['service'], 128, redactions) ?? 'unknown',
-      state,
-      duration_ms: nonnegativeSafeInteger(item['duration_ms']) ?? nonnegativeSafeInteger(item['elapsed_ms']) ?? 0,
-      result_count: nonnegativeSafeInteger(item['result_count']) ?? 0,
-      ...(attempt === undefined ? {} : { attempt }),
-      ...(capability === undefined ? {} : { capability }),
-      ...(role === undefined ? {} : { role }),
-      ...(trigger === undefined ? {} : { trigger }),
-      ...(error === undefined ? {} : { error }),
-    }];
-  });
-  return { items: all.slice(0, 32), omitted: Math.max(0, all.length - 32) };
-}
-
-function normalizeUpstreamState(status: string | undefined, hasError: boolean): UpstreamAttemptState {
-  if (status === undefined) return hasError ? 'failed' : 'succeeded';
-  if (status === 'ok' || status === 'success' || status === 'succeeded') return 'succeeded';
-  if (status === 'empty' || status === 'no_results') return 'empty';
-  if (status === 'skipped') return 'skipped';
-  if (status === 'failed' || status === 'error') return 'failed';
-  if (status === 'timeout' || status === 'timed_out') return 'timed_out';
-  if (status === 'cancelled' || status === 'canceled') return 'cancelled';
-  return 'unknown';
-}
-
-function normalizeUpstreamError(
-  value: unknown,
-  errorType: unknown,
-  redactions: readonly string[],
-): UpstreamAttempt['error'] | undefined {
-  const record = isRecord(value) ? value : undefined;
-  const rawMessage = typeof value === 'string' ? value : record?.['message'];
-  const message = boundedString(rawMessage, 2048);
-  const code = safeBoundedString(record?.['code'] ?? errorType, 128, redactions);
-  const retryable = typeof record?.['retryable'] === 'boolean' ? record['retryable'] : undefined;
-  if (message === undefined && code === undefined && retryable === undefined) return undefined;
-  const safeMessage = message === undefined ? undefined : redactText(message, redactions)
-    .replace(/\bhttps?:\/\/[^\s,;\)\]\}]+/gi, '<redacted-provider-url>').slice(0, 512);
-  return {
-    ...(code === undefined ? {} : { code }),
-    ...(safeMessage === undefined ? {} : { message: safeMessage }),
-    ...(retryable === undefined ? {} : { retryable }),
-  };
-}
-
-function firstString(record: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = stringValue(record[key]);
-    if (value !== '') return value;
-  }
-  return '';
-}
-function boundedString(value: unknown, max: number): string | undefined {
-  const text = stringValue(value);
-  return text === '' ? undefined : text.slice(0, max);
-}
-function safeBoundedString(value: unknown, max: number, redactions: readonly string[]): string | undefined {
-  const text = boundedString(value, Math.max(max, 2048));
-  return text === undefined ? undefined : sanitizeGatewayText(text, redactions).slice(0, max);
-}
-function sanitizeGatewayText(value: string, redactions: readonly string[]): string {
-  return redactText(value, redactions).replace(/\bhttps?:\/\/[^\s,;\)\]\}]+/gi, '<redacted-provider-url>');
-}
-function nonnegativeSafeInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-function positiveSafeInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-function isProviderCapability(value: unknown): value is 'retrieval' | 'answer' | 'research-light' | 'multi-agent-research' {
-  return value === 'retrieval' || value === 'answer' || value === 'research-light' || value === 'multi-agent-research';
-}
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function stringValue(value: unknown): string { return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '' }
 function numberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined }

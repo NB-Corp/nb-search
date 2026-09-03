@@ -13,7 +13,7 @@ Effective execution modes are computed from registration ownership and runtime r
 
 `search` is a strict `run | get | read | cancel` action union. A run selects one lane, an ordered results-lane list, or a results-only preset. Typed operations require one lane. The one configured search default applies to both sync and async.
 
-One query and one results lane preserve provider order. Each query×lane list canonical-deduplicates before RRF; multiple lists then use fixed RRF, global canonical deduplication, independent evidence groups, and stable plan-position/URL tie-breaking. Aggregate rows without upstream attribution use the `unknown` evidence group and do not add independent corroboration.
+One query and one results lane preserve provider order. Each query×lane list canonical-deduplicates before RRF; multiple lists then use fixed RRF, global canonical deduplication, independent evidence groups, and stable plan-position/URL tie-breaking.
 
 Typed operations are treated as schema-bound JSON. The core does not branch on their business purpose. If a sync logical output exceeds `max_inline_bytes`, the run fails with `OUTPUT_TOO_LARGE`; no truncation or implicit async conversion occurs.
 
