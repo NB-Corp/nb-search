@@ -1,5 +1,5 @@
 import { NbSearchError } from './errors.ts';
-import { htmlToText, parsePublicUrl } from './fetch-security.ts';
+import { DirectFetchProvider, type DirectFetchIo } from './fetch-security.ts';
 import { resolveOperationUrl, validateProviderBaseUrl } from './providers.ts';
 import { ResponseLimitError, type HttpTransport } from './transport.ts';
 import type { FetchProvider, FetchProviderRequest, FetchProviderResult, FetchWarning, ProviderName } from './types.ts';
@@ -103,7 +103,8 @@ export class FirecrawlScrapeFetchProvider implements FetchProvider {
 export class WaybackFetchProvider implements FetchProvider {
   readonly name = 'wayback' as const;
   readonly redactions = [WAYBACK_AVAILABLE_ENDPOINT];
-  constructor(private readonly options: Pick<RemoteFetchProviderOptions, 'transport'>) {}
+  private readonly snapshotProvider: DirectFetchProvider;
+  constructor(private readonly options: Pick<RemoteFetchProviderOptions, 'transport'> & { directIo?: DirectFetchIo }) { this.snapshotProvider = new DirectFetchProvider(options.directIo, this.name); }
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
     try {
       const sourceUrl = fetchUrl(request);
@@ -116,21 +117,16 @@ export class WaybackFetchProvider implements FetchProvider {
       const status = closest?.['status']; const snapshotUrl = closest?.['url']; const timestamp = stringValue(closest?.['timestamp']);
       if ((status !== '200' && status !== 200) || typeof snapshotUrl !== 'string' || snapshotUrl === '') throw fetchHttpError(404, this.name, { reason: 'snapshot_not_found' });
       if (timestamp === '') throw malformed(this.name);
-      const snapshot = parsePublicUrl(snapshotUrl);
-      const response = await this.options.transport.send<string>({ url: snapshot.toString(), method: 'GET', headers: { Accept: 'text/html,text/plain,text/markdown' }, response_type: 'text', max_response_bytes: request.max_response_bytes, signal: request.signal });
-      assertFetchStatus(response.status, this.name);
-      if (typeof response.body !== 'string') throw malformed(this.name);
-      const contentType = response.headers?.['content-type'] ?? 'text/html'; const mediaType = contentType.split(';')[0]?.trim().toLowerCase();
-      const projected: { content: string; title?: string } = mediaType === 'text/html' || mediaType === 'application/xhtml+xml' ? htmlToText(response.body) : { content: response.body };
+      const snapshot = await this.snapshotProvider.fetch({ ...request, source: { kind: 'url', url: snapshotUrl } });
       const archivedAt = archiveTimestamp(timestamp);
       const warning: FetchWarning = { code: 'WAYBACK_SNAPSHOT', message: 'The document was retrieved from an archived snapshot.', data: { snapshot_timestamp: timestamp, ...(archivedAt === undefined ? {} : { archived_at: archivedAt }) } };
-      return normalized(request, snapshot.toString(), projected.content, contentType, projected.title ?? '', [warning]);
+      return { ...snapshot, url: sourceUrl, warnings: [warning, ...snapshot.warnings] };
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }
 
-function normalized(request: FetchProviderRequest, finalUrl: string, rawContent: string, contentType: string, rawTitle = '', initialWarnings: readonly FetchWarning[] = []): FetchProviderResult {
-  const byteLength = Buffer.byteLength(rawContent, 'utf8'); const truncated = rawContent.length > request.max_content_chars; const content = truncated ? rawContent.slice(0, request.max_content_chars) : rawContent; const warnings: FetchWarning[] = [...initialWarnings]; const mediaType = contentType.split(';')[0]?.trim().toLowerCase() || 'text/plain';
+function normalized(request: FetchProviderRequest, finalUrl: string, rawContent: string, contentType: string, rawTitle = ''): FetchProviderResult {
+  const byteLength = Buffer.byteLength(rawContent, 'utf8'); const truncated = rawContent.length > request.max_content_chars; const content = truncated ? rawContent.slice(0, request.max_content_chars) : rawContent; const warnings: FetchWarning[] = []; const mediaType = contentType.split(';')[0]?.trim().toLowerCase() || 'text/plain';
   if (truncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: request.max_content_chars } });
   return { url: fetchUrl(request), final_url: finalUrl, ...(rawTitle === '' ? {} : { title: rawTitle }), content, content_type: mediaType, media_type: mediaType, representation: request.representation, format: 'text', byte_length: byteLength, truncated, warnings };
 }

@@ -1,18 +1,20 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createFetchJobRunnerFromSnapshot, createRuntimeComposition } from '../src/app.ts';
-import { BrowserRenderProvider, type BrowserRenderIo } from '../src/browser-render.ts';
+import { BrowserRenderProvider, createTestOnlyPlaywrightBrowserRenderIo, playwrightBrowserRenderIo, type BrowserRenderIo } from '../src/browser-render.ts';
 import { NbSearchError } from '../src/errors.ts';
+import type { DirectFetchIo } from '../src/fetch-security.ts';
 import { WaybackFetchProvider } from '../src/fetch-providers.ts';
 import { OpenAiCompatibleFetchProvider } from '../src/providers/openai-compatible.ts';
 import { ResponseLimitError, type JsonRequest, type JsonResponse, type JsonTransport } from '../src/transport.ts';
 import type { FetchProviderRequest } from '../src/types.ts';
 import { document, mockRegistration } from './helpers.ts';
 
-const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+const roots: string[] = []; const servers: Server[] = [];
+afterEach(async () => { await Promise.all(servers.splice(0).map(async (server) => { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); })); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 const unavailableBrowser: BrowserRenderIo = {
   available: false,
@@ -26,7 +28,7 @@ describe('fetch pipeline registration', () => {
     const offline = createRuntimeComposition({}, { cwd: root, homeDirectory: root, test_only_browser_render_io: unavailableBrowser });
     const caps = await offline.runtime.capabilities();
     expect(pipeline(caps, 'wayback.fetch')).toMatchObject({ input_kinds: ['url'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', availability: 'ready', stages: [{ id: 'wayback.lookup', role: 'acquire' }, { id: 'wayback.snapshot', role: 'acquire' }, { id: 'html.text', role: 'extract' }] });
-    expect(pipeline(caps, 'browser.render')).toMatchObject({ input_kinds: ['url'], representations: ['markdown', 'text'], execution_modes: [], egress: 'none', availability: 'unavailable', issues: [{ code: 'BROWSER_NOT_INSTALLED' }], stages: [{ id: 'browser.chromium', role: 'acquire' }, { id: 'html.text', role: 'extract' }] });
+    expect(pipeline(caps, 'browser.render')).toMatchObject({ input_kinds: ['url'], representations: ['markdown', 'text'], execution_modes: [], egress: 'url', availability: 'unavailable', issues: [{ code: 'BROWSER_NOT_INSTALLED' }], stages: [{ id: 'browser.chromium', role: 'acquire' }, { id: 'html.text', role: 'extract' }] });
     expect(pipeline(caps, 'oac.fetch')).toMatchObject({ input_kinds: ['url'], representations: ['markdown', 'text'], execution_modes: [], egress: 'url', availability: 'unavailable' });
     expect(caps.fetch.chains.filter((item) => item.input_kind === 'url').every((item) => item.pipelines.join(',') === 'direct.fetch,jina.reader')).toBe(true);
 
@@ -48,16 +50,28 @@ describe('fetch pipeline registration', () => {
 });
 
 describe('wayback.fetch adapter', () => {
-  it('looks up a status-200 snapshot, fetches it, and annotates archive time', async () => {
-    const snapshot = 'https://web.archive.org/web/20240102030405id_/https://example.com/page';
-    const transport = new SequenceTransport([
-      { status: 200, body: { archived_snapshots: { closest: { status: '200', url: snapshot, timestamp: '20240102030405' } } } },
-      { status: 200, body: '<html><head><title>Archived</title></head><body><main>archived content</main></body></html>', headers: { 'content-type': 'text/html; charset=utf-8' } },
-    ]);
-    const value = await new WaybackFetchProvider({ transport }).fetch(fetchRequest());
+  it('looks up a status-200 snapshot, fetches it through pinned direct IO, and annotates archive time', async () => {
+    const snapshot = 'https://web.archive.org/web/20240102030405id_/https://example.com/page'; const requested: string[] = [];
+    const transport = new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: '200', url: snapshot, timestamp: '20240102030405' } } } }]);
+    const directIo: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request(input) { requested.push(input.url.toString()); return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: new TextEncoder().encode('<html><head><title>Archived</title></head><body><main>archived content</main></body></html>'), truncated: false }; } };
+    const value = await new WaybackFetchProvider({ transport, directIo }).fetch(fetchRequest());
     expect(transport.requests[0]).toMatchObject({ url: 'https://archive.org/wayback/available?url=https%3A%2F%2Fexample.com%2Fpage', method: 'GET', response_type: 'json' });
-    expect(transport.requests[1]).toMatchObject({ url: snapshot, method: 'GET', response_type: 'text' });
-    expect(value).toMatchObject({ final_url: snapshot, title: 'Archived', content: 'Archived\narchived content', media_type: 'text/html', warnings: [{ code: 'WAYBACK_SNAPSHOT', data: { snapshot_timestamp: '20240102030405', archived_at: '2024-01-02T03:04:05Z' } }] });
+    expect(transport.requests).toHaveLength(1); expect(requested).toEqual([snapshot]);
+    expect(value).toMatchObject({ url: 'https://example.com/page', final_url: snapshot, title: 'Archived', content: 'Archived\narchived content', media_type: 'text/html', warnings: [{ code: 'WAYBACK_SNAPSHOT', data: { snapshot_timestamp: '20240102030405', archived_at: '2024-01-02T03:04:05Z' } }] });
+  });
+
+  it('revalidates every snapshot redirect, enforces max_redirects, and reports the actual final URL', async () => {
+    const lookup = { status: 200, body: { archived_snapshots: { closest: { status: '200', url: 'https://snapshot.test/start', timestamp: '20240102030405' } } } };
+    const transport = new SequenceTransport([lookup, lookup]);
+    const resolved: string[] = []; let calls = 0;
+    const directIo: DirectFetchIo = { async resolve(hostname) { resolved.push(hostname); return hostname === 'private.test' ? ['10.0.0.1'] : ['8.8.8.8']; }, async request(input) { calls += 1; return input.url.hostname === 'snapshot.test' ? { status: 302, headers: { location: 'https://final.test/page' } as Readonly<Record<string, string>>, body: new Uint8Array(), truncated: false } : { status: 200, headers: { 'content-type': 'text/plain' } as Readonly<Record<string, string>>, body: new TextEncoder().encode('final archive'), truncated: false }; } };
+    const provider = new WaybackFetchProvider({ transport, directIo });
+    await expect(provider.fetch({ ...fetchRequest(), max_redirects: 0 })).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', provider: 'wayback', data: { status: 302, max_redirects: 0 } });
+    calls = 0; resolved.length = 0;
+    await expect(provider.fetch(fetchRequest())).resolves.toMatchObject({ final_url: 'https://final.test/page', content: 'final archive' });
+    expect(resolved).toEqual(['snapshot.test', 'final.test']); expect(calls).toBe(2);
+    const blocked = new WaybackFetchProvider({ transport: new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: '200', url: 'https://snapshot.test/start', timestamp: '20240102030405' } } } }]), directIo: { ...directIo, async request() { return { status: 302, headers: { location: 'https://private.test/page' }, body: new Uint8Array(), truncated: false }; } } });
+    await expect(blocked.fetch(fetchRequest())).rejects.toMatchObject({ code: 'FETCH_BLOCKED', provider: 'wayback' });
   });
 
   it('maps missing snapshots to terminal 404 without chain fallback', async () => {
@@ -76,8 +90,9 @@ describe('wayback.fetch adapter', () => {
   it('rejects malformed lookup content and lets the quality gate classify an empty snapshot', async () => {
     await expect(new WaybackFetchProvider({ transport: new SequenceTransport([{ status: 200, body: [] }]) }).fetch(fetchRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false });
     const root = await tempRoot('nb-search-wayback-empty-');
-    const transport = new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: 200, url: 'https://web.archive.org/snapshot', timestamp: '20200101000000' } } } }, { status: 200, body: '', headers: { 'content-type': 'text/plain' } }]);
-    const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport, config: { home: root, jobs_root: join(root, 'jobs'), execution: { retry_count: 0, fetch: { quality: { min_content_chars: 1, blocked_markers: [] } } } } });
+    const transport = new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: 200, url: 'https://web.archive.org/snapshot', timestamp: '20200101000000' } } } }]);
+    const directIo: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request() { return { status: 200, headers: { 'content-type': 'text/plain' }, body: new Uint8Array(), truncated: false }; } };
+    const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport, test_only_direct_fetch_io: directIo, config: { home: root, jobs_root: join(root, 'jobs'), execution: { retry_count: 0, fetch: { quality: { min_content_chars: 1, blocked_markers: [] } } } } });
     expect(await app.runtime.fetch({ action: 'run', source: { kind: 'url', url: 'https://example.com/page' }, pipeline: 'wayback.fetch' })).toMatchObject({ status: 'failed', lane_outcomes: [{ error: { code: 'QUALITY_GATE_FAILED' } }] });
   });
 });
@@ -140,7 +155,7 @@ describe('browser.render adapter and jobs', () => {
     await expect(new BrowserRenderProvider(privateIo).fetch(fetchRequest())).rejects.toMatchObject({ code: 'FETCH_BLOCKED' });
     const redirectIo = browserIo({ async resolve(hostname) { return hostname === 'example.com' ? ['93.184.216.34'] : ['10.0.0.1']; }, async render(input) { await input.validate_redirect('http://private.test/path'); throw new Error('unreachable'); } });
     await expect(new BrowserRenderProvider(redirectIo).fetch(fetchRequest())).rejects.toMatchObject({ code: 'FETCH_BLOCKED' });
-    const subresourceIo = browserIo({ async resolve(hostname) { return hostname === 'example.com' ? ['93.184.216.34'] : ['169.254.169.254']; }, async render(input) { await input.validate_request('http://metadata.test/latest'); throw new Error('unreachable'); } });
+    const subresourceIo = browserIo({ async resolve(hostname) { return hostname === 'example.com' ? ['93.184.216.34'] : ['169.254.169.254']; }, async render(input) { await input.resolve_target('http://metadata.test/latest'); throw new Error('unreachable'); } });
     await expect(new BrowserRenderProvider(subresourceIo).fetch(fetchRequest())).rejects.toMatchObject({ code: 'FETCH_BLOCKED' });
   });
 
@@ -185,6 +200,59 @@ describe('browser.render adapter and jobs', () => {
   });
 });
 
+describe('browser.render real Chromium security probes', () => {
+  it.skipIf(!playwrightBrowserRenderIo.available)('pins Chromium HTTP connections to the proxy-validated address across DNS changes and preserves Host', async () => {
+    let host = ''; let resolution = 0; const pinned: string[] = [];
+    const server = createServer((request, response) => { host = request.headers.host ?? ''; response.writeHead(200, { 'Content-Type': 'text/html' }); response.end('<main>proxy pinned</main>'); });
+    const port = await listen(server); const addresses = ['8.8.8.8', '1.1.1.1', '9.9.9.9'];
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { const address = addresses[Math.min(resolution, addresses.length - 1)]!; resolution += 1; return [address]; }, test_connect_address(_url, validatedAddress) { pinned.push(validatedAddress); return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch(browserRequest(`http://browser.test:${String(port)}/`))).resolves.toMatchObject({ content: 'proxy pinned', final_url: `http://browser.test:${String(port)}/` });
+    expect(pinned[0]).toBe('9.9.9.9'); expect(host).toBe(`browser.test:${String(port)}`);
+  }, 30_000);
+
+  it.skipIf(!playwrightBrowserRenderIo.available)('pins HTTPS CONNECT tunnels to the proxy-validated host and port', async () => {
+    let connections = 0; const pinned: Array<{ host: string; port: string; address: string }> = [];
+    const server = createServer(); server.on('connection', () => { connections += 1; }); server.on('clientError', (_error, socket) => socket.destroy());
+    const port = await listen(server);
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { return ['8.8.8.8']; }, test_connect_address(url, validatedAddress) { pinned.push({ host: url.hostname, port: url.port, address: validatedAddress }); return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch(browserRequest(`https://browser.test:${String(port)}/`))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(pinned).toContainEqual({ host: 'browser.test', port: String(port), address: '8.8.8.8' }); expect(connections).toBeGreaterThan(0);
+  }, 30_000);
+
+  it.skipIf(!playwrightBrowserRenderIo.available)('enforces max_redirects from real main-frame 3xx responses', async () => {
+    const hits: string[] = [];
+    const server = createServer((request, response) => { const path = request.url ?? ''; hits.push(path); if (path === '/a') { response.writeHead(302, { Location: '/b' }); response.end(); return; } if (path === '/b') { response.writeHead(307, { Location: '/c' }); response.end(); return; } response.writeHead(200, { 'Content-Type': 'text/html' }); response.end('<main>must not reach</main>'); });
+    const port = await listen(server);
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { return ['8.8.8.8']; }, test_connect_address() { return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch({ ...browserRequest(`http://browser.test:${String(port)}/a`), max_redirects: 1 })).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', retryable: false, provider: 'browser-render', data: { status: 307, max_redirects: 1 } });
+    expect(hits).toEqual(['/a', '/b']);
+  }, 30_000);
+
+  it.skipIf(!playwrightBrowserRenderIo.available)('blocks popup navigation and WebSocket upgrades at browser-context scope', async () => {
+    let popupHits = 0; let upgrades = 0;
+    const server = createServer((request, response) => { if (request.url === '/popup') popupHits += 1; response.writeHead(200, { 'Content-Type': 'text/html' }); response.end(request.url === '/' ? `<script>window.open('/popup');new WebSocket('ws://browser.test:${String((server.address() as { port: number }).port)}/socket')</script><main>safe main</main>` : '<main>popup</main>'); });
+    server.on('upgrade', (_request, socket) => { upgrades += 1; socket.destroy(); });
+    const port = await listen(server);
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { return ['8.8.8.8']; }, test_connect_address() { return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch(browserRequest(`http://browser.test:${String(port)}/`))).resolves.toMatchObject({ content: 'safe main' });
+    expect(popupHits).toBe(0); expect(upgrades).toBe(0);
+  }, 30_000);
+
+  it.skipIf(!playwrightBrowserRenderIo.available)('classifies a real attachment navigation as terminal content rejection', async () => {
+    const server = createServer((_request, response) => { response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename=payload.bin' }); response.end('payload'); });
+    const port = await listen(server);
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { return ['8.8.8.8']; }, test_connect_address() { return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch(browserRequest(`http://browser.test:${String(port)}/attachment`))).rejects.toMatchObject({ code: 'FETCH_CONTENT_TYPE_REJECTED', retryable: false, provider: 'browser-render' });
+  }, 30_000);
+
+  it.skipIf(!playwrightBrowserRenderIo.available)('applies one byte budget across main-page and subresource traffic', async () => {
+    const server = createServer((request, response) => { if (request.url === '/large') { response.writeHead(200, { 'Content-Type': 'text/plain' }); response.end('x'.repeat(8_192)); return; } response.writeHead(200, { 'Content-Type': 'text/html' }); response.end("<script>fetch('/large')</script><main>main</main>"); });
+    const port = await listen(server);
+    const io = createTestOnlyPlaywrightBrowserRenderIo({ async resolve() { return ['8.8.8.8']; }, test_connect_address() { return '127.0.0.1'; } });
+    await expect(new BrowserRenderProvider(io).fetch({ ...browserRequest(`http://browser.test:${String(port)}/`), max_response_bytes: 2_048 })).rejects.toMatchObject({ code: 'FETCH_BYTES_LIMIT', retryable: false });
+  }, 30_000);
+});
+
 describe('fetch pipeline deadline and cancellation classification', () => {
   it.each([
     ['wayback.fetch', {}],
@@ -208,5 +276,7 @@ class SequenceTransport implements JsonTransport {
 function fetchRequest(signal: AbortSignal = new AbortController().signal): FetchProviderRequest { return { source: { kind: 'url', url: 'https://example.com/page' }, representation: 'markdown', signal, max_source_bytes: 4096, max_response_bytes: 4096, max_content_chars: 1000, max_redirects: 5, file_scopes: [] }; }
 function completion(content: string) { return { choices: [{ message: { content } }] }; }
 function browserIo(overrides: Partial<BrowserRenderIo> = {}): BrowserRenderIo { return { available: true, async resolve() { return ['93.184.216.34']; }, async render() { return { status: 200, final_url: 'https://example.com/page', html: '<main>rendered</main>', content_type: 'text/html', byte_length: 21, truncated: false }; }, ...overrides }; }
+function browserRequest(url: string): FetchProviderRequest { return { ...fetchRequest(), source: { kind: 'url', url }, max_response_bytes: 64 * 1024, max_content_chars: 16 * 1024 }; }
+async function listen(server: Server): Promise<number> { servers.push(server); await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)); const address = server.address(); if (address === null || typeof address === 'string') throw new Error('missing server port'); return address.port; }
 async function tempRoot(prefix: string): Promise<string> { const root = await mkdtemp(join(tmpdir(), prefix)); roots.push(root); return root; }
 function pipeline(value: Awaited<ReturnType<ReturnType<typeof createRuntimeComposition>['runtime']['capabilities']>>, id: string) { return value.fetch.pipelines.find((item) => item.id === id); }

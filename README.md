@@ -80,7 +80,7 @@ All built-in search operations advertise both sync and async execution when conf
 | `tavily.extract` | URL | sync | `url` | `NB_SEARCH_TAVILY_API_KEY` |
 | `firecrawl.scrape` | URL | sync | `url` | `NB_SEARCH_FIRECRAWL_API_KEY` |
 | `wayback.fetch` | URL | sync | `url` | None; keyless |
-| `browser.render` | URL | async | `none` | None; optional Playwright/Chromium installation |
+| `browser.render` | URL | async | `url` | None; optional Playwright/Chromium installation |
 | `oac.fetch` | URL | sync | `url` | `NB_SEARCH_OAC_API_KEY`; requires `NB_SEARCH_OAC_BASE_URL` and `NB_SEARCH_OAC_MODEL` |
 
 The built-in URL chain is `direct.fetch` then `jina.reader`; inline and scoped-file sources use `direct.local`. `wayback.fetch`, `browser.render`, and `oac.fetch` require explicit pipeline selection and are not in the default chain. Both `markdown` and `text` representations are supported. Scoped-file input is disabled until the host configures at least one read-only file scope. See `.env.example` for the complete canonical environment-variable set.

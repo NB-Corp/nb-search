@@ -76,7 +76,7 @@ The built-in pipelines are `direct.fetch`, `direct.local`, `jina.reader`, `exa.c
 - `representation` is `markdown` (default) or `text`.
 - Without `pipeline`, pipelines run serially from the `capabilities.fetch.chains` entry matching input kind and representation. An explicit `pipeline` invokes only that pipeline and must support the source, representation, and execution mode.
 - File and inline sources may enter only `egress: none` pipelines. File paths use a capability-advertised scope id and a path relative to that scope; file input is unavailable until a scope is configured.
-- Built-in `direct.local` supports sync and async, `browser.render` is async-only, and the other built-in fetch pipelines are sync-only; use `capabilities.fetch.pipelines[].execution_modes` as the authority.
+- Built-in `direct.local` supports sync and async, `browser.render` is async-only, and the other built-in fetch pipelines are sync-only. Because `browser.render` connects to the target URL and bounded subresources, it declares `egress: url`. Use `capabilities.fetch.pipelines[].execution_modes` as the authority.
 - HTTP failures other than 404/410, provider/auth/rate-limit and transport failures, byte-limit failures, and quality-gate failures may fall through. `FETCH_BLOCKED`, HTTP 404/410, `FETCH_CONTENT_TYPE_REJECTED`, cancellation, deadline, and budget exhaustion terminate the chain.
 - `direct.fetch` provides bounded text extraction and deterministic HTML→text; it is not browser rendering or high-fidelity layout reconstruction.
 - Successful documents report `representation` and source `media_type`; attempts and skips remain in `lane_outcomes`.

@@ -3,7 +3,7 @@ import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { NbSearchError } from './errors.ts';
-import type { FetchProvider, FetchProviderRequest, FetchProviderResult, FetchWarning } from './types.ts';
+import type { FetchProvider, FetchProviderRequest, FetchProviderResult, FetchWarning, ProviderName } from './types.ts';
 
 export interface DirectFetchIo {
   resolve(hostname: string): Promise<readonly string[]>;
@@ -11,23 +11,22 @@ export interface DirectFetchIo {
 }
 
 export class DirectFetchProvider implements FetchProvider {
-  readonly name = 'direct-http';
-  constructor(private readonly io: DirectFetchIo = nodeDirectFetchIo) {}
+  constructor(private readonly io: DirectFetchIo = nodeDirectFetchIo, readonly name: ProviderName = 'direct-http') {}
 
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
     try {
       if (request.source.kind !== 'url') throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', 'The direct HTTP pipeline accepts URL input only.');
-      const original = parsePublicUrl(request.source.url);
+      const original = parsePublicUrl(request.source.url, this.name);
       let current = original;
       for (let redirects = 0; ; redirects += 1) {
         const addresses = await this.io.resolve(current.hostname);
-        if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address))) throw blocked('Target resolved to a non-public address.');
+        if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address))) throw blocked('Target resolved to a non-public address.', this.name);
         const address = addresses[0]!;
         const response = await this.io.request({ url: current, address, signal: request.signal, max_response_bytes: request.max_response_bytes });
         const location = response.headers['location'];
         if (response.status >= 300 && response.status < 400 && location !== undefined) {
           if (redirects >= request.max_redirects) throw new NbSearchError('FETCH_HTTP_ERROR', 'The redirect limit was reached.', false, this.name, { data: { status: response.status, max_redirects: request.max_redirects } });
-          current = parsePublicUrl(new URL(location, current).toString());
+          current = parsePublicUrl(new URL(location, current).toString(), this.name);
           continue;
         }
         if (response.status < 200 || response.status >= 300) throw new NbSearchError('FETCH_HTTP_ERROR', `HTTP fetch failed with status ${String(response.status)}.`, response.status >= 500, this.name, { data: { status: response.status } });
@@ -106,13 +105,13 @@ async function requestWithNode(input: { url: URL; address: string; signal: Abort
 const TEXT_TYPES = new Set(['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml']);
 const METADATA_HOSTS = new Set(['localhost', 'localhost.localdomain', 'metadata', 'metadata.google.internal', 'instance-data', 'instance-data.ec2.internal']);
 
-export function parsePublicUrl(value: string): URL {
+export function parsePublicUrl(value: string, provider: ProviderName = 'direct-http'): URL {
   let url: URL;
-  try { url = new URL(value); } catch { throw blocked('Fetch URL is invalid.'); }
-  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '' || url.username !== '' || url.password !== '') throw blocked('Only credential-free HTTP(S) URLs are allowed.');
+  try { url = new URL(value); } catch { throw blocked('Fetch URL is invalid.', provider); }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '' || url.username !== '' || url.password !== '') throw blocked('Only credential-free HTTP(S) URLs are allowed.', provider);
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (METADATA_HOSTS.has(hostname) || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw blocked('Target host is blocked.');
-  if (isIP(hostname) !== 0 && !isPublicAddress(hostname)) throw blocked('Target address is not public.');
+  if (METADATA_HOSTS.has(hostname) || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw blocked('Target host is blocked.', provider);
+  if (isIP(hostname) !== 0 && !isPublicAddress(hostname)) throw blocked('Target address is not public.', provider);
   return url;
 }
 
@@ -162,7 +161,7 @@ function decodeEntities(value: string): string {
   });
 }
 function mediaType(value: string | undefined): string | undefined { const item = value?.split(';')[0]?.trim().toLowerCase(); return item === '' ? undefined : item }
-function blocked(message: string): NbSearchError { return new NbSearchError('FETCH_BLOCKED', message, false, 'direct-http') }
+function blocked(message: string, provider: ProviderName): NbSearchError { return new NbSearchError('FETCH_BLOCKED', message, false, provider) }
 function expandIpv6(value: string): number[] {
   const [leftRaw, rightRaw] = value.split('::');
   const left = leftRaw === '' ? [] : leftRaw!.split(':').map((item) => Number.parseInt(item, 16));
