@@ -41,12 +41,51 @@ describe('P0 results search adapters', () => {
     }]);
   });
 
+  it.each([
+    ['400 characters', 'x'.repeat(400)],
+    ['50 words', Array.from({ length: 50 }, () => 'word').join(' ')],
+  ])('accepts a Brave query at the %s boundary', async (_label, query) => {
+    const transport = new CaptureTransport({ status: 200, body: { web: { results: [] } } });
+    const provider = new BraveSearchProvider({ apiKey: 'secret', transport });
+    await expect(provider.search({ ...request(), query })).resolves.toEqual([]);
+    expect(new URL(transport.requests[0]!.url).searchParams.get('q')).toBe(query);
+  });
+
+  it.each([
+    ['401 characters', 'x'.repeat(401), { characters: 401, words: 1 }],
+    ['51 words', Array.from({ length: 51 }, () => 'word').join(' '), { characters: 254, words: 51 }],
+  ] as const)('rejects a Brave query beyond the %s boundary without transport', async (_label, query, counts) => {
+    const transport = new CaptureTransport({ status: 200, body: { web: { results: [] } } });
+    const provider = new BraveSearchProvider({ apiKey: 'secret', transport });
+    await expect(provider.search({ ...request(), query })).rejects.toMatchObject({
+      code: 'INVALID_INPUT', retryable: false, provider: 'brave', data: { ...counts, max_characters: 400, max_words: 50 },
+    });
+    expect(transport.requests).toEqual([]);
+  });
+
+  it.each([[20, 20], [21, 20]] as const)('maps Brave result limit %i to upstream count %i', async (limit, count) => {
+    const transport = new CaptureTransport({ status: 200, body: { web: { results: [] } } });
+    const provider = new BraveSearchProvider({ apiKey: 'secret', transport });
+    await expect(provider.search({ ...request(), limit })).resolves.toEqual([]);
+    expect(new URL(transport.requests[0]!.url).searchParams.get('count')).toBe(String(count));
+  });
+
   it.each(providerCases())('%s returns an empty result list without fabricating rows', async (_name, makeProvider, emptyBody) => {
     const provider = makeProvider(new CaptureTransport({ status: 200, body: emptyBody }));
     await expect(provider.search(request())).resolves.toEqual([]);
   });
 
-  it.each(providerCases().flatMap(([name, makeProvider]) => [401, 403, 429, 500, 503].map((status) => [name, makeProvider, status] as const)))('%s maps HTTP %s with status data', async (_name, makeProvider, status) => {
+  it('treats a Brave response without a web group as an empty result list', async () => {
+    const provider = new BraveSearchProvider({ apiKey: 'secret', transport: new CaptureTransport({ status: 200, body: { type: 'search', query: { original: 'query terms' } } }) });
+    await expect(provider.search(request())).resolves.toEqual([]);
+  });
+
+  it('still rejects a malformed Brave web group', async () => {
+    const provider = new BraveSearchProvider({ apiKey: 'secret', transport: new CaptureTransport({ status: 200, body: { web: { results: 'invalid' } } }) });
+    await expect(provider.search(request())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, provider: 'brave' });
+  });
+
+  it.each(providerCases().flatMap(([name, makeProvider]) => [401, 403, 408, 425, 429, 500, 503].map((status) => [name, status, makeProvider] as const)))('%s maps HTTP %s with status data', async (_name, status, makeProvider) => {
     const headers = status === 429 ? { 'retry-after': '3' } : undefined;
     const provider = makeProvider(new CaptureTransport({ status, body: {}, ...(headers === undefined ? {} : { headers }) }));
     const expected = status === 401 || status === 403

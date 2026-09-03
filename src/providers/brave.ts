@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { NbSearchError } from '../errors.ts';
 import { resolveOperationUrl } from '../providers.ts';
 import type { HttpTransport } from '../transport.ts';
 import type { CredentialSlotId, ProviderInstanceId, ProviderResult, ProviderSearchRequest, SearchProvider } from '../types.ts';
@@ -7,7 +8,7 @@ import { normalizeUrl } from '../url.ts';
 import { assertSearchStatus, malformedSearchResponse, normalizedText, SEARCH_RESPONSE_MAX_BYTES, searchProviderError } from './search-adapter.ts';
 
 const braveEnvelopeSchema = z.object({
-  web: z.object({ results: z.array(z.unknown()) }).passthrough(),
+  web: z.object({ results: z.array(z.unknown()) }).passthrough().optional(),
 }).passthrough();
 const braveResultSchema = z.object({
   title: z.string().optional(),
@@ -42,9 +43,10 @@ export class BraveSearchProvider implements SearchProvider {
 
   async search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]> {
     try {
+      validateBraveQuery(request.query);
       const endpoint = new URL(this.endpoint);
       endpoint.searchParams.set('q', request.query);
-      endpoint.searchParams.set('count', String(request.limit));
+      endpoint.searchParams.set('count', String(Math.min(request.limit, 20)));
       const response = await this.options.transport.send<unknown>({
         url: endpoint.toString(),
         method: 'GET',
@@ -56,12 +58,21 @@ export class BraveSearchProvider implements SearchProvider {
       assertSearchStatus(response.status, this.name, response.headers, this.options.clock);
       const parsed = braveEnvelopeSchema.safeParse(response.body);
       if (!parsed.success) throw malformedSearchResponse(this.name, parsed.error);
-      return projectResults(parsed.data.web.results, request.limit);
+      return projectResults(parsed.data.web?.results ?? [], request.limit);
     } catch (error) {
       if (request.signal.aborted) throw error;
       throw searchProviderError(error, this.name, this.redactions);
     }
   }
+}
+
+function validateBraveQuery(query: string): void {
+  const characters = [...query].length;
+  const words = query.trim().split(/\s+/u).length;
+  if (characters <= 400 && words <= 50) return;
+  throw new NbSearchError('INVALID_INPUT', 'Brave search query exceeds the upstream limit.', false, 'brave', {
+    data: { characters, words, max_characters: 400, max_words: 50 },
+  });
 }
 
 function projectResults(rows: readonly unknown[], limit: number): ProviderResult[] {

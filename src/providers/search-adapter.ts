@@ -25,7 +25,7 @@ export function assertSearchStatus(
   throw new NbSearchError(
     'PROVIDER_UNAVAILABLE',
     `${provider} request failed (HTTP ${String(status)}).`,
-    status >= 500 && status <= 599,
+    status === 408 || status === 425 || (status >= 500 && status <= 599),
     provider,
     { data },
   );
