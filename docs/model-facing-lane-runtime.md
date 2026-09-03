@@ -11,11 +11,11 @@ A lane binds one `provider_instance_id` to one `operation_id`. The provider regi
 
 Effective execution modes are computed from registration ownership and runtime readiness. Built-in worker-installed query operations may support sync and async. Host registrations are sync-only in this version. Execution never selects another lane.
 
-`search` is a strict `run | get | read | cancel` action union. A run selects one lane, an ordered results-lane list, or a results-only preset. Typed operations require one lane. The one configured search default applies to both sync and async.
+`search` is a strict `run | get | read | cancel` action union. A run selects one lane, an ordered results-lane list, or a results-only preset. Typed operations require one lane. The built-in configuration has no search default; when a host configures `defaults.search_lane`, that lane applies to both sync and async.
 
 One query and one results lane preserve provider order. Each query×lane list canonical-deduplicates before RRF; multiple lists then use fixed RRF, global canonical deduplication, independent evidence groups, and stable plan-position/URL tie-breaking.
 
-Typed operations are treated as schema-bound JSON. The core does not branch on their business purpose. If a sync logical output exceeds `max_inline_bytes`, the run fails with `OUTPUT_TOO_LARGE`; no truncation or implicit async conversion occurs.
+Typed operations are treated as schema-bound JSON. The core does not branch on their business purpose. `grok.synthesis` and `grok.x-synthesis` use the Grok Responses API; `gma.research` remains the separate multi-agent Chat Completions integration. If a sync logical output exceeds `max_inline_bytes`, the run fails with `OUTPUT_TOO_LARGE`; no truncation or implicit async conversion occurs.
 
 ## Async jobs
 
@@ -31,7 +31,7 @@ Snapshots and artifact manifests start at contract version 1. A snapshot freezes
 
 `fetch` is a strict `run | get | read | cancel` action union. A run accepts a discriminated `url | inline_text | inline_bytes | file` source and requests `markdown` (default) or `text`. Without an explicit pipeline, `fetch_chain` is matched by input kind and representation and runs serially until one document passes quality gates. An explicit pipeline bypasses the chain. Unsupported representation or execution fails preflight rather than degrading or switching execution mode.
 
-Each pipeline descriptor reports input kinds, media types, representations, execution modes, egress, and typed stages. Local and inline sources may enter only `egress: "none"` pipelines. Scoped files use relative paths, lexical and realpath containment, read-only access, source byte limits, and extension/content MIME checks; capabilities expose scope IDs but not roots. Inline HTML is parsed without script execution or secondary resource fetches. The existing URL pipelines remain `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; `direct.local` handles local sources. URL SSRF, redirect, byte/character limits, fallback classification, and `lane_outcomes` behavior remain unchanged. Documents add `representation` and `media_type` while retaining `source_lane`.
+Each pipeline descriptor reports input kinds, media types, representations, execution modes, egress, and typed stages. File and inline sources may enter only `egress: "none"` pipelines. Scoped files use relative paths, lexical and realpath containment, read-only access, source byte limits, and extension/content MIME checks; capabilities expose scope IDs but not roots, and file input remains disabled until a scope is configured. Inline HTML is parsed without script execution or secondary resource fetches. The built-in URL pipelines are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; `direct.local` handles inline and scoped-file sources. `direct.local` advertises sync and async execution, while the built-in URL pipelines are sync-only. URL SSRF, redirect, byte/character limits, fallback classification, and `lane_outcomes` behavior remain unchanged. Documents add `representation` and `media_type` while retaining `source_lane`.
 
 ## Capabilities
 

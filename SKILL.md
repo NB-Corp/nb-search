@@ -15,7 +15,27 @@ description: 使用显式 lane 执行查询，并以 pipeline 将 URL、内联�
 
 ## `search`
 
-`search` 使用 `action` 区分四种请求。
+`search` 使用 `action` 区分四种请求。内置配置没有 `defaults.search_lane`；省略 `lane`、`lanes` 和 `preset` 时，只有宿主已配置默认 lane 才能执行，否则返回 `DEFAULT_NOT_CONFIGURED`。
+
+### 内置 lane
+
+| Lane | Output |
+| --- | --- |
+| `brave.search` | results |
+| `context7.docs` | typed (`nb-search.docs-context@1`) |
+| `exa.search` | results |
+| `exa.synthesis` | typed (`nb-search.synthesis@1`) |
+| `firecrawl.search` | results |
+| `github.repositories` | results |
+| `gma.research` | typed (`nb-search.multi-agent-research@1`) |
+| `grok.synthesis` | typed (`nb-search.synthesis@1`) |
+| `grok.x-synthesis` | typed (`nb-search.synthesis@1`) |
+| `oac.synthesis` | typed (`nb-search.synthesis@1`) |
+| `parallel.search` | results |
+| `searxng.search` | results |
+| `tavily.search` | results |
+| `tavily.synthesis` | typed (`nb-search.synthesis@1`) |
+| `zhipu.search` | results |
 
 ### `action: "run"`
 
@@ -46,13 +66,25 @@ description: 使用显式 lane 执行查询，并以 pipeline 将 URL、内联�
 
 ## `fetch`
 
-- 使用 `run | get | read | cancel` action；`run` 的 `source` 是 `url | inline_text | inline_bytes | file`，`representation` 默认为 `markdown`。
-- 不传 `pipeline` 时按 `capabilities.fetch.chains` 匹配并串行尝试；显式 `pipeline` 只调用该 pipeline。
-- file 与 inline source 只能进入 `egress: none` pipeline；file 必须使用 capabilities 暴露的 scope id 和 scope 内相对路径。
-- 403、429、5xx、transport 失败或质量门失败可进入下一 pipeline；`FETCH_BLOCKED`、404、410、`FETCH_CONTENT_TYPE_REJECTED` 会终止。
+内置 pipeline 是 `direct.fetch`、`direct.local`、`jina.reader`、`exa.contents`、`tavily.extract`、`firecrawl.scrape`。默认 URL 链为 `direct.fetch` → `jina.reader`；`inline_text`、`inline_bytes` 和 `file` 默认使用 `direct.local`。
+
+### `action: "run"`
+
+- `source` 是 `{ kind: "url", url }`、`{ kind: "inline_text", content, media_type, base_url? }`、`{ kind: "inline_bytes", content_base64, media_type, filename? }` 或 `{ kind: "file", scope, path }`。
+- `representation` 是 `markdown`（默认）或 `text`。
+- 不传 `pipeline` 时按 `capabilities.fetch.chains` 的 input kind 与 representation 匹配并串行尝试；显式 `pipeline` 只调用该 pipeline，且必须支持请求的 source、representation 与 execution mode。
+- file 与 inline source 只能进入 `egress: none` pipeline；file 使用 capabilities 暴露的 scope id 与 scope 内相对路径，未配置 scope 时 file input 不可用。
+- 内置 `direct.local` 支持 sync/async；其余内置 fetch pipeline 仅支持 sync。以 `capabilities.fetch.pipelines[].execution_modes` 为准。
+- 非 404/410 的 HTTP 失败、provider/auth/rate-limit、transport、字节上限或质量门失败可进入下一 pipeline；`FETCH_BLOCKED`、404、410、`FETCH_CONTENT_TYPE_REJECTED`、取消、deadline 或预算耗尽会终止。
 - `direct.fetch` 只提供受限文本抓取和确定性 HTML→text，不代表浏览器渲染或高保真版面还原。
 - 成功内容位于 `documents`；每次尝试或跳过记录在 `lane_outcomes`，document 同时报告 `representation` 与 source `media_type`。
-- async 必须提供稳定的 `idempotency_key`，随后以 fetch 的 `get/read/cancel` action 管理 job。
+- async 必须提供稳定的 `idempotency_key`；sync 不传该字段。
+
+### `action: "get" | "read" | "cancel"`
+
+- `get` 传 `job_id` 查询 fetch job 状态与成功 artifact metadata。
+- `read` 传 `job_id`，可选 `cursor` 与 `page_size`，并按 `next_cursor` 读取完整 JSON artifact。
+- `cancel` 传 `job_id` 记录取消请求，不承诺上游已停止或不会计费。
 
 ## `capabilities`
 

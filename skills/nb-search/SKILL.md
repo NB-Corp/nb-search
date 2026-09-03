@@ -12,13 +12,33 @@ For `search`, the caller selects lanes explicitly; the runtime never inspects a 
 ## Workflow
 
 1. Determine whether the request is a query (search), a source conversion (fetch), or a capability check (capabilities).
-2. Choose the search lane or fetch pipeline explicitly, or omit the selector to use the configured default chain.
-3. For async search or fetch, supply a stable `idempotency_key` and reuse it for retries.
+2. Choose a search lane explicitly or use a host-configured default lane; for fetch, choose a pipeline explicitly or omit it to use the matching configured chain.
+3. For a search lane or fetch pipeline that supports async, supply a stable `idempotency_key` and reuse it for retries.
 4. Validate output shape before reporting: results use ranked `results`, typed uses `schema_id` + `data`, fetch uses `documents`.
 
 ## `search`
 
-`search` uses a discriminated action union. SDK/MCP require an explicit `action`; the CLI shorthand normalizes an unqualified query to `run`.
+`search` uses a discriminated action union. SDK/MCP require an explicit `action`; the CLI shorthand normalizes an unqualified query to `run`. The built-in configuration has no `defaults.search_lane`; omitting `lane`, `lanes`, and `preset` works only when the host configured a default, otherwise it returns `DEFAULT_NOT_CONFIGURED`.
+
+### Built-in lanes
+
+| Lane | Output |
+| --- | --- |
+| `brave.search` | results |
+| `context7.docs` | typed (`nb-search.docs-context@1`) |
+| `exa.search` | results |
+| `exa.synthesis` | typed (`nb-search.synthesis@1`) |
+| `firecrawl.search` | results |
+| `github.repositories` | results |
+| `gma.research` | typed (`nb-search.multi-agent-research@1`) |
+| `grok.synthesis` | typed (`nb-search.synthesis@1`) |
+| `grok.x-synthesis` | typed (`nb-search.synthesis@1`) |
+| `oac.synthesis` | typed (`nb-search.synthesis@1`) |
+| `parallel.search` | results |
+| `searxng.search` | results |
+| `tavily.search` | results |
+| `tavily.synthesis` | typed (`nb-search.synthesis@1`) |
+| `zhipu.search` | results |
 
 ### `action: "run"`
 
@@ -48,13 +68,25 @@ For `search`, the caller selects lanes explicitly; the runtime never inspects a 
 
 ## `fetch`
 
-- Use the `run | get | read | cancel` action union. `run.source` is `url | inline_text | inline_bytes | file`; `representation` defaults to `markdown`.
-- Without `pipeline`, pipelines run serially from the matching `capabilities.fetch.chains` entry; an explicit `pipeline` invokes only that pipeline.
-- File and inline sources may enter only `egress: none` pipelines. File paths are relative to a capability-advertised scope id.
-- HTTP 403/429/5xx, transport failures, and quality-gate failures may fall through. `FETCH_BLOCKED`, HTTP 404/410, and `FETCH_CONTENT_TYPE_REJECTED` terminate the chain.
+The built-in pipelines are `direct.fetch`, `direct.local`, `jina.reader`, `exa.contents`, `tavily.extract`, and `firecrawl.scrape`. The default URL chain is `direct.fetch` → `jina.reader`; `inline_text`, `inline_bytes`, and `file` default to `direct.local`.
+
+### `action: "run"`
+
+- `source` is `{ kind: "url", url }`, `{ kind: "inline_text", content, media_type, base_url? }`, `{ kind: "inline_bytes", content_base64, media_type, filename? }`, or `{ kind: "file", scope, path }`.
+- `representation` is `markdown` (default) or `text`.
+- Without `pipeline`, pipelines run serially from the `capabilities.fetch.chains` entry matching input kind and representation. An explicit `pipeline` invokes only that pipeline and must support the source, representation, and execution mode.
+- File and inline sources may enter only `egress: none` pipelines. File paths use a capability-advertised scope id and a path relative to that scope; file input is unavailable until a scope is configured.
+- Built-in `direct.local` supports sync and async. The other built-in fetch pipelines are sync-only; use `capabilities.fetch.pipelines[].execution_modes` as the authority.
+- HTTP failures other than 404/410, provider/auth/rate-limit and transport failures, byte-limit failures, and quality-gate failures may fall through. `FETCH_BLOCKED`, HTTP 404/410, `FETCH_CONTENT_TYPE_REJECTED`, cancellation, deadline, and budget exhaustion terminate the chain.
 - `direct.fetch` provides bounded text extraction and deterministic HTML→text; it is not browser rendering or high-fidelity layout reconstruction.
 - Successful documents report `representation` and source `media_type`; attempts and skips remain in `lane_outcomes`.
-- Async fetch requires `idempotency_key` and uses fetch `get/read/cancel` for job management.
+- Async fetch requires a stable `idempotency_key`; sync forbids that field.
+
+### `action: "get" | "read" | "cancel"`
+
+- `get` passes `job_id` to read fetch job state and successful artifact metadata.
+- `read` passes `job_id`, optional `cursor` and `page_size`, and follows `next_cursor` to read the complete JSON artifact.
+- `cancel` passes `job_id` to record a cancellation request without claiming that the upstream stopped or avoided billing.
 
 ## `capabilities`
 

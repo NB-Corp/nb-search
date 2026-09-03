@@ -30,7 +30,6 @@ Configuration uses schema v4 and resolves in this order:
 {
   "schema_version": "4",
   "defaults": {
-    "search_lane": "exa.search",
     "fetch_chain": [
       { "input_kind": "url", "pipelines": ["direct.fetch", "jina.reader"] },
       { "input_kind": "inline_text", "pipelines": ["direct.local"] },
@@ -46,11 +45,42 @@ Configuration uses schema v4 and resolves in this order:
 }
 ```
 
-Built-in URL fetch pipeline IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; `direct.local` handles inline and scoped-file input without egress. The built-in URL chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, and `gma.research`. A search default is optional; a search call without a selector fails when it is absent.
+The built-in configuration has no default search lane. A search call without `lane`, `lanes`, or `preset` therefore fails with `DEFAULT_NOT_CONFIGURED` unless the host configures `defaults.search_lane`. A lane binds `provider_instance_id` to `operation_id`; results lanes can be combined in `lanes` and presets, while typed lanes require a single `lane`.
 
-Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, optional `NB_SEARCH_JINA_API_KEY`, `NB_SEARCH_FIRECRAWL_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`; both Grok provider instances use `NB_SEARCH_GROK_API_KEY`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
+### Built-in search lanes
 
-A lane binds `provider_instance_id` to `operation_id`. Its registration declares either a results output or a typed JSON output with a `schema_id`. Presets contain results lanes only; typed operations use one lane.
+| Lane | Output | Credential and required configuration |
+| --- | --- | --- |
+| `brave.search` | results | `NB_SEARCH_BRAVE_API_KEY` |
+| `context7.docs` | typed (`nb-search.docs-context@1`) | Optional `NB_SEARCH_CONTEXT7_API_KEY`; keyless by default |
+| `exa.search` | results | `NB_SEARCH_EXA_API_KEY` |
+| `exa.synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_EXA_API_KEY` |
+| `firecrawl.search` | results | `NB_SEARCH_FIRECRAWL_API_KEY` |
+| `github.repositories` | results | Optional `NB_SEARCH_GITHUB_TOKEN`; keyless with unauthenticated rate limits |
+| `gma.research` | typed (`nb-search.multi-agent-research@1`) | `NB_SEARCH_GROK_API_KEY`; requires `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL` |
+| `grok.synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_GROK_API_KEY` |
+| `grok.x-synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_GROK_API_KEY` |
+| `oac.synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_OAC_API_KEY`; requires `NB_SEARCH_OAC_BASE_URL` and `NB_SEARCH_OAC_MODEL` |
+| `parallel.search` | results | `NB_SEARCH_PARALLEL_API_KEY` |
+| `searxng.search` | results | Keyless; requires `NB_SEARCH_SEARXNG_BASE_URL` |
+| `tavily.search` | results | `NB_SEARCH_TAVILY_API_KEY` |
+| `tavily.synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_TAVILY_API_KEY` |
+| `zhipu.search` | results | `NB_SEARCH_ZHIPU_API_KEY` |
+
+All built-in search operations advertise both sync and async execution when configured and available.
+
+### Built-in fetch pipelines
+
+| Pipeline | Input | Execution | Egress | Credential |
+| --- | --- | --- | --- | --- |
+| `direct.fetch` | URL | sync | `url` | None; keyless |
+| `direct.local` | inline text, inline bytes, scoped file | sync, async | `none` | None; keyless |
+| `jina.reader` | URL | sync | `url` | Optional `NB_SEARCH_JINA_API_KEY`; keyless by default |
+| `exa.contents` | URL | sync | `url` | `NB_SEARCH_EXA_API_KEY` |
+| `tavily.extract` | URL | sync | `url` | `NB_SEARCH_TAVILY_API_KEY` |
+| `firecrawl.scrape` | URL | sync | `url` | `NB_SEARCH_FIRECRAWL_API_KEY` |
+
+The built-in URL chain is `direct.fetch` then `jina.reader`; inline and scoped-file sources use `direct.local`. Both `markdown` and `text` representations are supported. Scoped-file input is disabled until the host configures at least one read-only file scope. See `.env.example` for the complete canonical environment-variable set.
 
 ## SDK
 
@@ -103,7 +133,9 @@ An async job publishes one immutable logical-output artifact. Its normalized int
 
 ## Fetch safety
 
-`fetch` is a strict `run | get | read | cancel` action union. `run` accepts one URL, inline-text, inline-bytes, or scoped-file source and defaults to the `markdown` representation. Without `pipeline`, it matches `defaults.fetch_chain` by input kind and representation; an explicit `pipeline` bypasses the chain. File and inline sources can use only `egress: "none"` pipelines. File paths remain within configured read-only scopes, including realpath checks against symlink escape. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
+`fetch` is a strict `run | get | read | cancel` action union. `run.source` is one of `{ kind: "url", url }`, `{ kind: "inline_text", content, media_type, base_url? }`, `{ kind: "inline_bytes", content_base64, media_type, filename? }`, or `{ kind: "file", scope, path }`; `representation` is `markdown` (default) or `text`. Without `pipeline`, the runtime matches `defaults.fetch_chain` by input kind and representation and tries its pipelines serially. An explicit `pipeline` bypasses the chain and must support the requested source, representation, and execution mode. Execution defaults to sync; async requires `idempotency_key` and currently applies to built-in `direct.local`, as reported by `capabilities.fetch.pipelines[].execution_modes`. Fetch `get`, `read`, and `cancel` use the resulting `job_id` and the same immutable-artifact protocol as search jobs.
+
+File and inline sources can use only `egress: "none"` pipelines. File paths remain within configured read-only scopes, including lexical and realpath checks against symlink escape; capabilities expose scope IDs, not host roots. Chain fallback continues after non-404/410 HTTP failures, provider/auth/rate-limit or transport failures, byte-limit failures, and quality-gate failures; it stops for `FETCH_BLOCKED`, HTTP 404/410, `FETCH_CONTENT_TYPE_REJECTED`, cancellation, deadline, or budget exhaustion. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
 
 - rejects credentialed URLs and non-public targets, including loopback, private, link-local, metadata, multicast, reserved, unspecified, CGNAT, and IPv4-mapped IPv6 addresses;
 - connects to a validated resolved address while preserving the original HTTP Host and TLS SNI;
