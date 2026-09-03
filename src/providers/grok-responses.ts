@@ -9,7 +9,7 @@ import { validateGrokModel } from '../providers.ts';
 export const DEFAULT_GROK_RESPONSES_URL = 'https://api.x.ai/v1/responses';
 export const DEFAULT_GROK_MODEL = 'grok-4.1-fast';
 export type GrokResponsesTool = 'web_search' | 'x_search';
-export interface GrokSynthesisSource { url: string; title?: string }
+export interface GrokSynthesisSource { url: string; start_index?: number; end_index?: number }
 export interface GrokSynthesisResult { answer: string; sources: readonly GrokSynthesisSource[] }
 export interface GrokResponsesProviderOptions {
   apiKey: string;
@@ -106,8 +106,9 @@ export function parseGrokResponses(value: unknown): GrokSynthesisResult {
         const url = normalizeUrl(annotation['url']);
         if (url === undefined || seen.has(url)) continue;
         seen.add(url);
-        const title = typeof annotation['title'] === 'string' ? annotation['title'].replace(/\s+/gu, ' ').trim() : '';
-        sources.push({ url, ...(title === '' ? {} : { title: truncateBytes(title, 512) }) });
+        const startIndex = citationIndex(annotation['start_index']);
+        const endIndex = citationIndex(annotation['end_index']);
+        sources.push({ url, ...(startIndex === undefined ? {} : { start_index: startIndex }), ...(endIndex === undefined ? {} : { end_index: endIndex }) });
       }
     }
   }
@@ -138,6 +139,6 @@ function safeGrokResponsesError(error: NbSearchError, redactions: readonly strin
 function malformedGrokResponsesError(cause?: unknown): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', 'grok returned malformed Responses content.', false, 'grok', { cause }) }
 function invalidGrokResponsesUrl(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Grok Responses base URL is invalid.') }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
-function truncateBytes(value: string, maximum: number): string { if (Buffer.byteLength(value, 'utf8') <= maximum) return value; let end = value.length; while (end > 0 && Buffer.byteLength(value.slice(0, end), 'utf8') > maximum) end -= 1; return value.slice(0, end) }
+function citationIndex(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined }
 function parseRetryAfter(value: string | undefined, clock: () => Date): number | undefined { if (value === undefined) return undefined; const seconds = Number(value); if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000); const at = Date.parse(value); return Number.isFinite(at) ? Math.max(0, at - clock().getTime()) : undefined }
 function headerValue(headers: Readonly<Record<string, string>> | undefined, name: string): string | undefined { if (headers === undefined) return undefined; return headers[name] ?? Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] }

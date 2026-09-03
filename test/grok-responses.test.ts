@@ -14,7 +14,7 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('xAI Responses adapter', () => {
-  it('posts the Responses contract and normalizes answer text plus citation sources', async () => {
+  it('normalizes official xAI citation annotations without treating labels as page titles', async () => {
     const transport = new CaptureTransport({
       status: 200,
       body: {
@@ -22,9 +22,9 @@ describe('xAI Responses adapter', () => {
           { type: 'web_search_call', status: 'completed' },
           { type: 'message', content: [
             { type: 'output_text', text: ' First ', annotations: [
-              { type: 'url_citation', url: 'https://Example.test/page/?utm_source=x#fragment', title: ' Example   title ' },
-              { type: 'url_citation', url: 'https://example.test/page' },
-              { type: 'url_citation', url: 'ftp://invalid.test/file' },
+              { type: 'url_citation', url: 'https://Example.test/page/?utm_source=x#fragment', start_index: 208, end_index: 235, title: '1' },
+              { type: 'url_citation', url: 'https://example.test/page', title: '2' },
+              { type: 'url_citation', url: 'ftp://invalid.test/file', start_index: 236, end_index: 250, title: '3' },
             ] },
             { type: 'output_text', text: 'Second', annotations: [] },
           ] },
@@ -34,7 +34,7 @@ describe('xAI Responses adapter', () => {
     const provider = new GrokResponsesProvider({ apiKey: 'grok-secret', model: 'grok-4.1-fast', tool: 'web_search', transport });
     await expect(provider.synthesize(queryRequest())).resolves.toEqual({
       answer: 'First\n\nSecond',
-      sources: [{ url: 'https://example.test/page', title: 'Example title' }],
+      sources: [{ url: 'https://example.test/page', start_index: 208, end_index: 235 }],
     });
     expect(transport.requests).toEqual([{
       url: DEFAULT_GROK_RESPONSES_URL,
@@ -91,6 +91,11 @@ describe('xAI Responses adapter', () => {
     await expect(createProvider(new CaptureTransport({ status: 200, body })).synthesize(queryRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false, provider: 'grok' });
   });
 
+  it('maps malformed JSON transport failures to the Grok provider', async () => {
+    const transport: JsonTransport = { async send() { throw new NbSearchError('PROVIDER_UNAVAILABLE', 'Provider returned invalid JSON (HTTP 200).', true); } };
+    await expect(createProvider(transport).synthesize(queryRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: true, provider: 'grok' });
+  });
+
   it('propagates transport timeout aborts', async () => {
     const transport: JsonTransport = { async send<T>(request: JsonRequest) { return await new Promise<JsonResponse<T>>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })); } };
     const controller = new AbortController();
@@ -98,6 +103,15 @@ describe('xAI Responses adapter', () => {
     const pending = createProvider(transport).synthesize(queryRequest(controller.signal));
     controller.abort(timeout);
     await expect(pending).rejects.toBe(timeout);
+  });
+
+  it('propagates independent caller cancellation as CANCELLED', async () => {
+    const transport: JsonTransport = { async send<T>(request: JsonRequest) { return await new Promise<JsonResponse<T>>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })); } };
+    const controller = new AbortController();
+    const cancelled = new NbSearchError('CANCELLED', 'caller cancelled');
+    const pending = createProvider(transport).synthesize(queryRequest(controller.signal));
+    controller.abort(cancelled);
+    await expect(pending).rejects.toBe(cancelled);
   });
 
   it('normalizes base URLs to one /v1/responses suffix', () => {
@@ -125,7 +139,7 @@ describe('grok lane migration', () => {
     expect(() => loadConfiguration({}, undefined, { cwd: home, homeDirectory: home, config: { lanes: { 'grok.search': { provider_instance_id: 'grok.default', operation_id: 'search', latency: 'slow', cost: 'expensive' } } } })).toThrow(expect.objectContaining({ code: 'LANE_NOT_REGISTERED' }));
   });
 
-  it('gates both synthesis lanes on the shared Grok credential without network probes', async () => {
+  it('preflights both synthesis lanes without transport calls when the credential is missing', async () => {
     const home = await temporaryRoot();
     let calls = 0;
     const transport: JsonTransport = { async send<T>() { calls += 1; throw new Error('unexpected network') as never; } };
@@ -134,6 +148,8 @@ describe('grok lane migration', () => {
     const offlineAvailability = Object.fromEntries((await offline.runtime.capabilities()).search.lanes.map((lane) => [lane.id, lane.availability]));
     const configuredAvailability = Object.fromEntries((await configured.runtime.capabilities()).search.lanes.map((lane) => [lane.id, lane.availability]));
     expect(offlineAvailability).toMatchObject({ 'grok.synthesis': 'unavailable', 'grok.x-synthesis': 'unavailable' });
+    await expect(offline.runtime.search({ action: 'run', query: 'no key', lane: 'grok.synthesis' })).resolves.toMatchObject({ status: 'failed', error: { code: 'LANE_NOT_CONFIGURED' } });
+    await expect(offline.runtime.search({ action: 'run', query: 'no key', lane: 'grok.x-synthesis' })).resolves.toMatchObject({ status: 'failed', error: { code: 'LANE_NOT_CONFIGURED' } });
     expect(configuredAvailability).toMatchObject({ 'grok.synthesis': 'ready', 'grok.x-synthesis': 'ready' });
     expect(configured.config.resolved.config.provider_instances['grok.default']?.credential_slot_id).toBe('grok.default');
     expect(configured.config.resolved.secret_bindings.get('grok.default')?.value).toBe('shared');
