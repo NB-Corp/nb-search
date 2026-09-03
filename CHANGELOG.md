@@ -7,7 +7,7 @@
 - Added the public `runtime.fetch` action union, default fetch chains, nine built-in fetch pipelines, and sync/async fetch job envelopes.
 - Added schema-v4 configuration inputs and parsers for in-process hosts: `CanonicalConfigPatch`, `parseConfigPatch`, and `parseResolvedConfig`.
 - Added provider registrations, fifteen built-in search lanes, typed query operations, presets, and explicit default-lane selection.
-- Added capability descriptors for providers, configured provider instances, search lanes, fetch pipelines, defaults, readiness, and redacted credential status.
+- Added capability descriptors for providers, configured provider instances, search lanes, fetch pipelines, defaults, readiness, redacted credential status, and the extensible `CapabilityIssueCode` type.
 - Added packaged `SKILL.md`, `.env.example`, and runtime contract documentation, plus the optional Playwright peer dependency for browser rendering.
 
 ### Changed

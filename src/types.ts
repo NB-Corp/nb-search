@@ -124,7 +124,8 @@ export interface FetchGetEnvelope extends SearchGetEnvelope { mode: 'fetch' }
 export interface FetchReadEnvelope extends SearchReadEnvelope { mode: 'fetch' }
 export interface FetchCancelEnvelope extends SearchCancelEnvelope { mode: 'fetch' }
 export type FetchEnvelope = FetchRunSyncEnvelope | FetchRunAsyncEnvelope | FetchGetEnvelope | FetchReadEnvelope | FetchCancelEnvelope;
-export interface CapabilityIssue { code: string; execution?: QueryExecution }
+export type CapabilityIssueCode = 'PROVIDER_NOT_REGISTERED' | 'PROVIDER_DISABLED' | 'CREDENTIAL_NOT_CONFIGURED' | 'ENDPOINT_NOT_CONFIGURED' | 'PROVIDER_PORTS_UNAVAILABLE' | 'PROVIDER_PORTS_PARTIAL' | 'LANE_NOT_REGISTERED' | 'OPERATION_NOT_REGISTERED' | 'LANE_NOT_CONFIGURED' | 'BROWSER_NOT_INSTALLED' | 'RATE_LIMIT_UNAUTHENTICATED' | (string & {});
+export interface CapabilityIssue { code: CapabilityIssueCode; execution?: QueryExecution }
 export interface CapabilityProviderDescriptor { provider_id: ProviderId; adapter_version: string; query_operations: QueryOperationDescriptor[]; fetch_operations: FetchOperationDescriptor[]; activation: { credential: 'required' | 'none'; endpoint: 'required' | 'optional' | 'none' }; option_keys: string[] }
 export interface CapabilityProviderInstance { id: ProviderInstanceId; provider_id: ProviderId; enabled: boolean; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; credential: { requirement: 'required' | 'none' | 'unknown'; configured: boolean; slot_id?: string }; endpoint: { requirement: 'required' | 'optional' | 'none' | 'unknown'; configured: boolean } }
 export interface CapabilityEnvelope {

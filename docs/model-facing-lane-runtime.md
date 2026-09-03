@@ -35,4 +35,10 @@ Each pipeline descriptor reports input kinds, media types, representations, exec
 
 ## Capabilities
 
-`capabilities` is a static model-facing catalog. Its fetch section reports default representation, enabled input kinds, scope IDs, expanded chains, pipeline descriptors, availability, latency, cost, and public limits. It performs no network probe and does not expose provider-instance configuration, credentials, file-scope roots, retry or heartbeat internals, storage paths, or configuration provenance.
+`capabilities` is a static model-facing catalog. Its fetch section reports default representation, enabled input kinds, scope IDs, expanded chains, pipeline descriptors, availability, latency, cost, and public limits. It performs no network probe.
+
+Provider-instance `availability` describes realized runtime readiness. `ready` means activation succeeded and at least one operation declared by the provider has a realized runtime port. `PROVIDER_PORTS_PARTIAL` is a non-fatal diagnostic: the instance remains ready, but one or more declared operations are unavailable, so hosts must inspect the matching `search.lanes` and `fetch.pipelines` entries before enabling an operation. `unavailable` means activation failed or none of the provider's declared operations has a realized runtime port. `PROVIDER_PORTS_UNAVAILABLE` identifies the latter case. Operation-specific issues such as `BROWSER_NOT_INSTALLED` remain attached to their lane or pipeline and are also propagated to the provider instance.
+
+The known capability issue-code literals are `PROVIDER_NOT_REGISTERED`, `PROVIDER_DISABLED`, `CREDENTIAL_NOT_CONFIGURED`, `ENDPOINT_NOT_CONFIGURED`, `PROVIDER_PORTS_UNAVAILABLE`, `PROVIDER_PORTS_PARTIAL`, `LANE_NOT_REGISTERED`, `OPERATION_NOT_REGISTERED`, `LANE_NOT_CONFIGURED`, `BROWSER_NOT_INSTALLED`, and `RATE_LIMIT_UNAUTHENTICATED`. The public `CapabilityIssueCode` type retains an extensible string branch for future provider-defined diagnostics.
+
+Capabilities expose provider and instance identifiers, operation descriptors, activation requirements, slot identifiers, readiness, and issue codes. They do not expose raw base URLs, provider option values, credential environment-variable names, secret values, file-scope roots, retry or heartbeat internals, storage paths, or configuration provenance.

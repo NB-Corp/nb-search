@@ -29,6 +29,18 @@ describe('public surface', () => {
     expect(text).not.toMatch(/\b(?:compact|external_results|answer_lane|deep_lane|sync_lane|async_lane|legacy_path)\b/);
   });
 
+  it('documents provider availability as runtime and operation-level readiness', async () => {
+    for (const path of ['../README.md', '../docs/model-facing-lane-runtime.md']) {
+      const text = await readFile(new URL(path, import.meta.url), 'utf8');
+      expect(text).toMatch(/availability[^\n]+ready[^\n]+at least one[^\n]+operation[^\n]+realized runtime port/i);
+      expect(text).toMatch(/PROVIDER_PORTS_PARTIAL[^\n]+non-fatal/i);
+      expect(text).toMatch(/search\.lanes[^\n]+fetch\.pipelines/);
+      expect(text).toMatch(/unavailable[^\n]+activation failed[^\n]+none[^\n]+declared operations/i);
+      expect(text).toMatch(/raw base URLs[^\n]+option values[^\n]+environment-variable names[^\n]+secret values/i);
+      expect(text).not.toContain('does not expose provider-instance configuration');
+    }
+  });
+
   it('publishes the public documents referenced by the README', async () => {
     const root = fileURLToPath(new URL('..', import.meta.url));
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { exports: Record<string, unknown>; files: string[]; repository: { url: string }; homepage: string; bugs: { url: string } };

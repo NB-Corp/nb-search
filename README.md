@@ -134,7 +134,15 @@ const page = await runtime.fetch({
 const catalog = await runtime.capabilities();
 ```
 
-`config` is the host's validated saved patch and `overrides` is the higher-precedence runtime patch. `capabilities()` returns registered provider descriptors, configured provider-instance readiness, search-lane and fetch-pipeline descriptors, configured defaults, limits, and credential readiness. Credential entries contain only requirement, slot identifier, and configured status; secret values and endpoint values are not returned.
+`config` is the host's validated saved patch and `overrides` is the higher-precedence runtime patch. `capabilities()` returns registered provider descriptors, configured provider-instance readiness, search-lane and fetch-pipeline descriptors, configured defaults, limits, and credential readiness.
+
+Provider-instance availability is runtime readiness, not a substitute for operation selection:
+
+- `availability: "ready"` means activation succeeded and at least one declared operation has a realized runtime port.
+- `PROVIDER_PORTS_PARTIAL` is a non-fatal diagnostic: the provider instance remains ready, but the host must inspect `search.lanes` and `fetch.pipelines` before enabling a specific operation.
+- `availability: "unavailable"` means provider activation failed or none of its declared operations has a realized runtime port.
+
+Capabilities expose provider and instance identifiers, activation requirements, slot identifiers, readiness, and issue codes. They do not expose raw base URLs, provider option values, credential environment-variable names, secret values, file-scope roots, or storage paths. `CapabilityIssueCode` provides the current known issue-code literals while retaining support for future provider-defined codes.
 
 `search` is an action union:
 

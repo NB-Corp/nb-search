@@ -6,6 +6,7 @@ import {
   createNbSearchRuntime,
   parseConfigPatch,
   type CanonicalConfigPatch,
+  type CapabilityIssueCode,
   type FetchOperationDescriptor,
   type ProviderRegistration,
   type QueryProviderValue
@@ -129,6 +130,22 @@ describe('host SDK package acceptance', () => {
     const capabilities = await runtime.capabilities();
     expect(capabilities.providers.instances.find((item) => item.id === 'host-sdk.default')).toMatchObject({ availability: 'unavailable', issues: expect.arrayContaining([{ code: 'PROVIDER_PORTS_UNAVAILABLE' }, { code: 'LANE_NOT_CONFIGURED' }]), credential: { requirement: 'required', configured: true } });
     expect(JSON.stringify(capabilities)).not.toContain(secret);
+  });
+
+  it('treats partial provider ports as non-fatal while requiring operation-level readiness checks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nb-search-host-partial-ports-'));
+    roots.push(root);
+    const partialRegistration: ProviderRegistration = { ...registration, create(context) { const ports = registration.create(context); return { query: { base: ports.query['base']! }, fetch: {} }; } };
+    const runtime = createNbSearchRuntime({ env: { HOST_SDK_SECRET: secret }, config: hostConfig(root), provider_registrations: [partialRegistration] });
+    const capabilities = await runtime.capabilities();
+    const provider = capabilities.providers.instances.find((item) => item.id === 'host-sdk.default');
+    const partialIssue: CapabilityIssueCode = 'PROVIDER_PORTS_PARTIAL';
+    expect(provider?.availability).toBe('ready');
+    expect(provider?.issues).toEqual(expect.arrayContaining([{ code: partialIssue }, { code: 'LANE_NOT_CONFIGURED' }]));
+    expect(capabilities.search.lanes.find((lane) => lane.id === 'host.base')?.availability).toBe('ready');
+    expect(capabilities.search.lanes.find((lane) => lane.id === 'host.override')?.availability).toBe('unavailable');
+    expect(capabilities.fetch.pipelines.find((pipeline) => pipeline.id === 'host.fetch-primary')?.availability).toBe('unavailable');
+    expect(provider?.issues.some((issue) => issue.code === 'PROVIDER_PORTS_PARTIAL') && provider.availability === 'ready').toBe(true);
   });
 
   it('classifies AbortSignal cancellation and execution deadlines', async () => {
