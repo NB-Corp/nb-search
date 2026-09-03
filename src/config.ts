@@ -37,6 +37,7 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
   return { home: resolve(resolved.config.home ?? '.'), jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')), retention_hours: resolved.config.retention_hours, log_level: resolved.config.log_level, resolved, registry, ports_by_instance: ports, lanes };
 }
 function validateLaneConfig(defaults: { search_lane?: string; fetch_chain?: readonly string[] }, presets: Readonly<Record<string, { lanes: readonly string[] }>>, lanes: Readonly<Record<string, LaneBinding>>): void {
+  for (const [id, lane] of Object.entries(lanes)) if (lane.query_operation === undefined && lane.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Lane ${id} does not reference a registered operation.`);
   if (defaults.search_lane !== undefined && lanes[defaults.search_lane]?.query_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.search_lane must reference a query operation.');
   for (const laneId of defaults.fetch_chain ?? []) if (lanes[laneId]?.fetch_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.fetch_chain must reference fetch operations only.');
   for (const [name, preset] of Object.entries(presets)) for (const laneId of preset.lanes) { const binding = lanes[laneId]; if (binding?.query_operation?.output.channel !== 'results') throw new NbSearchError('CONFIGURATION_ERROR', `Preset ${name} must contain registered results lanes only.`); }
