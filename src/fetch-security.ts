@@ -16,7 +16,8 @@ export class DirectFetchProvider implements FetchProvider {
 
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {
     try {
-      const original = parsePublicUrl(request.url);
+      if (request.source.kind !== 'url') throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', 'The direct HTTP pipeline accepts URL input only.');
+      const original = parsePublicUrl(request.source.url);
       let current = original;
       for (let redirects = 0; ; redirects += 1) {
         const addresses = await this.io.resolve(current.hostname);
@@ -41,8 +42,8 @@ export class DirectFetchProvider implements FetchProvider {
         if (response.truncated) warnings.push({ code: 'FETCH_BYTES_LIMIT', message: 'The response byte limit was reached.', data: { max_response_bytes: request.max_response_bytes } });
         if (charTruncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: maximumChars } });
         return {
-          url: request.url, final_url: current.toString(), ...(projected.title === undefined ? {} : { title: projected.title }),
-          content, content_type: contentType, format: 'text', byte_length: response.body.byteLength,
+          url: request.source.url, final_url: current.toString(), ...(projected.title === undefined ? {} : { title: projected.title }),
+          content, content_type: contentType, media_type: contentType, representation: request.representation, format: 'text', byte_length: response.body.byteLength,
           truncated: response.truncated || charTruncated, warnings,
         };
       }

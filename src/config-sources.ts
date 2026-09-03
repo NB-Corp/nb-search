@@ -58,9 +58,10 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'brave.search': { provider_instance_id: 'brave.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['brave'] },
       'gma.research': { provider_instance_id: 'grok-multi-agent.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
       'direct.fetch': { provider_instance_id: 'direct-http.default', operation_id: 'fetch', latency: 'fast', cost: 'free' },
+      'direct.local': { provider_instance_id: 'direct-http.default', operation_id: 'local', latency: 'fast', cost: 'free' },
     },
-    defaults: { fetch_chain: ['direct.fetch', 'jina.reader'] }, presets: {},
-    execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: 30_000, fetch_timeout_ms: 60_000, max_inline_bytes: 64 * 1024, fetch: { max_response_bytes: 2 * 1024 * 1024, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 500, blocked_markers: [...DEFAULT_FETCH_BLOCKED_MARKERS] } } },
+    defaults: { fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] }, presets: {}, fetch: { file_scopes: [] },
+    execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: 30_000, fetch_timeout_ms: 60_000, max_inline_bytes: 64 * 1024, fetch: { max_source_bytes: 2 * 1024 * 1024, max_response_bytes: 2 * 1024 * 1024, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 500, blocked_markers: [...DEFAULT_FETCH_BLOCKED_MARKERS] } } },
   };
 }
 export function resolveConfiguration(options: ResolveConfigurationOptions = {}): ResolvedConfiguration {

@@ -11,7 +11,7 @@ const home = await mkdtemp(join(tmpdir(), 'nb-search-smoke-'));
 const configPath = join(home, 'config.json');
 const env = { NB_SEARCH_HOME: home, NB_SEARCH_CONFIG: configPath };
 try {
-  await writeFile(configPath, JSON.stringify({ schema_version: '4', defaults: { search_lane: 'exa.search', fetch_chain: ['direct.fetch', 'jina.reader'] } }));
+  await writeFile(configPath, JSON.stringify({ schema_version: '4', defaults: { search_lane: 'exa.search', fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }] } }));
   let search;
   try {
     await execute(process.execPath, [cli, 'search', 'offline-smoke'], { cwd: root, env });
@@ -24,7 +24,7 @@ try {
 
   const capabilities = JSON.parse((await execute(process.execPath, [cli, 'capabilities'], { cwd: root, env })).stdout);
   assert(capabilities.schema_version === '3.0' && Array.isArray(capabilities.search?.lanes) && capabilities.jobs?.cancel_supported === true, 'capabilities envelope');
-  assert(capabilities.fetch.lanes.some((lane) => lane.id === 'direct.fetch' && lane.availability === 'ready'), 'direct.fetch capability');
+  assert(capabilities.fetch.pipelines.some((pipeline) => pipeline.id === 'direct.fetch' && pipeline.availability === 'ready'), 'direct.fetch capability');
 
   const publicModule = await import(new URL('../dist/index.mjs', import.meta.url));
   const runtime = publicModule.createNbSearchRuntime({ env });

@@ -2,7 +2,7 @@
 
 `@nb-corp/nb-search` is a deterministic query-lane runtime with three public capabilities: `search`, `fetch`, and `capabilities`.
 
-For `search`, the caller selects lanes and the runtime does not inspect a query to choose an engine, replace an unavailable lane, or run an unselected fallback. Selecting `execution: "async"` changes delivery only; it does not change the lane or query plan. For `fetch`, omitting `lane` runs the configured fetch chain in order; an explicit `lane` bypasses the chain.
+For `search`, the caller selects lanes and the runtime does not inspect a query to choose an engine, replace an unavailable lane, or run an unselected fallback. Selecting `execution: "async"` changes delivery only; it does not change the lane or query plan. For `fetch`, the caller supplies a URL, inline text, inline bytes, or a scoped file; omitting `pipeline` runs the matching configured chain, while an explicit `pipeline` bypasses it.
 
 ## Requirements
 
@@ -31,7 +31,12 @@ Configuration uses schema v4 and resolves in this order:
   "schema_version": "4",
   "defaults": {
     "search_lane": "exa.search",
-    "fetch_chain": ["direct.fetch", "jina.reader"]
+    "fetch_chain": [
+      { "input_kind": "url", "pipelines": ["direct.fetch", "jina.reader"] },
+      { "input_kind": "inline_text", "pipelines": ["direct.local"] },
+      { "input_kind": "inline_bytes", "pipelines": ["direct.local"] },
+      { "input_kind": "file", "pipelines": ["direct.local"] }
+    ]
   },
   "presets": {
     "cross-check": {
@@ -41,7 +46,7 @@ Configuration uses schema v4 and resolves in this order:
 }
 ```
 
-Built-in fetch lane IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; the built-in chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, and `gma.research`. A search default is optional; a search call without a selector fails when it is absent.
+Built-in URL fetch pipeline IDs are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, and `firecrawl.scrape`; `direct.local` handles inline and scoped-file input without egress. The built-in URL chain is `direct.fetch` then `jina.reader`. Built-in search lane IDs are `exa.search`, `exa.synthesis`, `tavily.search`, `tavily.synthesis`, `grok.search`, and `gma.research`. A search default is optional; a search call without a selector fails when it is absent.
 
 Canonical provider environment values include `NB_SEARCH_EXA_API_KEY`, `NB_SEARCH_TAVILY_API_KEY`, optional `NB_SEARCH_JINA_API_KEY`, `NB_SEARCH_FIRECRAWL_API_KEY`, `NB_SEARCH_GROK_API_KEY`, `NB_SEARCH_GROK_BASE_URL`, and `NB_SEARCH_GROK_MULTI_AGENT_BASE_URL`; both Grok provider instances use `NB_SEARCH_GROK_API_KEY`. Runtime paths and retention use `NB_SEARCH_HOME`, `NB_SEARCH_CONFIG`, `NB_SEARCH_JOBS_ROOT`, `NB_SEARCH_RETENTION_HOURS`, and `NB_SEARCH_LOG_LEVEL`.
 
@@ -76,8 +81,10 @@ const started = await runtime.search({
 });
 
 const page = await runtime.fetch({
-  url: 'https://example.com/spec',
-  lane: 'direct.fetch'
+  action: 'run',
+  source: { kind: 'url', url: 'https://example.com/spec' },
+  pipeline: 'direct.fetch',
+  representation: 'markdown'
 });
 
 const catalog = await runtime.capabilities();
@@ -96,7 +103,7 @@ An async job publishes one immutable logical-output artifact. Its normalized int
 
 ## Fetch safety
 
-`fetch` accepts one HTTP(S) URL. Without `lane`, it runs `defaults.fetch_chain` serially and returns the first document that passes the configured minimum-length and blocked-marker quality rules; unavailable lanes are recorded as skipped. An explicit `lane` bypasses the chain. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
+`fetch` is a strict `run | get | read | cancel` action union. `run` accepts one URL, inline-text, inline-bytes, or scoped-file source and defaults to the `markdown` representation. Without `pipeline`, it matches `defaults.fetch_chain` by input kind and representation; an explicit `pipeline` bypasses the chain. File and inline sources can use only `egress: "none"` pipelines. File paths remain within configured read-only scopes, including realpath checks against symlink escape. `direct.fetch` uses Node built-ins and performs no browser or JavaScript rendering. It:
 
 - rejects credentialed URLs and non-public targets, including loopback, private, link-local, metadata, multicast, reserved, unspecified, CGNAT, and IPv4-mapped IPv6 addresses;
 - connects to a validated resolved address while preserving the original HTTP Host and TLS SNI;
@@ -123,6 +130,7 @@ const registration: ProviderRegistration = {
       output: { channel: 'results', schema_id: 'nb-search.results@1' },
       built_in_async: false
     }],
+    fetch_operations: [],
     activation: { credential: 'none', endpoint: 'none' },
     option_keys: []
   },
@@ -138,7 +146,8 @@ const registration: ProviderRegistration = {
             };
           }
         }
-      }
+      },
+      fetch: {}
     };
   }
 };
@@ -155,10 +164,13 @@ nb-search search run "brief" --lane gma.research --execution async --idempotency
 nb-search search get <job_id>
 nb-search search read <job_id> --page-size 8
 nb-search search cancel <job_id>
-nb-search fetch "https://example.com" --lane direct.fetch
+nb-search fetch "https://example.com" --pipeline direct.fetch --representation markdown
+nb-search fetch get <job_id>
+nb-search fetch read <job_id> --page-size 8
+nb-search fetch cancel <job_id>
 nb-search capabilities
 ```
 
-CLI results are JSON on stdout. The stdio MCP server exposes exactly three tools: `search`, `fetch`, and `capabilities`. MCP and SDK require an explicit `search.action`; the CLI shorthand normalizes an unqualified search query to `action: "run"`.
+CLI results are JSON on stdout. The stdio MCP server exposes exactly three tools: `search`, `fetch`, and `capabilities`. MCP requires explicit `search.action` and `fetch.action`; CLI shorthands normalize an unqualified query or URL to `action: "run"`. The SDK also accepts `{ url }` as the narrow fetch-run convenience form.
 
 See `SKILL.md` for the model-use protocol and `docs/model-facing-lane-runtime.md` for the implementation contract summary.

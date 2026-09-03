@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AppConfiguration, LaneBinding } from './config.ts';
-import type { SearchRunInput } from './contracts.ts';
+import type { FetchRunInput, SearchRunInput } from './contracts.ts';
 import { NbSearchError, publicError } from './errors.ts';
 import { normalizeUrl } from './url.ts';
 import type { LaneAttempt, PublicError, QueryExecution, ResultProvenance, SearchResult, SearchSelection } from './types.ts';
@@ -18,10 +18,13 @@ export function resolveSearchSelection(input: SearchRunInput, app: AppConfigurat
   if ((input.lanes !== undefined || input.preset !== undefined) && channel !== 'results') throw new NbSearchError('MIXED_OUTPUT_UNSUPPORTED', 'lanes and preset support results operations only.');
   return { selection, lanes, channel, schema_id: lanes[0]!.query_operation!.output.schema_id };
 }
-export interface ResolvedFetchSelection { source: 'default' | 'lane'; lanes: LaneBinding[]; requested?: string }
-export function resolveFetchLanes(laneId: string | undefined, app: AppConfiguration): ResolvedFetchSelection {
-  if (laneId !== undefined) { const lane = app.lanes[laneId]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch lane ${laneId} is not registered.`); if (lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Fetch lane ${laneId} is unavailable.`); return { source: 'lane', lanes: [lane], requested: laneId }; }
-  const chain = app.resolved.config.defaults.fetch_chain; if (chain === undefined) throw new NbSearchError('FETCH_DEFAULT_NOT_CONFIGURED', 'Default fetch chain is not configured.'); return { source: 'default', lanes: chain.map((id) => { const lane = app.lanes[id]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch lane ${id} is not registered.`); return lane; }) };
+export interface ResolvedFetchSelection { source: 'default' | 'pipeline'; lanes: LaneBinding[]; requested?: string }
+export function resolveFetchPipelines(input: FetchRunInput, app: AppConfiguration, execution: QueryExecution): ResolvedFetchSelection {
+  const representation = input.representation ?? 'markdown'; const inputKind = input.source.kind; const mediaType = input.source.kind === 'inline_text' || input.source.kind === 'inline_bytes' ? input.source.media_type.split(';')[0]!.trim().toLowerCase() : undefined;
+  if (input.pipeline !== undefined) { const lane = app.lanes[input.pipeline]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch pipeline ${input.pipeline} is not registered.`); if (lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Fetch pipeline ${input.pipeline} is unavailable.`); if (!lane.fetch_operation.input_kinds.includes(inputKind) || !lane.fetch_operation.representations.includes(representation) || mediaType !== undefined && !lane.fetch_operation.media_types.includes(mediaType)) throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', `Fetch pipeline ${input.pipeline} does not support the requested source and representation.`); if (!lane.execution_modes.includes(execution)) throw new NbSearchError('LANE_EXECUTION_UNSUPPORTED', `Fetch pipeline ${input.pipeline} does not support ${execution}.`); if (inputKind !== 'url' && lane.fetch_operation.egress !== 'none') throw new NbSearchError('FETCH_EGRESS_DENIED', `Fetch pipeline ${input.pipeline} cannot receive local or inline content.`); return { source: 'pipeline', lanes: [lane], requested: input.pipeline }; }
+  const chain = app.resolved.config.defaults.fetch_chain?.find((item) => item.input_kind === inputKind && (item.representation ?? representation) === representation); if (chain === undefined) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch chain matches the requested source and representation.');
+  const lanes = chain.pipelines.map((id) => { const lane = app.lanes[id]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch pipeline ${id} is not registered.`); return lane; }).filter((lane) => lane.fetch_operation!.input_kinds.includes(inputKind) && lane.fetch_operation!.representations.includes(representation) && (mediaType === undefined || lane.fetch_operation!.media_types.includes(mediaType)) && (lane.availability !== 'ready' || lane.execution_modes.includes(execution)));
+  if (lanes.length === 0) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch pipeline supports the requested source, representation, and execution mode.'); return { source: 'default', lanes };
 }
 export function assertAttemptBudget(unitCount: number, retryCount: number, maxProviderCalls: number): void { if (unitCount * (retryCount + 1) > maxProviderCalls) throw new NbSearchError('BUDGET_EXCEEDED', 'The execution plan exceeds the provider attempt limit.'); }
 export interface ExecutionUnit<T> { lane: string; provider_instance_id: string; run(signal: AbortSignal): Promise<T> }

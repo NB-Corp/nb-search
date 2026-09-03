@@ -1,6 +1,6 @@
 ---
 name: nb-search
-description: 使用显式 lane 执行查询、异步作业与单页安全抓取
+description: 使用显式 lane 执行查询，并以 pipeline 将 URL、内联内容或授权文件转换为文档
 ---
 
 # nb-search 使用协议
@@ -9,8 +9,8 @@ description: 使用显式 lane 执行查询、异步作业与单页安全抓取
 
 - 公开能力只有 `search`、`fetch`、`capabilities`。
 - 对 `search`，模型负责判断查什么、是否拆分 query、选择哪个 lane；runtime 只执行显式选择或本机默认，不自动 fallback。
-- 对 `fetch`，不传 `lane` 时 runtime 按配置链串行尝试并返回首个通过质量门的文档；显式 `lane` 会绕过配置链。
-- `execution` 只改变 search 的交付方式，不改变 query、lane 或 plan。
+- 对 `fetch`，不传 `pipeline` 时 runtime 按 input kind 与 representation 匹配配置链；显式 `pipeline` 会绕过配置链。
+- `execution` 只改变交付方式，不改变 search lane、fetch pipeline 或 plan。
 - `capabilities` 用于选择、配置检查和诊断，不是每次查询前的强制步骤。
 
 ## `search`
@@ -46,16 +46,17 @@ description: 使用显式 lane 执行查询、异步作业与单页安全抓取
 
 ## `fetch`
 
-- 只传一个 `url`，可选一个 `lane`；不传 URL 数组、lane 数组或 preset。
-- 不传 `lane` 时按 `capabilities.fetch.chain` 的顺序串行尝试；显式 `lane` 只调用该 lane。
-- 403、429、5xx、transport 失败或质量门失败可进入下一 lane；`FETCH_BLOCKED`、404、410、`FETCH_CONTENT_TYPE_REJECTED` 会终止。
+- 使用 `run | get | read | cancel` action；`run` 的 `source` 是 `url | inline_text | inline_bytes | file`，`representation` 默认为 `markdown`。
+- 不传 `pipeline` 时按 `capabilities.fetch.chains` 匹配并串行尝试；显式 `pipeline` 只调用该 pipeline。
+- file 与 inline source 只能进入 `egress: none` pipeline；file 必须使用 capabilities 暴露的 scope id 和 scope 内相对路径。
+- 403、429、5xx、transport 失败或质量门失败可进入下一 pipeline；`FETCH_BLOCKED`、404、410、`FETCH_CONTENT_TYPE_REJECTED` 会终止。
 - `direct.fetch` 只提供受限文本抓取和确定性 HTML→text，不代表浏览器渲染或高保真版面还原。
-- 成功内容位于 `documents`；每次尝试或跳过记录在 `lane_outcomes`，失败信息也会进入 `hints`，不会创建失败 document 占位。
-- 正式 SDK 不提供 DNS/request 替换或连接地址重映射；生产抓取只连接通过校验的公网 IP。
+- 成功内容位于 `documents`；每次尝试或跳过记录在 `lane_outcomes`，document 同时报告 `representation` 与 source `media_type`。
+- async 必须提供稳定的 `idempotency_key`，随后以 fetch 的 `get/read/cancel` action 管理 job。
 
 ## `capabilities`
 
-- 静态查看 query/fetch lane、output schema、有效 execution modes、availability、preset 和运行上限。
+- 静态查看 query lane、fetch pipeline descriptor、chains、inputs、有效 execution modes、availability 和运行上限。
 - 结果不进行网络健康探测，也不应被用作 runtime 自动选路输入。
 
 ## 禁止模式

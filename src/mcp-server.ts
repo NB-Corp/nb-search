@@ -1,21 +1,21 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { capabilitiesInputSchema, fetchInputSchema, searchInputSchema } from './contracts.ts';
+import { capabilitiesInputSchema, fetchActionInputSchema, fetchInputSchema, searchInputSchema } from './contracts.ts';
 import { publicError } from './errors.ts';
 import { createNbSearchRuntime } from './index.ts';
 import type { NbSearchRuntime } from './runtime.ts';
 
 const searchJsonSchema = { ...z.toJSONSchema(searchInputSchema, { target: 'draft-7', io: 'input' }), type: 'object' } as Tool['inputSchema'];
-const fetchJsonSchema = z.toJSONSchema(fetchInputSchema, { target: 'draft-7', io: 'input' }) as Tool['inputSchema'];
+const fetchJsonSchema = { ...z.toJSONSchema(fetchActionInputSchema, { target: 'draft-7', io: 'input' }), type: 'object' } as Tool['inputSchema'];
 const capabilitiesJsonSchema = z.toJSONSchema(capabilitiesInputSchema, { target: 'draft-7', io: 'input' }) as Tool['inputSchema'];
 
 export function createNbSearchMcpServer(runtime: NbSearchRuntime = createNbSearchRuntime()): Server {
   const server = new Server({ name: 'nb-search', version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     { name: 'search', description: 'Run or manage a query operation. Use action run/get/read/cancel. Results operations may use lanes or preset; typed operations require one lane. Execution defaults to sync; async requires idempotency_key.', inputSchema: searchJsonSchema },
-    { name: 'fetch', description: 'Fetch one HTTP(S) URL. Omit lane to run the configured serial fetch chain and return the first qualified document; provide lane to bypass the chain.', inputSchema: fetchJsonSchema },
-    { name: 'capabilities', description: 'Return the static query/fetch lane catalog and limits without network probes.', inputSchema: capabilitiesJsonSchema },
+    { name: 'fetch', description: 'Run or manage a source-to-document pipeline. Use action run/get/read/cancel; run accepts URL, inline text, inline bytes, or a scoped file and defaults to markdown.', inputSchema: fetchJsonSchema },
+    { name: 'capabilities', description: 'Return the static search lane and fetch pipeline catalog and limits without network probes.', inputSchema: capabilitiesJsonSchema },
   ] }));
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const input = request.params.arguments ?? {};

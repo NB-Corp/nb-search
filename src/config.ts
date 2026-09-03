@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import type { CanonicalConfigPatch, LaneConfig, ProviderInstanceConfig } from './config-schema.ts';
+import type { CanonicalConfigPatch, FetchChainConfig, LaneConfig, ProviderInstanceConfig } from './config-schema.ts';
 import { resolveConfiguration, type ResolvedConfiguration } from './config-sources.ts';
 import type { DirectFetchIo } from './fetch-security.ts';
 import { NbSearchError } from './errors.ts';
@@ -27,21 +27,21 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
   }
   const lanes: Record<string, LaneBinding> = {};
   for (const [id, lane] of Object.entries(resolved.config.lanes)) {
-    const instance = resolved.config.provider_instances[lane.provider_instance_id]!; const descriptor = registry.descriptor(instance.provider_id); const queryOperation = descriptor?.query_operations.find((item) => item.operation_id === lane.operation_id); const fetchOperation = descriptor?.fetch_operation?.operation_id === lane.operation_id ? descriptor.fetch_operation : undefined; const instancePorts = ports.get(lane.provider_instance_id); const queryProvider = instancePorts?.query[lane.operation_id]; const fetchProvider = fetchOperation === undefined ? undefined : instancePorts?.fetch; const issues: string[] = [];
+    const instance = resolved.config.provider_instances[lane.provider_instance_id]!; const descriptor = registry.descriptor(instance.provider_id); const queryOperation = descriptor?.query_operations.find((item) => item.operation_id === lane.operation_id); const fetchOperation = descriptor?.fetch_operations.find((item) => item.operation_id === lane.operation_id); const instancePorts = ports.get(lane.provider_instance_id); const queryProvider = instancePorts?.query[lane.operation_id]; const fetchProvider = instancePorts?.fetch[lane.operation_id]; const issues: string[] = [];
     if (descriptor === undefined) issues.push('LANE_NOT_REGISTERED'); else if (queryOperation === undefined && fetchOperation === undefined) issues.push('OPERATION_NOT_REGISTERED');
     if (!instance.enabled) issues.push('LANE_NOT_CONFIGURED');
     else if ((queryOperation !== undefined && queryProvider === undefined) || (fetchOperation !== undefined && fetchProvider === undefined)) issues.push(descriptor?.activation.endpoint === 'required' && instance.base_url === undefined ? 'ENDPOINT_NOT_CONFIGURED' : 'LANE_NOT_CONFIGURED');
     const ready = issues.length === 0;
     if (id === 'github.repositories' && (instance.credential_slot_id === undefined || resolved.secret_bindings.get(instance.credential_slot_id) === undefined) && ready) issues.push('RATE_LIMIT_UNAUTHENTICATED');
-    const builtIn = descriptor !== undefined && registry.isBuiltIn(instance.provider_id); const executionModes: QueryExecution[] = queryOperation === undefined || !ready ? [] : builtIn && queryOperation.built_in_async ? ['sync', 'async'] : ['sync'];
+    const builtIn = descriptor !== undefined && registry.isBuiltIn(instance.provider_id); const executionModes: QueryExecution[] = queryOperation !== undefined ? ready ? builtIn && queryOperation.built_in_async ? ['sync', 'async'] : ['sync'] : [] : fetchOperation !== undefined && ready ? builtIn ? [...fetchOperation.execution_modes] : fetchOperation.execution_modes.includes('sync') ? ['sync'] : [] : [];
     lanes[id] = { id, config: lane, instance, provider_id: instance.provider_id, built_in: builtIn, ...(queryOperation === undefined ? {} : { query_operation: queryOperation }), ...(fetchOperation === undefined ? {} : { fetch_operation: fetchOperation }), ...(queryProvider === undefined ? {} : { query_provider: queryProvider }), ...(fetchProvider === undefined ? {} : { fetch_provider: fetchProvider }), availability: ready ? 'ready' : 'unavailable', issues, execution_modes: executionModes };
   }
   validateLaneConfig(resolved.config.defaults, resolved.config.presets, lanes);
   return { home: resolve(resolved.config.home ?? '.'), jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')), retention_hours: resolved.config.retention_hours, log_level: resolved.config.log_level, resolved, registry, ports_by_instance: ports, lanes };
 }
-function validateLaneConfig(defaults: { search_lane?: string; fetch_chain?: readonly string[] }, presets: Readonly<Record<string, { lanes: readonly string[] }>>, lanes: Readonly<Record<string, LaneBinding>>): void {
+function validateLaneConfig(defaults: { search_lane?: string; fetch_chain?: readonly FetchChainConfig[] }, presets: Readonly<Record<string, { lanes: readonly string[] }>>, lanes: Readonly<Record<string, LaneBinding>>): void {
   for (const [id, lane] of Object.entries(lanes)) if (lane.query_operation === undefined && lane.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Lane ${id} does not reference a registered operation.`);
   if (defaults.search_lane !== undefined && lanes[defaults.search_lane]?.query_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.search_lane must reference a query operation.');
-  for (const laneId of defaults.fetch_chain ?? []) if (lanes[laneId]?.fetch_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.fetch_chain must reference fetch operations only.');
+  for (const chain of defaults.fetch_chain ?? []) for (const pipelineId of chain.pipelines) if (lanes[pipelineId]?.fetch_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.fetch_chain must reference fetch operations only.');
   for (const [name, preset] of Object.entries(presets)) for (const laneId of preset.lanes) { const binding = lanes[laneId]; if (binding?.query_operation?.output.channel !== 'results') throw new NbSearchError('CONFIGURATION_ERROR', `Preset ${name} must contain registered results lanes only.`); }
 }
