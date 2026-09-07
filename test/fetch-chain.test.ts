@@ -12,6 +12,13 @@ const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe('fetch serial lane chain', () => {
+  it('returns short marker-like content by default without calling the fallback', async () => {
+    let fallbackCalls = 0;
+    const app = await runtime(['a.fetch', 'b.fetch'], { a: async (url) => document(url, 'cf-challenge'), b: async (url) => { fallbackCalls += 1; return document(url, 'fallback'); } });
+    const result = await app.runtime.fetch({ action: 'run', source: { kind: 'url', url: 'https://example.com' } });
+    expect(result).toMatchObject({ status: 'succeeded', documents: [{ content: 'cf-challenge', source_lane: 'a.fetch' }], lane_outcomes: [{ lane: 'a.fetch', state: 'succeeded' }] });
+    expect(result.lane_outcomes).toHaveLength(1); expect(fallbackCalls).toBe(0);
+  });
   it('runs lanes in order and short-circuits after the first qualified document', async () => {
     const calls = { a: 0, b: 0, c: 0 }; const app = await runtime(['a.fetch', 'b.fetch', 'c.fetch'], {
       a: async (url) => { calls.a += 1; return document(url, 'a'.repeat(600)); },
@@ -82,7 +89,7 @@ type FetchBehavior = (url: string, signal: AbortSignal) => Promise<FetchProvider
 async function runtime(chain: string[], behaviors: Record<string, FetchBehavior> = {}, options: { quality?: { min_content_chars: number; blocked_markers: string[] }; disabled?: string[]; max_provider_calls?: number; retry_count?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'nb-search-fetch-chain-')); roots.push(root); const ids = [...new Set([...chain.map(prefix), ...Object.keys(behaviors)])]; const registrations = ids.map((id) => registration(id, behaviors[id])); const provider_instances: Record<string, { provider_id: string; enabled: boolean; options: {} }> = {}; const lanes: Record<string, { provider_instance_id: string; operation_id: string; latency: 'fast'; cost: 'free' }> = {};
   for (const id of ids) { provider_instances[`${id}.default`] = { provider_id: id, enabled: !(options.disabled ?? []).includes(id), options: {} }; lanes[`${id}.fetch`] = { provider_instance_id: `${id}.default`, operation_id: 'fetch', latency: 'fast', cost: 'free' }; }
-  const config: CanonicalConfigPatch = { home: root, jobs_root: join(root, 'jobs'), provider_instances, lanes, defaults: { fetch_chain: [{ input_kind: 'url', pipelines: chain }] }, execution: { retry_count: options.retry_count ?? 0, max_provider_calls: options.max_provider_calls ?? 64, fetch: { quality: options.quality ?? { min_content_chars: 500, blocked_markers: [] } } } };
+  const config: CanonicalConfigPatch = { home: root, jobs_root: join(root, 'jobs'), provider_instances, lanes, defaults: { fetch_chain: [{ input_kind: 'url', pipelines: chain }] }, execution: { retry_count: options.retry_count ?? 0, max_provider_calls: options.max_provider_calls ?? 64, fetch: { ...(options.quality === undefined ? {} : { quality: options.quality }) } } };
   return createRuntimeComposition({}, { cwd: root, homeDirectory: root, config, provider_registrations: registrations });
 }
 function registration(id: string, behavior: FetchBehavior | undefined): ProviderRegistration { return { descriptor: { provider_id: id, adapter_version: 'test-1', query_operations: [], fetch_operations: [{ operation_id: 'fetch', schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/plain'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', stages: [{ id: `${id}.fetch`, role: 'reader' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, create: () => ({ query: {}, fetch: { fetch: { name: id, async fetch(request) { if (request.source.kind !== 'url') throw new Error(); return await (behavior?.(request.source.url, request.signal) ?? Promise.resolve(document(request.source.url, 'default'.repeat(100), request.representation))); } } } }) }; }

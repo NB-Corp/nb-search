@@ -7,6 +7,8 @@ export interface HttpRequest {
   body?: unknown;
   response_type?: 'json' | 'text';
   max_response_bytes?: number;
+  /** Manual requests must never follow redirects, including custom credential headers and POST bodies. */
+  redirect?: 'manual' | 'follow';
   signal: AbortSignal;
 }
 export interface HttpResponse<T = unknown> { status: number; body: T; headers?: Readonly<Record<string, string>> }
@@ -35,10 +37,15 @@ export class FetchJsonTransport implements HttpTransport {
           body: typeof request.body === 'string' ? request.body : JSON.stringify(request.body),
         }),
         signal: request.signal,
+        ...(request.redirect === undefined ? {} : { redirect: request.redirect }),
       });
     } catch (error) {
       if (request.signal.aborted) throw error;
       throw new NbSearchError('PROVIDER_UNAVAILABLE', 'Provider connection failed.', true, undefined, { cause: error });
+    }
+    if (request.redirect === 'manual' && response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new NbSearchError('PROVIDER_UNAVAILABLE', 'Provider redirect was rejected.', false);
     }
     const headers = Object.fromEntries(response.headers.entries());
     const text = request.max_response_bytes === undefined

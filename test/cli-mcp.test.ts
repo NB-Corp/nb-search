@@ -15,13 +15,14 @@ describe('three-capability CLI', () => {
     const calls = [
       ['search', 'query', '--lane', 'exa.search'],
       ['search', 'run', 'one', '--query', 'two', '--lanes', 'exa.search,tavily.search', '--execution', 'async', '--idempotency-key', 'key'],
-      ['search', 'get', jobId],
-      ['search', 'read', jobId, '--cursor', 'cursor', '--page-size', '2'],
-      ['search', 'cancel', jobId],
+      ['--profile', 'local', 'search', 'get', jobId],
+      ['--profile', 'local', 'search', 'read', jobId, '--cursor', 'cursor', '--page-size', '2'],
+      ['--profile', 'local', 'search', 'cancel', jobId],
       ['fetch', 'https://example.com', '--pipeline', 'direct.fetch'],
       ['capabilities'],
     ] as const;
-    for (const argv of calls) expect(await runCli(argv, captureIo(), () => runtime)).toBe(0);
+    const exits = [4, 7, 7, 7, 0, 0, 0];
+    for (const [index, argv] of calls.entries()) expect(await runCli(argv, captureIo(), () => runtime)).toBe(exits[index]);
     expect(runtime.search).toHaveBeenNthCalledWith(1, { action: 'run', query: 'query', lane: 'exa.search' });
     expect(runtime.search).toHaveBeenNthCalledWith(2, { action: 'run', query: ['one', 'two'], lanes: ['exa.search', 'tavily.search'], execution: 'async', idempotency_key: 'key' });
     expect(runtime.search).toHaveBeenNthCalledWith(3, { action: 'get', job_id: jobId });
@@ -36,13 +37,13 @@ describe('three-capability CLI', () => {
     for (const command of ['answer', 'deep', 'research', 'list']) {
       const io = captureIo();
       expect(await runCli([command], io, () => runtime)).toBe(2);
-      expect(JSON.parse(io.stderr.value)).toMatchObject({ error: { code: 'INVALID_INPUT', message: `Unknown command: ${command}.` } });
+      expect(JSON.parse(io.stderr.value)).toMatchObject({ error: { code: 'INVALID_INPUT', message: 'Unknown command. Expected search, fetch, or capabilities.' } });
     }
     const help = captureIo();
     expect(await runCli(['--help'], help, () => runtime)).toBe(0);
-    expect(help.stdout.value).toContain('nb-search search');
-    expect(help.stdout.value).toContain('nb-search fetch');
-    expect(help.stdout.value).toContain('nb-search capabilities');
+    expect(help.stdout.value).toContain('nb-search [--profile NAME] search');
+    expect(help.stdout.value).toContain('nb-search [--profile NAME] fetch');
+    expect(help.stdout.value).toContain('nb-search [--profile NAME] capabilities');
     expect(help.stdout.value).not.toMatch(/nb-search (answer|deep|research|list)\b/);
   });
 });

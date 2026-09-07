@@ -17,6 +17,9 @@ export interface AppConfiguration { home: string; jobs_root: string; retention_h
 export interface LoadConfigurationOptions { config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; test_only_direct_fetch_io?: DirectFetchIo; test_only_browser_render_io?: BrowserRenderIo; cwd?: string; homeDirectory?: string; now?: () => Date }
 export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const resolved = resolveConfiguration({ env, ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.homeDirectory === undefined ? {} : { homeDirectory: options.homeDirectory }) });
+  return configurationFromResolved(resolved, transport, options);
+}
+export function configurationFromResolved(resolved: ResolvedConfiguration, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const builtIns = options.test_only_direct_fetch_io === undefined && options.test_only_browser_render_io === undefined ? builtInProviderRegistrations() : builtInProviderRegistrationsForInternalTest(options.test_only_direct_fetch_io, options.test_only_browser_render_io);
   const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>();
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances)) {
@@ -41,7 +44,16 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
   validateLaneConfig(resolved.config.defaults, resolved.config.presets, lanes);
   return { home: resolve(resolved.config.home ?? '.'), jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')), retention_hours: resolved.config.retention_hours, log_level: resolved.config.log_level, resolved, registry, ports_by_instance: ports, lanes };
 }
-function validateLaneConfig(defaults: { search_lane?: string; fetch_chain?: readonly FetchChainConfig[] }, presets: Readonly<Record<string, { lanes: readonly string[] }>>, lanes: Readonly<Record<string, LaneBinding>>): void {
+export function validateConfigurationSemantics(config: import('./config-schema.ts').CanonicalConfig): void {
+  const registrations = builtInProviderRegistrations(); const registry = new ProviderRegistry(registrations);
+  for (const [id, instance] of Object.entries(config.provider_instances)) if (instance.enabled) registrations.find((item) => item.descriptor.provider_id === instance.provider_id)?.validate?.(id, instance);
+  const lanes = Object.fromEntries(Object.entries(config.lanes).map(([id, lane]) => {
+    const provider = config.provider_instances[lane.provider_instance_id]?.provider_id;
+    return [id, { query_operation: provider === undefined ? undefined : registry.operation(provider, lane.operation_id), fetch_operation: provider === undefined ? undefined : registry.fetchOperation(provider, lane.operation_id) }];
+  }));
+  validateLaneConfig(config.defaults, config.presets, lanes);
+}
+function validateLaneConfig(defaults: { search_lane?: string; fetch_chain?: readonly FetchChainConfig[] }, presets: Readonly<Record<string, { lanes: readonly string[] }>>, lanes: Readonly<Record<string, Pick<LaneBinding, 'query_operation' | 'fetch_operation'>>>): void {
   for (const [id, lane] of Object.entries(lanes)) if (lane.query_operation === undefined && lane.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Lane ${id} does not reference a registered operation.`);
   if (defaults.search_lane !== undefined && lanes[defaults.search_lane]?.query_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.search_lane must reference a query operation.');
   for (const chain of defaults.fetch_chain ?? []) for (const pipelineId of chain.pipelines) if (lanes[pipelineId]?.fetch_operation === undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'defaults.fetch_chain must reference fetch operations only.');

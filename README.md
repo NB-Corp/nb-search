@@ -2,6 +2,8 @@
 
 `@nb-corp/nb-search` is a deterministic query-lane runtime with three public capabilities: `search`, `fetch`, and `capabilities`.
 
+For full documentation, tutorials, and configuration guides, visit the [documentation site](https://nb-corp.github.io/nb-search/) (or browse the source documentation locally starting at [`website/guide/quickstart.md`](website/guide/quickstart.md)).
+
 For `search`, the caller selects lanes and the runtime does not inspect a query to choose an engine, replace an unavailable lane, or run an unselected fallback. Selecting `execution: "async"` changes delivery only; it does not change the lane or query plan. For `fetch`, the caller supplies a URL, inline text, inline bytes, or a scoped file; omitting `pipeline` runs the matching configured chain, while an explicit `pipeline` bypasses it.
 
 ## Requirements
@@ -9,8 +11,13 @@ For `search`, the caller selects lanes and the runtime does not inspect a query 
 - Node.js 24.15.0 or newer
 - pnpm 10.33.0 when building from source
 
+### TypeScript Consumer Compatibility
+
+Validated consumer builds use TypeScript with `skipLibCheck: true`. Compiling against packaged type definitions under TypeScript 6.0.2 with full declaration re-checking (`skipLibCheck: false`) produces variance diagnostics (TS2636) within bundled internal Zod type declarations. Enabling `skipLibCheck: true` skips third-party declaration checking without disabling strict type checking in your own application code. Projects requiring strict full dependency declaration checking should evaluate this compatibility constraint before adoption.
+
 ```sh
 pnpm install
+pnpm build
 pnpm typecheck
 pnpm test
 pnpm smoke
@@ -67,7 +74,7 @@ The built-in configuration has no default search lane. A search call without `la
 | `tavily.synthesis` | typed (`nb-search.synthesis@1`) | `NB_SEARCH_TAVILY_API_KEY` |
 | `zhipu.search` | results | `NB_SEARCH_ZHIPU_API_KEY` |
 
-All built-in search operations advertise both sync and async execution when configured and available.
+All built-in search operations advertise both sync and async execution on default runtime instances when configured and available (custom `http_transport` injection restricts an instance to sync).
 
 ### Built-in fetch pipelines
 
@@ -213,22 +220,55 @@ const registration: ProviderRegistration = {
 const runtime = createNbSearchRuntime({ provider_registrations: [registration] });
 ```
 
-## CLI and MCP
+### Trusted host HTTP transport
 
-```sh
-nb-search search "query" --lane exa.search
-nb-search search run "facet one" --query "facet two" --preset cross-check
-nb-search search run "brief" --lane gma.research --execution async --idempotency-key run-1
-nb-search search get <job_id>
-nb-search search read <job_id> --page-size 8
-nb-search search cancel <job_id>
-nb-search fetch "https://example.com" --pipeline direct.fetch --representation markdown
-nb-search fetch get <job_id>
-nb-search fetch read <job_id> --page-size 8
-nb-search fetch cancel <job_id>
-nb-search capabilities
+In-process hosts can supply an audited `http_transport` object implementing `HttpTransport.send` (`HttpRequest`, `HttpResponse`, `HttpTransport`, and `ResponseLimitError` are exported from the package root). The injected transport handles provider adapter HTTP calls (such as Exa or Grok Multi-Agent) through its own boundaries, redirect rules, and byte limits. Direct HTTP, wayback acquisition, browser render, and custom provider IO may use independent paths. Public transport injection disables detached async execution on that instance (omitting effective async modes and rejecting async run requests with `LANE_EXECUTION_UNSUPPORTED`), while sync operations and local get/read/cancel semantics remain intact. See `docs/model-facing-lane-runtime.md` for the contract specification.
+
+## Remote SDK
+
+```ts
+import { createNbSearchRemoteClient, NbSearchRemoteError } from '@nb-corp/nb-search';
+
+const remote = createNbSearchRemoteClient({
+  base_url: 'https://your-search-service.example/',
+  access_key: process.env.NB_SEARCH_SERVICE_TOKEN!
+});
+const catalog = await remote.capabilities();
+const result = await remote.search({ action: 'run', query: 'public research', lane: 'exa.search' });
 ```
 
-CLI results are JSON on stdout. The stdio MCP server exposes exactly three tools: `search`, `fetch`, and `capabilities`. MCP requires explicit `search.action` and `fetch.action`; CLI shorthands normalize an unqualified query or URL to `action: "run"`. The SDK also accepts `{ url }` as the narrow fetch-run convenience form.
+This is a callable HTTP client, not a hosted service. HTTP protocol 1 is independent of result schema 3.0. The client validates input/output, bounds streaming responses, honors AbortSignal/deadlines, rejects redirects, and never automatically retries or falls back to local execution. HTTP 200 business failures resolve as envelopes; authentication/rate-limit/transport/protocol failures reject with `NbSearchRemoteError`. Remote v1 fetch accepts URLs only, rejecting local file/inline input before IO. Service-side identity, job ACL, billing, and deployment remain service responsibilities; see `docs/remote-protocol.md`.
 
-See `SKILL.md` for the model-use protocol and `docs/model-facing-lane-runtime.md` for the implementation contract summary.
+## CLI and MCP
+
+From a built checkout or package, no global installation or PATH command is required:
+
+```sh
+node scripts/nb-search.mjs --version
+node scripts/nb-search.mjs capabilities
+node scripts/nb-search.mjs search "query" --lane exa.search
+node scripts/nb-search.mjs search "brief" --lane gma.research --execution async --idempotency-key run-1 --wait 240000
+node scripts/nb-search.mjs search get <job_id>
+node scripts/nb-search.mjs search read <job_id> --all
+node scripts/nb-search.mjs search read <job_id> --page-size 8
+node scripts/nb-search.mjs search cancel <job_id>
+node scripts/nb-search.mjs fetch "https://example.com" --pipeline direct.fetch --representation markdown
+```
+
+An installed `nb-search` bin accepts the same arguments. In an npm consumer project, use `node node_modules/@nb-corp/nb-search/scripts/nb-search.mjs` or `npx nb-search`; in a source checkout, use `node scripts/nb-search.mjs`. The official skill mounts the entire package root via `node "<skill_dir>/scripts/nb-search.mjs"`; root and nested skill entrypoints ship with the package and require the built package structure. Global `--profile NAME` precedes the business command; omitted profile is local. Full `--stdin` JSON supports Unicode/option-like queries and local inline/file fetch. Local follow-up job actions default to local; remote actions require an explicit profile. `read --all` verifies and decodes the entire artifact to JSON; raw read keeps its original page envelope. Waiting is bounded and never cancels a job.
+
+CLI results are JSON on stdout; diagnostics use stderr. Exit codes are **0 succeeded, 2 failed, 3 partial, 4 empty, 5 timeout, 6 cancelled, 7 pending**. Cancel acknowledgement returns 0 without claiming completed cancellation. These replace the old CLI behavior that often returned 0 for empty, partial, or unfinished work.
+
+CLI-only protected secret files populate a private env copy for runtime and worker; existing process env entries win, including empty values. The SDK/MCP do not implicitly load these files. Migration is explicit, offline, conflict-preserving, and does not modify the legacy source:
+
+```sh
+node scripts/nb-search.mjs --import-search-layer --dry-run
+node scripts/nb-search.mjs --import-search-layer --apply
+node scripts/nb-search.mjs --doctor
+```
+
+Apply is a separate operator choice after inspecting dry-run. Old Grok Chat Completions does not prove Responses compatibility and stays disabled. GMA explicitly supports chat_completions or messages relay mode through provider options.api_mode; valid known modes are compatible-but-unverified, while unknown modes and endpoint suffix conflicts remain disabled. This adds no automatic protocol switching or generic native Anthropic guarantee. GMA adapter version 2 requires existing version-1 in-flight jobs to finish before upgrade. A partial migration is not full legacy parity or live provider verification.
+
+Ordinary local readers do not take a persistent global lock: concurrent reads, searches, and fetches proceed without blocking one another. Readers capture a consistent configuration and credential snapshot, while writers take a coordinated transaction marker during publication. An interrupted or failed write leaves the configuration safely blocked until a valid pair is restored. Detailed profiles, stdin, limits, migration/ACL recovery, and output examples are in `docs/cli.md`.
+
+The stdio MCP server still exposes exactly `search`, `fetch`, and `capabilities`. MCP requires explicit action fields; CLI shorthands normalize an unqualified query/URL to run. The SDK also accepts `{ url }` as the narrow fetch-run convenience form. See `SKILL.md` for the model-use protocol and `docs/model-facing-lane-runtime.md` for the local runtime contract.

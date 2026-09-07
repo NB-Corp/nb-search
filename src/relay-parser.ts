@@ -3,6 +3,23 @@ import { NbSearchError } from './errors.ts';
 export const RELAY_RESPONSE_MAX_BYTES = 1_048_576;
 export const RELAY_CONTENT_MAX_BYTES = 262_144;
 
+export function parseRelayMessagesContent(body: string, headers: Readonly<Record<string, string>> | undefined, provider: string): string {
+  if (!body || Buffer.byteLength(body, 'utf8') > RELAY_RESPONSE_MAX_BYTES) throw relayMalformed(provider, !!body);
+  if (headerValue(headers, 'content-type')?.toLowerCase().includes('text/event-stream')) throw relayMalformed(provider);
+  const envelope = parseJson(body, provider);
+  if (!isRecord(envelope) || !Array.isArray(envelope['content'])) throw relayMalformed(provider);
+  let content = '';
+  for (const block of envelope['content']) {
+    if (!isRecord(block)) throw relayMalformed(provider);
+    if (block['type'] !== 'text') continue;
+    if (typeof block['text'] !== 'string') throw relayMalformed(provider);
+    content += block['text'];
+    if (Buffer.byteLength(content, 'utf8') > RELAY_CONTENT_MAX_BYTES) throw relayMalformed(provider, true);
+  }
+  if (!content.trim()) throw relayMalformed(provider);
+  return content;
+}
+
 export function parseRelayChatContent(
   body: string,
   headers: Readonly<Record<string, string>> | undefined,

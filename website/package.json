@@ -1,0 +1,20 @@
+{
+  "name": "@nb-search/website",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "check": "node scripts/check-site.mjs",
+    "screenshot": "node scripts/screenshot.cjs"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

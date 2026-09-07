@@ -3,6 +3,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@model
 import { z } from 'zod';
 import { capabilitiesInputSchema, fetchActionInputSchema, fetchInputSchema, searchInputSchema } from './contracts.ts';
 import { publicError } from './errors.ts';
+import { PACKAGE_VERSION } from './version.ts';
 import { createNbSearchRuntime } from './index.ts';
 import type { NbSearchRuntime } from './runtime.ts';
 
@@ -11,7 +12,7 @@ const fetchJsonSchema = { ...z.toJSONSchema(fetchActionInputSchema, { target: 'd
 const capabilitiesJsonSchema = z.toJSONSchema(capabilitiesInputSchema, { target: 'draft-7', io: 'input' }) as Tool['inputSchema'];
 
 export function createNbSearchMcpServer(runtime: NbSearchRuntime = createNbSearchRuntime()): Server {
-  const server = new Server({ name: 'nb-search', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'nb-search', version: PACKAGE_VERSION }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     { name: 'search', description: 'Run or manage a query operation. Use action run/get/read/cancel. Results operations may use lanes or preset; typed operations require one lane. Execution defaults to sync; async requires idempotency_key.', inputSchema: searchJsonSchema },
     { name: 'fetch', description: 'Run or manage a source-to-document pipeline. Use action run/get/read/cancel; run accepts URL, inline text, inline bytes, or a scoped file and defaults to markdown.', inputSchema: fetchJsonSchema },

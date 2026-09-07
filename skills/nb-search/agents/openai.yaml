@@ -1,4 +1,4 @@
 interface:
   display_name: "NB Search"
-  short_description: "Explicit lane search, fetch, and capability runtime"
-  default_prompt: "Use $nb-search to run explicit search lanes, typed query outputs, async jobs, or a safe single-URL fetch."
+  short_description: "Search the web, read sources, and run research"
+  default_prompt: "Use $nb-search to find verified facts and read original sources."

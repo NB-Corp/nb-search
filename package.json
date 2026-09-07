@@ -1,6 +1,6 @@
 {
   "name": "@nb-corp/nb-search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
   "homepage": "https://github.com/NB-Corp/nb-search#readme",
@@ -33,13 +33,20 @@
     "CHANGELOG.md",
     "SKILL.md",
     ".env.example",
-    "docs/model-facing-lane-runtime.md"
+    "docs/model-facing-lane-runtime.md",
+    "docs/remote-protocol.md",
+    "docs/cli.md",
+    "scripts/nb-search.mjs",
+    "skills/nb-search"
   ],
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && vitest run",
     "smoke": "node scripts/smoke.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "docs:build": "pnpm --dir website build",
+    "docs:check": "pnpm --dir website check",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 - 2026-09-08
+
+### Added
+
+- Added the callable remote client SDK (`createNbSearchRemoteClient`) and HTTP protocol v1 client contract with strict response validation, bounded streams, non-retry policy, and URL-only fetch boundaries.
+- Added formal CLI profiles, `--stdin` single UTF-8 JSON inputs, `--wait` budget execution, complete artifact reconstruction via `read --all`, default local follow-ups with explicit profile requirement for remote jobs (`get`, `read`, `cancel`), and standardized exit codes (`0`, `2`, `3`, `4`, `5`, `6`, `7`).
+- Added official skill launcher support for package root and nested `skills/nb-search` structures.
+- Added explicit offline migration tooling (`--import-search-layer --dry-run` and `--apply`) with separate protected credential storage (`secrets.json` and `remote-secrets.json`).
+- Added GMA `messages` relay contract and strict HTTP 3xx redirect rejection to protect credentials from unintended forwarding.
+- Added concurrent reader snapshot coordination, safe writer transaction markers, and lane purpose catalog guidance (`src/lane-guidance.ts` and `scripts/lane-guidance.mjs`).
+- Added trusted in-process `http_transport` injection option to `createNbSearchRuntime` with root exports for `HttpRequest`, `HttpResponse`, `HttpTransport`, and `ResponseLimitError`.
+- Added VitePress documentation site framework, continuous integration checks, and release readiness verification tooling.
+
+### Changed
+
+- Simplified local environment admission by removing redundant ACL/owner/mode checks and initialization barriers while preserving standard file creation modes and symlink/junction support.
+- Updated default fetch quality rules to `min_content_chars: 0` and `blocked_markers: []`, and raised default synchronous `max_inline_bytes` to 16 MiB.
+- Updated GMA adapter to version 2; in-flight version-1 jobs must complete before upgrade.
+- Configuration schema `4` and result schema `3.0` remain unchanged; HTTP protocol `1` has its own version.
+- Local readers no longer require a persistent global command lock; follow-up job commands default to the local connection.
+
 ## 0.2.0 - 2026-09-04
 
 ### Added

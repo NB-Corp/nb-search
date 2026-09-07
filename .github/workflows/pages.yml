@@ -1,0 +1,118 @@
+name: Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - website/**
+      - docs/**
+      - README.md
+      - CHANGELOG.md
+      - package.json
+      - .github/workflows/pages.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        with:
+          version: 10.33.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+          cache-dependency-path: website/pnpm-lock.yaml
+
+      - name: Install website dependencies
+        run: pnpm --dir website install --frozen-lockfile --ignore-scripts
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      # check owns the VitePress build, 19-page contract, /nb-search/ base,
+      # and forbidden-path checks. The inline href/src scan below is retained
+      # as an additional generated-asset link check.
+      - name: Build and check website
+        run: pnpm --dir website check
+
+      - name: Verify generated links and build boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          import { access, readdir } from 'node:fs/promises';
+          import { join, relative, resolve } from 'node:path';
+
+          const root = resolve('website/.vitepress/dist');
+          const localBase = '/nb-search/';
+          const files = [];
+          async function visit(directory) {
+            for (const entry of await readdir(directory, { withFileTypes: true })) {
+              const path = join(directory, entry.name);
+              if (entry.isDirectory()) await visit(path);
+              else if (entry.isFile()) files.push(path);
+            }
+          }
+          await visit(root);
+          if (!files.some((path) => path.endsWith('.html'))) throw new Error('The Pages artifact contains no HTML documents.');
+          const available = new Set(files.map((path) => resolve(path)));
+          const references = [];
+          for (const path of files.filter((item) => item.endsWith('.html'))) {
+            const text = await (await import('node:fs/promises')).readFile(path, 'utf8');
+            for (const match of text.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)) references.push({ source: path, value: match[1] });
+          }
+          for (const { source, value } of references) {
+            if (!value || value.startsWith('#') || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value)) continue;
+            let target = value.split('#', 1)[0].split('?', 1)[0];
+            if (target.startsWith(localBase)) target = target.slice(localBase.length);
+            else if (target.startsWith('/')) target = target.slice(1);
+            try { target = decodeURIComponent(target); } catch { throw new Error(`Invalid encoded link ${value} in ${relative(root, source)}`); }
+            if (target.includes('\0')) throw new Error(`Invalid link ${value} in ${relative(root, source)}`);
+            const candidates = target === ''
+              ? ['index.html']
+              : target.endsWith('/')
+                ? [`${target}index.html`]
+                : [target, `${target}.html`, `${target}/index.html`];
+            if (!candidates.some((candidate) => available.has(resolve(root, candidate)))) throw new Error(`Broken local link ${value} in ${relative(root, source)}`);
+          }
+          await access(root);
+          NODE
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: website/.vitepress/dist
+
+  deploy:
+    name: Deploy documentation
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
