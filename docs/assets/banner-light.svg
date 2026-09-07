@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" fill="none">
+  <title>nb-search — Give your agent a wider world.</title>
+  <desc>A unified search, extraction and research interface, connected to multiple sources.</desc>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" stroke="#d7e1d4" stroke-width="1"/></pattern>
+    <radialGradient id="glow"><stop stop-color="#b9f566" stop-opacity=".12"/><stop offset="1" stop-color="#b9f566" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="440" rx="24" fill="#f6f8f0"/>
+  <rect x="705" width="495" height="440" rx="24" fill="url(#grid)"/>
+  <ellipse cx="952" cy="212" rx="248" ry="210" fill="url(#glow)"/>
+  <path d="M48 43H66V61H48z" stroke="#4a701c" stroke-width="3"/>
+  <path d="M61 56L71 66" stroke="#4a701c" stroke-width="3" stroke-linecap="round"/>
+  <text x="87" y="63" fill="#13221b" font-family="Arial,Helvetica,sans-serif" font-size="27" font-weight="700" letter-spacing="-1">nb-search</text>
+  <text x="1147" y="56" text-anchor="end" fill="#6d8374" font-family="Consolas,monospace" font-size="13" letter-spacing="2">THE WEB, WITH CONTEXT</text>
+  <text x="48" y="164" fill="#13221b" font-family="Arial,Helvetica,sans-serif" font-size="72" font-weight="700" letter-spacing="-3">Give your agent</text>
+  <text x="48" y="244" fill="#4a701c" font-family="Arial,Helvetica,sans-serif" font-size="72" font-weight="700" letter-spacing="-3">a wider world.</text>
+  <text x="51" y="296" fill="#5d6b60" font-family="Arial,Helvetica,sans-serif" font-size="23">Search the web. Read sources. Run research.</text>
+  <path d="M50 353H677" stroke="#c9d5c9"/>
+  <text x="51" y="389" fill="#506b53" font-family="Consolas,monospace" font-size="15" letter-spacing="2">TYPESCRIPT SDK  /  CLI  /  MCP  /  SKILLS</text>
+  <g stroke="#789473" stroke-width="1.5">
+    <path d="M933 214L800 128M933 214L1073 126M933 214L1091 298M933 214L791 299"/>
+    <circle cx="933" cy="214" r="109" stroke-dasharray="3 9"/>
+  </g>
+  <g font-family="Consolas,monospace" font-size="14" fill="#506b53">
+    <rect x="736" y="99" width="127" height="49" rx="12" fill="#e5ece1" stroke="#9fb29a"/><text x="800" y="129" text-anchor="middle">WEB SEARCH</text>
+    <rect x="1016" y="99" width="140" height="49" rx="12" fill="#e5ece1" stroke="#9fb29a"/><text x="1086" y="129" text-anchor="middle">DOCUMENTS</text>
+    <rect x="731" y="281" width="130" height="49" rx="12" fill="#e5ece1" stroke="#9fb29a"/><text x="796" y="311" text-anchor="middle">RESEARCH</text>
+    <rect x="1022" y="281" width="134" height="49" rx="12" fill="#e5ece1" stroke="#9fb29a"/><text x="1089" y="311" text-anchor="middle">CODE + DOCS</text>
+  </g>
+  <rect x="869" y="160" width="128" height="108" rx="26" fill="#c3ff72"/>
+  <circle cx="925" cy="205" r="20" stroke="#13221b" stroke-width="7"/>
+  <path d="M940 220L961 240" stroke="#13221b" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="866" cy="239" r="5" fill="#4a701c"/><circle cx="1000" cy="182" r="4" fill="#4a701c"/>
+  <text x="940" y="391" text-anchor="middle" fill="#6d8374" font-family="Consolas,monospace" font-size="14">MANY SOURCES. ONE INTERFACE.</text>
+</svg>

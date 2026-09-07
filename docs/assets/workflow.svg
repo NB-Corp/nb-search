@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="252" viewBox="0 0 1200 252" fill="none">
+  <title>One runtime, three capabilities, many sources</title>
+  <desc>Your AI assistant or application calls search, fetch and capabilities through nb-search. Sources include Exa, Tavily, Brave, Grok, Jina and custom providers. Outputs are structured results, documents and research.</desc>
+  <rect x="1" y="1" width="1198" height="250" rx="20" fill="#101819" stroke="#293a35"/>
+  <g font-family="Consolas,monospace" font-size="13" letter-spacing="2" fill="#8eaa9f"><text x="37" y="39">01 / YOUR WORKFLOW</text><text x="380" y="39">02 / ONE INTERFACE</text><text x="820" y="39">03 / YOUR SOURCES</text></g>
+  <rect x="36" y="67" width="243" height="115" rx="13" fill="#1b2623" stroke="#3d554b"/>
+  <text x="58" y="104" fill="#eef5e8" font-family="Arial,Helvetica,sans-serif" font-size="19" font-weight="700">Your agent. Your app.</text>
+  <text x="58" y="135" fill="#a3b7ac" font-family="Consolas,monospace" font-size="15">SDK · CLI · MCP · Skill</text>
+  <path d="M300 123H350M341 115L350 123L341 131" stroke="#c3ff72" stroke-width="2"/>
+  <rect x="375" y="67" width="346" height="115" rx="13" fill="#c3ff72"/>
+  <text x="399" y="105" fill="#14201b" font-family="Arial,Helvetica,sans-serif" font-size="28" font-weight="700">nb-search</text>
+  <text x="399" y="140" fill="#263c20" font-family="Consolas,monospace" font-size="17">search  /  fetch  /  capabilities</text>
+  <path d="M740 123H790M781 115L790 123L781 131" stroke="#c3ff72" stroke-width="2"/>
+  <text x="820" y="90" fill="#eef5e8" font-family="Arial,Helvetica,sans-serif" font-size="21">Exa · Tavily · Brave · Grok</text>
+  <text x="820" y="122" fill="#eef5e8" font-family="Arial,Helvetica,sans-serif" font-size="21">Jina · Firecrawl · GitHub</text>
+  <text x="820" y="156" fill="#a3b7ac" font-family="Arial,Helvetica,sans-serif" font-size="17">and your own provider integrations</text>
+  <path d="M36 206H1163" stroke="#293a35"/>
+  <text x="37" y="231" fill="#a3b7ac" font-family="Consolas,monospace" font-size="14">STRUCTURED RESULTS + SOURCE LINKS</text>
+  <text x="1163" y="231" text-anchor="end" fill="#a3b7ac" font-family="Consolas,monospace" font-size="14">LOCAL RUNTIME OR YOUR CLOUD ENDPOINT</text>
+</svg>

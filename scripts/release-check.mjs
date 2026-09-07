@@ -23,6 +23,10 @@ const MAX_CAPTURE_BYTES = 256 * 1024;
 export const REQUIRED_FILES = [
   'package.json',
   'README.md',
+  'README.zh-CN.md',
+  'docs/assets/banner-dark.svg',
+  'docs/assets/banner-light.svg',
+  'docs/assets/workflow.svg',
   'CHANGELOG.md',
   'SKILL.md',
   '.env.example',

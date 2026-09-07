@@ -30,6 +30,8 @@
   "files": [
     "dist",
     "README.md",
+    "README.zh-CN.md",
+    "docs/assets",
     "CHANGELOG.md",
     "SKILL.md",
     ".env.example",
