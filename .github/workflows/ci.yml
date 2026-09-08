@@ -59,7 +59,18 @@ jobs:
         run: pnpm run typecheck
 
       - name: Test
-        run: pnpm test
+        # A file summary is lost when its worker exits; retain completed test names.
+        run: pnpm test --reporter=verbose
+
+      - name: Windows native crash diagnostics
+        if: failure() && runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node -p "JSON.stringify({node:process.version,undici:process.versions.undici,arch:process.arch})"
+          $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue
+          $crashes = $events | Where-Object { $_.Message -match 'node\.exe' }
+          if ($crashes) { $crashes | Format-List TimeCreated, Id, Message } else { Write-Output 'No recent node.exe Application Error event was recorded.' }
 
       - name: Smoke test
         run: pnpm run smoke
