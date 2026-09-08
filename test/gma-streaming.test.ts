@@ -1,9 +1,18 @@
 import { createServer, type Server } from 'node:http';
+import { writeSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GrokMultiAgentProvider } from '../src/providers.ts';
 import { parseRelayChatContent, parseRelayMessagesContent, RELAY_CONTENT_MAX_BYTES } from '../src/relay-parser.ts';
 import { FetchJsonTransport } from '../src/transport.ts';
+
+// Synchronous stderr markers survive a worker dying before Vitest flushes results.
+if (process.env['NB_SEARCH_TEST_DIAGNOSTICS'] === '1') {
+  const mark = (stage: string, name?: string) => writeSync(2, `[gma-streaming] ${JSON.stringify({ pid: process.pid, stage, name })}\n`);
+  mark('module-loaded');
+  beforeEach(({ task }) => { mark('test-start', `${task.suite?.name ?? ''} / ${task.name}`); });
+  afterEach(({ task }) => { mark('test-end', `${task.suite?.name ?? ''} / ${task.name}`); });
+}
 
 const value = JSON.stringify({ answer: '证据 🌍 café', results: [] });
 const event = (data: unknown, name?: string) => `${name ? `event: ${name}\r\n` : ''}data: ${JSON.stringify(data)}\r\n\r\n`;

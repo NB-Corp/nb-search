@@ -61,6 +61,8 @@ jobs:
       - name: Test
         # A file summary is lost when its worker exits; retain completed test names.
         run: pnpm test --reporter=verbose
+        env:
+          NB_SEARCH_TEST_DIAGNOSTICS: ${{ runner.os == 'Windows' && '1' || '0' }}
 
       - name: Windows native crash diagnostics
         if: failure() && runner.os == 'Windows'

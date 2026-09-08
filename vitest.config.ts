@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import './scripts/vitest-worker-diagnostics.mjs';
 
 export default defineConfig({
   test: {
