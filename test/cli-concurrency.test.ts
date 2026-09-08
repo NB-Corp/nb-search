@@ -79,7 +79,7 @@ describe('same-home real CLI concurrency', () => {
     const admitted = await Promise.all(Array.from({ length: 4 }, (_, i) => cli(env, ['fetch', '--stdin'], { action: 'run', execution: 'async', idempotency_key: `concurrent-${i}`, source: { kind: 'inline_text', media_type: 'text/plain', content: 'Local async evidence. '.repeat(40) }, pipeline: 'direct.local' })));
     const ids = admitted.flatMap((result) => { try { const value = JSON.parse(result.stdout); return typeof value.job?.job_id === 'string' ? [value.job.job_id as string] : []; } catch { return []; } });
     const followups = await Promise.all(ids.flatMap((id) => ['get', 'read', 'cancel'].map((action) => cli(env, ['--profile', 'local', 'fetch', action, id]))));
-    expect(summary(admitted)).toEqual(admitted.map(() => ({ code: 7, busy: false })));
+    expect(summary(admitted), JSON.stringify({ admitted, followups, jobs: diagnosticFiles(resolve(env['NB_SEARCH_HOME']!, 'jobs')) }, null, 2)).toEqual(admitted.map(() => ({ code: 7, busy: false })));
     expect(ids).toHaveLength(4);
     expect(followups.every((result) => [0, 6, 7].includes(result.code ?? -1) && !/busy|recovery/.test(result.stderr)), JSON.stringify(summary(followups))).toBe(true);
   }, 120000);
