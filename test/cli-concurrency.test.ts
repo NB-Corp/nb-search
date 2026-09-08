@@ -7,12 +7,27 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ensureHome, writeProtected } from '../src/cli-storage.ts';
 
 const homes: string[] = [];
-afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
+afterEach(async () => {
+  for (const parent of homes.splice(0)) {
+    // A cancel receipt (even terminal) does not mean its detached worker has exited.
+    // Wait for the existing test-only lifecycle trace before removing worker-owned files.
+    const trace = resolve(parent, 'worker-trace', 'lifecycle.ndjson');
+    await expect.poll(() => {
+      if (!existsSync(trace)) return [];
+      const lines = readFileSync(trace, 'utf8').split('\n'); lines.pop();
+      const events = lines.map((line) => JSON.parse(line) as { event: string; pid: number; worker_pid?: number });
+      const exited = new Set(events.filter((event) => event.event === 'worker-exit').map((event) => event.pid));
+      return events.filter((event) => event.event === 'worker-spawn' && event.worker_pid !== undefined && !exited.has(event.worker_pid)).map((event) => event.worker_pid);
+    }, { timeout: 15000, interval: 25, message: `Detached fixture workers must exit before cleanup: ${trace}` }).toEqual([]);
+    // The exit hook precedes OS handle release; retry only bounded transient filesystem failures.
+    rmSync(parent, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+}, 20000);
 function fixtureHome(base: string) {
   const parent = mkdtempSync(resolve('.test-concurrency-')); homes.push(parent); const home = resolve(parent, 'deep', 'nested', 'home'); ensureHome(home);
   writeProtected(resolve(home, 'config.json'), { schema_version: '4', provider_instances: { 'exa.default': { base_url: base } }, defaults: { search_lane: 'exa.search' }, execution: { retry_count: 0 } });
   writeProtected(resolve(home, 'secrets.json'), { schema_version: '1', values: { NB_SEARCH_EXA_API_KEY: 'fake-concurrent-key' } });
-  const env: NodeJS.ProcessEnv = { NB_SEARCH_HOME: home, NODE_OPTIONS: '--import=./test/fixtures/no-external.mjs' };
+  const env: NodeJS.ProcessEnv = { NB_SEARCH_HOME: home, NB_TEST_WORKER_TRACE_DIR: resolve(parent, 'worker-trace'), NODE_OPTIONS: '--import=./test/fixtures/no-external.mjs --import=./test/fixtures/worker-trace.mjs' };
   for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) if (process.env[name]) env[name] = process.env[name];
   return env;
 }
@@ -44,7 +59,6 @@ describe('same-home real CLI concurrency', () => {
   }, 60000);
   it('recursively initializes a completely missing home before four distinct concurrent async admissions', async () => {
     const env = fixtureHome('http://127.0.0.1:1'); const home = env['NB_SEARCH_HOME']!; rmSync(resolve(home, '..', '..'), { recursive: true, force: true });
-    env['NB_TEST_WORKER_TRACE_DIR'] = resolve(home, '..', '..', '..', 'worker-trace'); env['NODE_OPTIONS'] += ' --import=./test/fixtures/worker-trace.mjs';
     const results = await Promise.all(Array.from({ length: 4 }, (_, i) => cli(env, ['fetch', '--stdin'], { action: 'run', execution: 'async', idempotency_key: `missing-${i}`, pipeline: 'direct.local', source: { kind: 'inline_text', media_type: 'text/plain', content: 'New-home async data. '.repeat(40) } })));
     expect(summary(results)).toEqual(results.map(() => ({ code: 7, busy: false }))); const ids = results.map((result) => JSON.parse(result.stdout).job.job_id as string); expect(new Set(ids).size).toBe(4);
     expect(existsSync(home)).toBe(true); expect(existsSync(resolve(home, 'jobs'))).toBe(true); expect(existsSync(resolve(home, 'job-connections'))).toBe(true);
