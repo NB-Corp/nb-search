@@ -54,12 +54,14 @@ export class TavilyExtractFetchProvider implements FetchProvider {
   }
 }
 
+export function resolveExaContentsUrl(baseUrl?: string): string { return resolveOperationUrl(baseUrl ?? 'https://api.exa.ai', '/contents'); }
+
 export class ExaContentsFetchProvider implements FetchProvider {
   readonly name = 'exa' as const;
   readonly redactions: readonly string[];
   private readonly endpoint: string;
   constructor(private readonly options: RemoteFetchProviderOptions & { apiKey: string }) {
-    this.endpoint = options.baseUrl === undefined ? 'https://api.exa.ai/contents' : resolveOperationUrl(options.baseUrl, '/contents');
+    this.endpoint = resolveExaContentsUrl(options.baseUrl);
     this.redactions = [options.apiKey, this.endpoint];
   }
   async fetch(request: FetchProviderRequest): Promise<FetchProviderResult> {

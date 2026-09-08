@@ -3,7 +3,7 @@
 本指南介绍如何在本地准备运行环境、检查可用能力目录，并完成第一次搜索与抓取验证。
 
 ::: info 版本适用范围
-以下文档适用于 `@nb-corp/nb-search` `0.3.1` 及以上版本。
+以下文档适用于 `@nb-corp/nb-search` `0.4.0` 及以上版本。
 :::
 
 ## 环境要求
@@ -16,12 +16,12 @@
 ::: code-group
 
 ```bash [全局 CLI]
-npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
 ```bash [项目 SDK]
-npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 ```
 
 ```bash [从源码构建]

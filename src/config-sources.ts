@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { CONFIG_SCHEMA_VERSION, parseConfigPatch, parseResolvedConfig, stableFingerprint, type CanonicalConfig, type CanonicalConfigPatch, type ExecutionConfig, type ProviderInstanceConfig } from './config-schema.ts';
 import { NbSearchError } from './errors.ts';
 import { DEFAULT_GROK_MODEL } from './providers/grok-responses.ts';
@@ -86,13 +86,24 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
 export function resolveCapturedConfiguration(captured: { home: string; canonicalPath: string; canonical: CanonicalConfigPatch | undefined }, options: ResolveConfigurationOptions = {}): ResolvedConfiguration {
   const env = options.env ?? process.env; const { home, canonicalPath, canonical } = captured;
   const defaults = defaultConfiguration(home); const sources: CanonicalConfigPatch[] = [defaults]; let explicitSearchTimeout = false;
-  const addSource = (source: CanonicalConfigPatch): void => {
+  const moduleBases = new Map<string, string>();
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const addSource = (source: CanonicalConfigPatch, base = cwd): void => {
     const timeout = sourceSearchTimeout(source); if (timeout !== undefined) explicitSearchTimeout = timeout !== null;
+    for (const [id, instance] of Object.entries(source.provider_instances ?? {})) {
+      if (typeof instance?.options?.['module'] === 'string') moduleBases.set(id, base);
+    }
     sources.push(normalizeSearchTimeoutClear(source, defaults.execution));
   };
-  if (canonical !== undefined) addSource(parseConfigPatch(canonical, 'canonical configuration')); else if (nonempty(env['NB_SEARCH_CONFIG']) !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The explicitly selected canonical configuration was not found.');
+  if (canonical !== undefined) addSource(parseConfigPatch(canonical, 'canonical configuration'), dirname(canonicalPath)); else if (nonempty(env['NB_SEARCH_CONFIG']) !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The explicitly selected canonical configuration was not found.');
   addSource(environmentPatch(env)); if (options.config !== undefined) addSource(parseConfigPatch(options.config, 'host configuration')); if (options.overrides !== undefined) addSource(parseConfigPatch(options.overrides, 'runtime overrides'));
-  let merged: unknown = {}; for (const source of sources) merged = mergeValue(merged, source); const config = parseResolvedConfig(merged);
+  let merged: unknown = {}; for (const source of sources) merged = mergeValue(merged, source); const parsed = parseResolvedConfig(merged);
+  // Freeze resolved module locations, not worker-dependent relative paths.
+  const config: CanonicalConfig = { ...parsed, provider_instances: Object.fromEntries(Object.entries(parsed.provider_instances).map(([id, instance]) => {
+    const module = instance.options['module'];
+    return [id, instance.provider_id === 'script' && typeof module === 'string' && module.trim() !== ''
+      ? { ...instance, options: { ...instance.options, module: resolve(moduleBases.get(id) ?? cwd, module) } } : instance];
+  })) };
   const secrets = new Map<string, SecretBinding>(); for (const [slotId, slot] of Object.entries(config.credential_slots)) { const value = nonempty(env[slot.env]); if (value !== undefined) secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value, worker_grant: { kind: 'environment', name: slot.env } }); }
   const fingerprint = stableFingerprint(config); return { config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: secrets, canonical_path: canonicalPath, explicit_search_timeout_ms: explicitSearchTimeout };
 }

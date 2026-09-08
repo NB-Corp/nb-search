@@ -7,6 +7,9 @@ import { NbSearchError } from './errors.ts';
 
 export type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
 export { ResponseLimitError } from './transport.ts';
+export type { ScriptContext, ScriptRequest, ScriptResults, ScriptModule } from './providers/script.ts';
+export { resolveProviderOperation } from './provider-operation.ts';
+export type { ResolvedProviderOperation } from './provider-operation.ts';
 
 export { createNbSearchRemoteClient } from './remote-client.ts';
 export type { CreateNbSearchRemoteClientOptions } from './remote-client.ts';

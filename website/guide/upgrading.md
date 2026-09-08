@@ -4,18 +4,22 @@
 
 ## 版本适用说明
 
-本页说明针对 `@nb-corp/nb-search` `0.3.1` 及以上版本。在升级或排查兼容性前，请先检查本地安装的实际包版本并参阅 [CHANGELOG](/reference/changelog)。
+本页说明针对 `@nb-corp/nb-search` `0.4.0` 及以上版本。在升级或排查兼容性前，请先检查本地安装的实际包版本并参阅 [CHANGELOG](/reference/changelog)。
 
 CLI 或项目 SDK 均从官方 npm registry 更新：
 
 ```bash
 # 全局 CLI
-npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 # 项目 SDK
-npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 ```
 
 ## 升级注意项
+
+### Script provider/lane
+
+`0.4.0` 新增 `script` provider/lane，可沿用现有 CLI、SDK 与 detached async 作业入口，不改变既有 API；从 0.2→0.3 升级的历史说明仍按原文处理。
 
 ### 1. GMA 协议演化与模式匹配
 

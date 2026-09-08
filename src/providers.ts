@@ -279,6 +279,14 @@ export function validateGmaEffort(value: unknown): asserts value is GmaEffort {
   }
 }
 
+export function resolveGmaOptions(options: Readonly<Record<string, unknown>>): { model: string; reasoning_effort: GmaEffort; api_mode: 'chat_completions' | 'messages' } {
+  const model = options['model'] === undefined ? DEFAULT_GMA_MODEL : options['model'];
+  const effort = options['reasoning_effort'] === undefined ? DEFAULT_GMA_EFFORT : options['reasoning_effort'];
+  const mode = options['api_mode'] === undefined ? 'chat_completions' : options['api_mode'];
+  validateGrokModel(model); validateGmaEffort(effort); validateGmaApiMode(mode);
+  return { model, reasoning_effort: effort, api_mode: mode };
+}
+
 export function validateGrokBaseUrl(value: string): void { validatedGrokBaseUrl(value); }
 
 export function validateGmaApiMode(value: unknown): asserts value is 'chat_completions' | 'messages' {

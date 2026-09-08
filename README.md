@@ -35,7 +35,7 @@ Use it inside your app, from a terminal, as an MCP server, or through an agent S
 **Requires Node.js ≥ 24.15.** Install the CLI from the official npm registry:
 
 ```bash
-npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
@@ -63,7 +63,7 @@ A *lane* is a named source operation, such as `exa.search` or `gma.research`. Ch
 ## Three methods. Plenty of room to build.
 
 ```bash
-npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 ```
 
 ```js
@@ -87,6 +87,14 @@ if (page.action === 'run' && page.execution === 'sync' && page.status === 'succe
 This example reads a public URL, so it needs network access but no provider key. Add `search.search()` for retrieval and `search.capabilities()` to inspect available operations. [SDK examples, MCP setup and remote clients →](https://nb-corp.github.io/nb-search/guide/integrations)
 
 TypeScript consumers should use `skipLibCheck: true` with the current bundled declarations. [Compatibility details →](https://nb-corp.github.io/nb-search/guide/integrations)
+
+## Bring your own script lane
+
+Point a configured `script` provider at your trusted local JavaScript or erasable TypeScript module. Export `execute(request, context)` (or `search(query, context)`) and return a results array. The standard CLI and SDK support both sync and detached async jobs—no custom CLI wrapper or code-registration boilerplate required.
+
+The runnable [local catalog example](examples/script-lane/config.json) needs no network or credentials. Set `NB_SEARCH_CONFIG` to that file, then run `nb-search search "Node" --lane local.search`. Relative module paths are resolved against the config file's directory; SDK inline config paths use the caller's working directory.
+
+Scripts are trusted code with the same permissions as the runtime, not sandboxed plugins. Use `context.logger` for stderr diagnostics and honor `context.signal`; do not write to CLI stdout. [Module API, TypeScript limits and deployment guidance →](https://nb-corp.github.io/nb-search/sources/custom)
 
 ## Pick your entry point
 

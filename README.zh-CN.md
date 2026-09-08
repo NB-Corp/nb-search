@@ -35,7 +35,7 @@
 **需要 Node.js ≥ 24.15。** 从官方 npm registry 安装 CLI：
 
 ```bash
-npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
@@ -63,7 +63,7 @@ nb-search search "Node.js release schedule" --lane exa.search
 ## 三个方法，接入你的应用
 
 ```bash
-npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
 ```
 
 ```js
@@ -87,6 +87,14 @@ if (page.action === 'run' && page.execution === 'sync' && page.status === 'succe
 这段代码读取公共网页，需要联网但不需要服务商密钥。用 `search.search()` 检索，用 `search.capabilities()` 查看可用能力。[SDK 示例、MCP 与远程连接 →](https://nb-corp.github.io/nb-search/guide/integrations)
 
 TypeScript 项目使用当前打包声明时，应启用 `skipLibCheck: true`。[查看兼容性说明 →](https://nb-corp.github.io/nb-search/guide/integrations)
+
+## 用自己的 JS/TS 脚本扩展 Lane
+
+在配置中为 `script` provider 指定可信本地模块，导出 `execute(request, context)` 或 `search(query, context)` 并返回结果数组，即可通过标准 CLI、SDK 和 detached async 作业使用，无需另写 CLI 封装。
+
+[可运行的本地目录样例](examples/script-lane/config.json) 不需要联网或凭据。将 `NB_SEARCH_CONFIG` 指向该文件后运行 `nb-search search "Node" --lane local.search`。配置文件里的相对模块路径以配置目录为基准，SDK inline 配置以调用 cwd 为基准。
+
+脚本与运行进程同权限，并非沙箱。请配合 `context.signal` 取消，使用 `context.logger` 输出 stderr，不要写 stdout 破坏 CLI JSON。[模块合同、TS 限制与部署说明 →](https://nb-corp.github.io/nb-search/sources/custom)
 
 ## 选一个入口，开始用
 

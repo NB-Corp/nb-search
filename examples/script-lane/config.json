@@ -1,0 +1,10 @@
+{
+  "schema_version": "4",
+  "provider_instances": {
+    "local-script": { "provider_id": "script", "enabled": true, "options": { "module": "./search.mjs", "params": {} } }
+  },
+  "lanes": {
+    "local.search": { "provider_instance_id": "local-script", "operation_id": "search", "latency": "fast", "cost": "free" }
+  },
+  "defaults": { "search_lane": "local.search" }
+}

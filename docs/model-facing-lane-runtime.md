@@ -8,6 +8,22 @@ The package implements configuration schema v4 with three public capabilities: `
 
 Explicit public injection disables **all detached async run admissions on that runtime instance**, before selection/fetch preflight or job creation, returning `LANE_EXECUTION_UNSUPPORTED`. The transport object is not serialized or silently replaced in a child process. Effective `search.lanes`, presets and `fetch.pipelines` omit async; async-only browser pipelines have no effective modes and are unavailable, never relabeled sync. Provider descriptors retain static adapter support information and are not an instance execution guarantee. Sync operations, including non-egress inline/scoped-file fetch, and existing local get/read/cancel semantics remain unchanged. Omitting the option preserves the default runtime's async behavior. Internal worker/test transport injection is not subject to this public-instance policy. The SDK supplies no new cloud admission/job-store implementation through this option.
 
+## Offline provider operation inspection for hosts
+
+The root helper `resolveProviderOperation(providerId, operationId, instance: ProviderInstanceConfig): ResolvedProviderOperation` resolves **Exa (search/synthesis/contents), GMA (research), and script (search)** without credentials, network requests, provider construction or script imports. It returns `{ provider, operation, kind, instance, endpoints }`: registry-owned provider/operation descriptors (including adapter version and schema), `kind: 'search' | 'fetch'`, an effective instance, and the adapter's request URLs. It validates options using the registration, uses the same URL resolvers as execution, and shares GMA default resolution with its factory. Unknown operations and providers outside this narrow resolver's coverage throw rather than return guessed endpoint information. Existing `builtInProviderRegistrations()` remains the catalog source; do not duplicate descriptors in a cloud catalog.
+
+GMA defaults are materialized in `instance.options`; script resolves the module to an absolute path (relative input uses caller cwd) and preserves JSON `params`. Returned options are `Readonly<Record<string, unknown>>`, not string-only. No credentials are looked up, and these host-facing instance values are not automatically safe for tenant-facing display. Script has `endpoints: []` because arbitrary trusted module IO cannot be enumerated—not because scripts cannot access the network. Hosts own HTTPS/DNS/allowlist and module-deployment policy. Pass the returned instance to the SDK rather than rebuilding provider URLs or writing a second runner. Registry activation and operation descriptors are not a promise of runtime readiness or available credentials.
+
+```ts
+import { resolveProviderOperation } from '@nb-corp/nb-search';
+const resolved = resolveProviderOperation('grok-multi-agent', 'research', {
+  provider_id: 'grok-multi-agent', enabled: true,
+  base_url: 'https://relay.example/v1', options: { api_mode: 'messages' }
+});
+// Apply host endpoint policy to resolved.endpoints.
+// Bind a selected credential slot and execute resolved.instance using the SDK.
+```
+
 ## Query operations
 
 A lane binds one `provider_instance_id` to one `operation_id`. The provider registration is the output-contract source of truth:

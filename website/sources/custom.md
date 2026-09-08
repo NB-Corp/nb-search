@@ -1,14 +1,53 @@
-# 自定义源与扩展 (Custom Registrations)
+# 自定义源与脚本 Lane
 
-如果内置的 15 个搜索源和 9 个抓取管道无法满足你的内部架构，`nb-search` 支持在进程内注入自定义 Provider。
+可以直接在静态配置中绑定可信的 JS/TS 模块，让标准 CLI、MCP 与 SDK 使用同一个自定义 results lane；也可以继续通过 SDK 注入完整 `ProviderRegistration`。
 
-## 安全与架构边界
+## 本地脚本：CLI 与 SDK 都可用
 
-为了避免任意代码执行风险，`nb-search` **禁止**在静态 `config.json` 配置文件中指定动态脚本路径或执行代码。所有自定义 Provider 必须通过 Node.js SDK 在初始化时显式传入。
+内置适配器 `script` 提供 `search` 操作（`nb-search.results@1`），但不会自动创建或启用实例/lane：
 
-## 注册契约与约束
+```json
+{
+  "provider_instances": {
+    "local-script": { "provider_id": "script", "enabled": true, "options": { "module": "./search.mjs", "params": { "label": "local" } } }
+  },
+  "lanes": {
+    "local.search": { "provider_instance_id": "local-script", "operation_id": "search", "latency": "fast", "cost": "free" }
+  }
+}
+```
 
-自定义 Provider 必须通过 SDK 导出的 `ProviderRegistration` 接口进行声明：
+```js
+// search.mjs — no network needed
+export async function execute(request, context) {
+  context.signal.throwIfAborted();
+  context.logger.info('Local search started'); // stderr, not stdout
+  return [{ title: request.query, url: 'https://example.com/', snippet: context.options.label }];
+}
+```
+
+使用 `nb-search search "hello" --lane local.search`；async 使用既有 `execution:"async"`、`idempotency_key`、get/read/cancel 合同。SDK 的 `config` 直接传同一配置结构即可，无需 `provider_registrations`。完整无网络样例在包内 `examples/script-lane/`。
+
+### 模块合同
+
+- `options.module`：本地 `.js`、`.mjs`、`.ts` 或 `.mts` 文件。canonical 配置文件中的相对路径以配置目录为基准；SDK inline `config`/`overrides` 中相对路径以创建 runtime 时的 cwd 为基准，建议 SDK 使用绝对路径。规范化后的绝对路径写入 detached snapshot，worker 不重新依赖 cwd。
+- `options.params`：可选 JSON 对象；传为 `context.options`，每次调用独立复制。不要把密钥放入 params，它会进入配置和任务快照。
+- 命名导出 `execute(request, context)` 优先；也支持 `search(query, context)`，其 context 额外含完整 `request`。返回 `ProviderResult[]` 或对应 Promise，必需字符串 `title`、`url`，可含 `snippet` 等标准结果字段。首版不接受 typed 对象或 fetch 输出。
+- request 含 `query`、`limit`、可选 `freshness`、`request_time_utc`、`signal`；context 含 `signal`、`options`、可选单个 `credential` 字符串、`transport: HttpTransport` 和 `logger.info/warn/error`。
+- 如需凭据，通过既有 `credential_slots` / 实例 `credential_slot_id` 绑定，`provider_id` 必须为 `script`。不会把其他 slot 的凭据放入 context。
+- 根导出类型：`ScriptRequest`、`ScriptContext`、`ScriptResults`、`ScriptModule`。TS 使用 `import type`。Node ≥24.15 原生擦除类型，不安装 TS loader、不执行 tsconfig paths 映射；本地 import 需完整扩展名，enum、参数属性、需代码转换的语法及 TSX 不支持。普通依赖按模块位置遵循 Node 包解析规则；依赖需自行安装，TS 源码依赖位于 node_modules 时遵循 Node 自身限制。
+
+### 执行与信任边界
+
+模块 lazy import，capabilities 和配置校验不执行代码；模块不存在或无导出会在实际调用时报安全的 provider 错误。模块由 Node 缓存，多个 query 可同时进入同一模块；不要用共享可变状态存储请求内容。snapshot 固定路径和参数，不冻结脚本文件内容；作业结束前需保持模块与依赖可用且版本稳定。
+
+**这是用户授权的本地代码，不是沙箱**：模块与进程同权限，可自行读文件、环境变量、网络或启动程序。context 只传一个凭据不代表隔离其他进程权限。取消/超时要求模块配合 AbortSignal；同步死循环会阻塞进程，异步不合作的副作用也不保证被终止。禁止脚本写 `console.log`/stdout 破坏 CLI JSON，请用提供的 stderr logger；SDK 不会全局替换 console。日志只自动遮蔽所绑定凭据及模块路径，不保证任意自行输出安全。
+
+云端只能由部署者安装可信模块并用部署 manifest/allowlist 映射 lane，不应接受 tenant 请求提供任意模块路径。`context.transport` 是可复用宿主 transport，不是对模块所有网络 IO 的拦截。显式 SDK `http_transport` 注入仍禁用 detached async；普通无注入 runtime 的脚本支持 sync/async。
+
+## SDK 手动注册（保留原合同）
+
+以下规则仅适用于 SDK `provider_registrations` 注入的代码注册，不限制上面的内置 script adapter。手动注册通过 SDK 导出的 `ProviderRegistration` 接口声明：
 1. **唯一标识**：`provider_id` 不能与内置 Provider 或其他自定义 Provider 冲突。
 2. **严格描述符**：
    - `activation.credential` 支持 `'required' | 'none'`（内置类型支持 `'required' | 'optional' | 'none'`）。
@@ -109,4 +148,4 @@ const response = await runtime.search({
 });
 ```
 
-注册完成后，`host.lookup` 即可在当前宿主进程内通过 `runtime.search` 发起调用。需要注意，内置的标准 CLI 二进制不会自动加载第三方自定义代码，宿主若需提供命令行工具，应基于自身封装的运行时入口进行调用。
+注册完成后，`host.lookup` 即可在当前宿主进程内通过 `runtime.search` 发起调用。标准 CLI 无法重建这里的闭包 registration；若需要 CLI 与 detached async，优先使用本文开头的 script 模块配置。完整手动 registration 仍可用于自定义 typed 输出、fetch 或宿主闭包依赖。

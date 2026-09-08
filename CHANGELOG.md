@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 - 2026-09-08
+
+### Added
+
+- Added trusted local JavaScript and erasable TypeScript script lanes, configured through the standard SDK/CLI provider settings, with synchronous and detached asynchronous execution.
+- Exported script module types and included a runnable, no-network example.
+- Added `resolveProviderOperation` for offline host inspection of Exa, GMA and script operations, sharing validation, defaults and endpoint resolution with the actual adapters.
+
+### Compatibility
+
+- Existing search/fetch/capabilities calls and in-process provider registrations remain supported. Script modules run with host permissions and must cooperate with cancellation; they are not sandboxed or content-pinned.
+- Cloud hosts can reuse SDK operation metadata instead of duplicating provider protocols. Unsupported offline endpoint resolution is reported explicitly.
+
 ## 0.3.1 - 2026-09-08
 
 ### Fixed
