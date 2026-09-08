@@ -32,7 +32,16 @@ Use it inside your app, from a terminal, as an MCP server, or through an agent S
 
 ## Quick start
 
-**Requires Node.js ≥ 24.15 and pnpm 10.33.0.** The current CLI is available from source; the npm `latest` release still predates it.
+**Requires Node.js ≥ 24.15.** Install the CLI from the official npm registry:
+
+```bash
+npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
+```
+
+The command returns JSON. Extracted text is in `documents[].content`; `status` tells you whether extraction succeeded. This direct-fetch example needs no provider key.
+
+For a source checkout, pnpm is needed only to install dependencies and build:
 
 ```bash
 git clone https://github.com/NB-Corp/nb-search.git
@@ -42,18 +51,20 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-The command returns JSON. Extracted text is in `documents[].content`; `status` tells you whether extraction succeeded. This direct-fetch example needs no provider key.
-
 For search, set a provider key and choose its lane:
 
 ```bash
 # Supply NB_SEARCH_EXA_API_KEY through your environment.
-node scripts/nb-search.mjs search "Node.js release schedule" --lane exa.search
+nb-search search "Node.js release schedule" --lane exa.search
 ```
 
 A *lane* is a named source operation, such as `exa.search` or `gma.research`. Choose one explicitly or [set your default](https://nb-corp.github.io/nb-search/guide/configuration). Provider usage follows that provider's pricing and limits.
 
 ## Three methods. Plenty of room to build.
+
+```bash
+npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+```
 
 ```js
 import { createNbSearchRuntime } from '@nb-corp/nb-search';

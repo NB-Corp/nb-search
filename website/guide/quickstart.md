@@ -3,20 +3,25 @@
 本指南介绍如何在本地准备运行环境、检查可用能力目录，并完成第一次搜索与抓取验证。
 
 ::: info 版本适用范围
-以下文档适用于 `@nb-corp/nb-search` `0.3.0` 及以上版本。在安装前，请通过包管理器检查当前可用的版本。
+以下文档适用于 `@nb-corp/nb-search` `0.3.1` 及以上版本。
 :::
 
 ## 环境要求
 
 - **Node.js**：`>=24.15.0`
-- **源码构建工具**：`pnpm@10.33.0`（从源码仓库构建时需要）
+- **源码构建工具**：`pnpm@10.33.0`（仅从源码仓库构建时需要）
 
 ## 获取与构建
 
 ::: code-group
 
-```bash [通过包管理器安装]
-npm install @nb-corp/nb-search@^0.3.0
+```bash [全局 CLI]
+npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
+```
+
+```bash [项目 SDK]
+npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
 ```
 
 ```bash [从源码构建]
@@ -28,13 +33,14 @@ pnpm build
 
 :::
 
-构建或安装完成后，包内提供了官方 launcher 脚本。如果作为 Skill 包使用，必须保留完整的目录结构（含 `scripts/` 与 `dist/`），不能只复制部分目录，否则启动器会返回 `ENTRY_UNAVAILABLE`。
+安装包或构建源码后，包内提供官方 launcher。如果作为 Skill 使用，必须保留包根目录及完整的 `SKILL.md`、`scripts/`、`dist/` 结构；不能只复制部分目录，否则启动器会返回 `ENTRY_UNAVAILABLE`。
 
 ### 作为官方 Skill 装载
 
-宿主代理（Agent）或工作流环境可直接将 `@nb-corp/nb-search` 作为 Skill 工具包挂载：
-- **挂载入口**：将包根目录（包含 `SKILL.md` 与完整 `scripts/`、`dist/` 结构）指定为 Skill 路径 `<skill_dir>`。
-- **调用约定**：Skill 调度脚本固定为 `node "<skill_dir>/scripts/nb-search.mjs"`，启动器会自动定位并加载包内 `dist/cli.mjs`，无需在宿主系统进行全局安装或配置系统 PATH。
+宿主代理（Agent）或工作流环境可直接将 npm 包或源码根目录作为 Skill 工具包挂载：
+- **npm 安装包**：全局安装后运行 `npm root -g`，将输出目录下的 `@nb-corp/nb-search` 包根目录指定为 Skill 路径 `<skill_dir>`；项目内安装则使用 `node_modules/@nb-corp/nb-search`。
+- **源码构建**：将仓库根目录指定为 `<skill_dir>`。
+- **调用约定**：Skill 调度脚本固定为 `node "<skill_dir>/scripts/nb-search.mjs"`，启动器会自动定位并加载包内 `dist/cli.mjs`，无需宿主另行配置系统 PATH。
 - **嵌套结构**：包内同时包含兼容入口 `skills/nb-search` 以适配特定宿主布局，但它并非可独立搬移的隔离包，仍依赖根目录的 `scripts/` 与构建产物，必须完整保留与包根目录的相对路径关系。
 
 ### 命令行调试入口

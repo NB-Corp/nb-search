@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 - 2026-09-08
+
+### Fixed
+
+- GMA requests now use streaming for both chat and messages protocols, with complete SSE parsing and rejection of interrupted or failed responses.
+- GMA research defaults to a 10-minute deadline unless a request or configuration explicitly supplies a timeout; ordinary search keeps its 30-second default.
+- HTTP 524 is classified as retryable for callers with an explicit retry policy.
+
+### Changed
+
+- Added bilingual product landing pages and themed SVG assets.
+- Clarified search and webpage reading in nb-search, with document conversion and resource export available through nb-extract. Existing fetch interfaces remain compatible.
+- Published the official CLI, MCP and Skill entry points to npm, including the changes documented under 0.3.0.
+
 ## 0.3.0 - 2026-09-08
 
 ### Added

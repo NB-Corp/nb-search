@@ -4,7 +4,16 @@
 
 ## 版本适用说明
 
-本页说明针对 `@nb-corp/nb-search` `0.3.0` 及以上版本。在升级或排查兼容性前，请先检查本地安装的实际包版本并参阅 [CHANGELOG](/reference/changelog)。
+本页说明针对 `@nb-corp/nb-search` `0.3.1` 及以上版本。在升级或排查兼容性前，请先检查本地安装的实际包版本并参阅 [CHANGELOG](/reference/changelog)。
+
+CLI 或项目 SDK 均从官方 npm registry 更新：
+
+```bash
+# 全局 CLI
+npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+# 项目 SDK
+npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+```
 
 ## 升级注意项
 

@@ -32,7 +32,16 @@
 
 ## 快速开始
 
-**需要 Node.js ≥ 24.15、pnpm 10.33.0。** 当前 CLI 请从源码获取；npm 的 `latest` 仍是较早版本。
+**需要 Node.js ≥ 24.15。** 从官方 npm registry 安装 CLI：
+
+```bash
+npm install -g @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
+```
+
+命令返回 JSON，正文位于 `documents[].content`，`status` 表示提取状态。这个直接抓取示例不需要服务商密钥。
+
+从源码检出时，才需要 pnpm 安装依赖并构建：
 
 ```bash
 git clone https://github.com/NB-Corp/nb-search.git
@@ -42,18 +51,20 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-命令返回 JSON，正文位于 `documents[].content`，`status` 表示提取状态。这个直接抓取示例不需要服务商密钥。
-
 需要搜索时，配置对应来源的密钥，再选择 lane：
 
 ```bash
 # 在环境中配置 NB_SEARCH_EXA_API_KEY。
-node scripts/nb-search.mjs search "Node.js release schedule" --lane exa.search
+nb-search search "Node.js release schedule" --lane exa.search
 ```
 
 *Lane* 就是一个命名的来源操作，例如 `exa.search` 或 `gma.research`。可以每次指定，也可以[设为默认来源](https://nb-corp.github.io/nb-search/guide/configuration)。服务商的费用与限额按其自身规则计算。
 
 ## 三个方法，接入你的应用
+
+```bash
+npm install @nb-corp/nb-search@0.3.1 --registry=https://registry.npmjs.org
+```
 
 ```js
 import { createNbSearchRuntime } from '@nb-corp/nb-search';
