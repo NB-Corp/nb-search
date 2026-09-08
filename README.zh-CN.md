@@ -17,7 +17,7 @@
 
 </div>
 
-不用再为每个数据源接一套工具。**nb-search** 把网页搜索、正文提取和研究能力放进同一个 TypeScript 接口，数据源由你选择。
+不用再为每个数据源接一套工具。**nb-search** 把网页搜索、网页阅读和研究能力放进同一个 TypeScript 接口，数据源由你选择。
 
 嵌入应用、在终端调用、连接 MCP，或直接交给 AI 助手使用。你可以在本地运行，也可以通过相同的客户端接口连接自己的 [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) 服务。
 
@@ -62,18 +62,18 @@ const search = createNbSearchRuntime();
 const page = await search.fetch({
   action: 'run',
   source: {
-    kind: 'inline_text',
-    content: '<p>研究，从读到原文开始。</p>',
-    media_type: 'text/html'
+    kind: 'url',
+    url: 'https://nodejs.org/en/about/releases/'
   },
-  pipeline: 'direct.local'
+  pipeline: 'direct.fetch'
 });
 
-console.log(page.documents[0].content);
-// 研究，从读到原文开始。
+if (page.action === 'run' && page.execution === 'sync' && page.status === 'succeeded' && page.documents.length > 0) {
+  console.log(page.documents[0].content);
+}
 ```
 
-在构建好的源码目录中，这段代码无需联网即可运行。用 `search.search()` 检索，用 `search.capabilities()` 查看可用能力。[SDK 示例、MCP 与远程连接 →](https://nb-corp.github.io/nb-search/guide/integrations)
+这段代码读取公共网页，需要联网但不需要服务商密钥。用 `search.search()` 检索，用 `search.capabilities()` 查看可用能力。[SDK 示例、MCP 与远程连接 →](https://nb-corp.github.io/nb-search/guide/integrations)
 
 TypeScript 项目使用当前打包声明时，应启用 `skipLibCheck: true`。[查看兼容性说明 →](https://nb-corp.github.io/nb-search/guide/integrations)
 
@@ -82,7 +82,7 @@ TypeScript 项目使用当前打包声明时，应启用 `skipLibCheck: true`。
 | 你想做什么 | 从这里开始 |
 | --- | --- |
 | 给 AI 助手接入搜索与研究 | [官方 nb-search Skill](SKILL.md) |
-| 把网页或文本变成 Markdown | [nb-extract](https://github.com/NB-Corp/nb-extract)：专注提取的 Skill，同一个 fetch 引擎 |
+| 把网页或文件转换为 Markdown | [nb-extract](https://github.com/NB-Corp/nb-extract)：网页/文件→Markdown 文档转换入口 |
 | 在应用或 MCP 宿主中集成 | [接入指南](https://nb-corp.github.io/nb-search/guide/integrations) |
 | 团队统一管理来源凭证与调用 | [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud)：自托管用户、密钥与用量管理 |
 

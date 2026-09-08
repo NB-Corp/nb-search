@@ -32,7 +32,7 @@ describe('root public trusted HTTP transport seam', () => {
     // The existing search adapter leaves the response bound to its trusted transport's own policy.
     expect(recorded.calls[0]?.max_response_bytes).toBeUndefined();
     expect(recorded.calls[1]).toMatchObject({ url: 'https://provider.example/exa/contents', method: 'POST', response_type: 'json', max_response_bytes: 2 * 1024 * 1024, headers: { 'x-api-key': 'fake-exa-public' }, body: { urls: ['https://example.com/source'] }, signal: expect.any(AbortSignal) });
-    expect(recorded.calls[2]).toMatchObject({ url: `https://provider.example/gma/${mode === 'messages' ? 'messages' : 'chat/completions'}`, method: 'POST', redirect: 'manual', response_type: 'text', max_response_bytes: 1048576, headers: { Authorization: 'Bearer fake-gma-public', ...(mode === 'messages' ? { 'x-api-key': 'fake-gma-public', 'anthropic-version': '2023-06-01' } : {}) }, body: { stream: false, reasoning: { effort: 'xhigh' } }, signal: expect.any(AbortSignal) });
+    expect(recorded.calls[2]).toMatchObject({ url: `https://provider.example/gma/${mode === 'messages' ? 'messages' : 'chat/completions'}`, method: 'POST', redirect: 'manual', response_type: 'text', max_response_bytes: 1048576, headers: { Authorization: 'Bearer fake-gma-public', ...(mode === 'messages' ? { 'x-api-key': 'fake-gma-public', 'anthropic-version': '2023-06-01' } : {}) }, body: { stream: true, reasoning: { effort: 'xhigh' } }, signal: expect.any(AbortSignal) });
     expect(existsSync(f.env.NB_SEARCH_HOME)).toBe(false);
   });
   it('rejects every async run before selection, fetch preflight, jobs, launcher or transport; schema and abort still precede it', async () => {

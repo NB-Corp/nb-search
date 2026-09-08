@@ -31,9 +31,29 @@ const searchResponse = await runtime.search({
 const catalog = await runtime.capabilities();
 ```
 
-### 离线免网内容抓取
+### 读取 URL 正文
 
-使用 `direct.local` 管道可直接在进程内对本地文本或 HTML 进行清洗提取，无需配置外部搜索密钥，也不产生外部网络外发：
+网页正文阅读是 `nb-search` 的主要抓取场景：
+
+```typescript
+const fetchResponse = await runtime.fetch({
+  action: 'run',
+  source: {
+    kind: 'url',
+    url: 'https://nodejs.org/en/about/releases/'
+  },
+  representation: 'markdown',
+  execution: 'sync'
+});
+
+if (fetchResponse.action === 'run' && fetchResponse.execution === 'sync' && fetchResponse.status === 'succeeded' && fetchResponse.documents.length > 0) {
+  console.log(fetchResponse.documents[0]!.content);
+}
+```
+
+### 兼容：离线免网内容抓取
+
+`direct.local` 及其 inline/file 输入仍保留兼容，可在进程内对已授权的本地文本或 HTML 进行清洗提取，不产生外部网络外发。需要处理本地文件/HTML/PDF/Office（含 OCR）并保存完整 Markdown 与资源（assets）时，请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具：
 
 ```typescript
 import { createNbSearchRuntime } from '@nb-corp/nb-search';

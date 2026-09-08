@@ -5,7 +5,7 @@
   <img src="docs/assets/banner-light.svg" alt="nb-search — Give your agent a wider world." width="1200">
 </picture>
 
-**Search. Extract. Research. One interface for your AI.**
+**Search. Read. Research. One interface for your AI.**
 
 [![Node.js](https://img.shields.io/badge/Node.js-24.15%2B-2d4b35?style=flat-square)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2d4b35?style=flat-square)](LICENSE)
@@ -17,7 +17,7 @@
 
 </div>
 
-Stop wiring a different tool for every source. **nb-search** gives agents and applications one TypeScript interface for web search, document extraction and research—while you choose the providers.
+Stop wiring a different tool for every source. **nb-search** gives agents and applications one TypeScript interface for web search, web reading and research—while you choose the providers.
 
 Use it inside your app, from a terminal, as an MCP server, or through an agent Skill. Run locally with your credentials, or connect the same client interface to your own [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) service.
 
@@ -62,18 +62,18 @@ const search = createNbSearchRuntime();
 const page = await search.fetch({
   action: 'run',
   source: {
-    kind: 'inline_text',
-    content: '<p>Research starts with a source.</p>',
-    media_type: 'text/html'
+    kind: 'url',
+    url: 'https://nodejs.org/en/about/releases/'
   },
-  pipeline: 'direct.local'
+  pipeline: 'direct.fetch'
 });
 
-console.log(page.documents[0].content);
-// Research starts with a source.
+if (page.action === 'run' && page.execution === 'sync' && page.status === 'succeeded' && page.documents.length > 0) {
+  console.log(page.documents[0].content);
+}
 ```
 
-This example runs without network access from a built checkout. Add `search.search()` for retrieval and `search.capabilities()` to inspect available operations. [SDK examples, MCP setup and remote clients →](https://nb-corp.github.io/nb-search/guide/integrations)
+This example reads a public URL, so it needs network access but no provider key. Add `search.search()` for retrieval and `search.capabilities()` to inspect available operations. [SDK examples, MCP setup and remote clients →](https://nb-corp.github.io/nb-search/guide/integrations)
 
 TypeScript consumers should use `skipLibCheck: true` with the current bundled declarations. [Compatibility details →](https://nb-corp.github.io/nb-search/guide/integrations)
 
@@ -82,7 +82,7 @@ TypeScript consumers should use `skipLibCheck: true` with the current bundled de
 | You want to… | Start here |
 | --- | --- |
 | Give an assistant search and research | [Official nb-search Skill](SKILL.md) |
-| Turn a page or text into Markdown | [nb-extract](https://github.com/NB-Corp/nb-extract) — a focused Skill, same fetch engine |
+| Convert web pages or files to Markdown | [nb-extract](https://github.com/NB-Corp/nb-extract) — web/file-to-Markdown document conversion entry point |
 | Build an app or connect an MCP host | [Integration guide](https://nb-corp.github.io/nb-search/guide/integrations) |
 | Share provider credentials with a team | [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) — self-hosted users, keys and usage |
 

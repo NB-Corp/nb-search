@@ -1,6 +1,6 @@
 # 信息源目录 (Sources Catalog)
 
-`nb-search` 内置支持 15 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
+`nb-search` 内置支持 15 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。本地文档转换与 Markdown/资源保存请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
 
 ::: tip 维度说明
 表格中的相对成本（`free` / `cheap` / `expensive`）和相对延迟（`fast` / `medium` / `slow`）属于运行时配置内严格声明的定性元数据标签，便于上层编排器进行粗粒度选择，并非真实账单计费依据或基准跑分。
@@ -14,11 +14,11 @@
    - **配置建议**：首次集成时，优先配置一个通用 Results 搜索源（例如 `tavily.search`、`brave.search` 或 `exa.search`）并设置为 `defaults.search_lane`。对于抓取，默认 URL 抓取链直接提供 `direct.fetch` 与 `jina.reader`，无需初始密钥即可验证。
    - **典型源**：`brave.search`、`exa.search`、`tavily.search`、`parallel.search`、`searxng.search`、`zhipu.search`，抓取管道包含 `direct.fetch` 与 `jina.reader`。
 2. **按需专题能力 (`specialist`)**：
-   - **配置建议**：针对特定类型数据、格式转换或受控环境显式选用，通常通过 `--lane`、`--lanes` 或 `--pipeline` 直接指定，而非作为全网兜底。
+   - **配置建议**：针对特定类型数据、网页提取或受控环境显式选用，通常通过 `--lane`、`--lanes` 或 `--pipeline` 直接指定，而非作为全网兜底。
    - **典型源**：
      - 代码与工程：`github.repositories`（仓库检索）、`context7.docs`（框架文档上下文）。
      - 深度网页/社交：`firecrawl.search`（带提取内容的搜索）、`grok.x-synthesis`（针对 X 平台的讨论提炼）。
-     - 专用抓取：`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`direct.local`（本地免网文件与行内清洗）、`wayback.fetch`（历史快照）、`browser.render`（无头 Chromium 渲染）、`oac.fetch`（模型总结抽取）。
+     - 专用抓取：`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`direct.local`（兼容的本地免网文件与行内清洗）、`wayback.fetch`（历史快照）、`browser.render`（无头 Chromium 渲染）、`oac.fetch`（模型总结抽取）。
 3. **综合与深度研究 (`research`)**：
    - **配置建议**：需要模型进行多步推演、生成综合分析或结构化报告的场景。此类源调用开销与延迟相对较高，必须以单个 Lane 显式发起，不支持放入多源 Results Preset。
    - **典型源**：`exa.synthesis`、`tavily.synthesis`、`grok.synthesis`、`gma.research`、`oac.synthesis`。

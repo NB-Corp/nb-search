@@ -1,4 +1,5 @@
 import type { AppConfiguration, LaneBinding } from './config.ts';
+import { resolveSearchTimeout } from './config-sources.ts';
 import type { FetchRunInput, SearchRunInput } from './contracts.ts';
 import { NbSearchError, publicError } from './errors.ts';
 import { assertFetchQuality } from './fetch-quality.ts';
@@ -12,7 +13,7 @@ export class QueryEngine {
   constructor(private readonly app: AppConfiguration, private readonly now: () => Date = () => new Date()) {}
   async execute(input: SearchRunInput, selected: ResolvedSearchSelection, signal?: AbortSignal): Promise<SearchLogicalOutput> {
     const queries = typeof input.query === 'string' ? [input.query] : [...input.query]; const execution = this.app.resolved.config.execution; const units = queries.flatMap((query, queryIndex) => selected.lanes.map((lane) => ({ lane: lane.id, provider_instance_id: lane.config.provider_instance_id, query_index: queryIndex, run: async (unitSignal: AbortSignal) => { const value = await lane.query_provider!.execute({ query, limit: input.max_results ?? 8, ...(input.freshness === undefined ? {} : { freshness: input.freshness }), request_time_utc: this.now().toISOString(), signal: unitSignal }); return validateProviderOutput(value, lane.query_operation!.output.channel, lane.query_provider!.name); } }))); assertAttemptBudget(units.length, execution.retry_count, execution.max_provider_calls);
-    const results = await executeUnits(units, { timeout_ms: input.timeout_ms ?? execution.search_timeout_ms, max_concurrency: execution.max_concurrency, retry_count: execution.retry_count, max_provider_calls: execution.max_provider_calls, signal });
+    const results = await executeUnits(units, { timeout_ms: resolveSearchTimeout(input.timeout_ms, selected.lanes.map((lane) => ({ provider_id: lane.provider_id, operation_id: lane.query_operation!.operation_id })), execution.search_timeout_ms, this.app.resolved.explicit_search_timeout_ms), max_concurrency: execution.max_concurrency, retry_count: execution.retry_count, max_provider_calls: execution.max_provider_calls, signal });
     return selected.channel === 'results' ? this.resultsOutput(selected, units, results, input.max_results ?? 8) : this.typedOutput(selected, results);
   }
   private resultsOutput(selected: ResolvedSearchSelection, units: readonly { lane: string; query_index: number }[], execution: readonly UnitResult<QueryProviderValue>[], limit: number): SearchResultsOutput {

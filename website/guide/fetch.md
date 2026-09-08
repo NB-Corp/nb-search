@@ -1,6 +1,6 @@
 # 内容抓取 (Fetch)
 
-`nb-search` 的抓取能力用于从公共网络 URL、受控本地文件或行内数据中提取内容。
+`nb-search` 的 fetch 主要用于在搜索后读取公共网络 URL 正文；`fetch`、`direct.local` 与 `browser.render` 等既有入口仍保留兼容，受控本地文件和 inline 输入的合同见下文。需要处理本地文件/HTML/PDF/Office（含 OCR），并保存完整 Markdown 与资源（assets）时，请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。
 
 ## 架构区分：Envelope 与 Document Schema
 
@@ -16,7 +16,7 @@
 
 ### 输出表示格式 (Representation)
 
-- `markdown`（默认）：输出 Markdown 文本。需要注意，`direct` 管道采用轻量级文本/HTML 转换，并非保证结构化提炼；高级转换可选择 reader 管道。
+- `markdown`（默认）：输出 Markdown 文本。`direct` 管道采用轻量级文本/HTML 转换，并非保证结构化提炼；URL 正文提取可显式选择 `jina.reader`。
 - `text`：输出纯文本。
 
 ## 抓取链 (Fetch Chain) 与执行规则

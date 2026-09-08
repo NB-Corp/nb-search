@@ -59,13 +59,13 @@ export class GrokMultiAgentProvider implements MultiAgentResearchProvider {
         url: this.endpoint,
         method: 'POST',
         redirect: 'manual',
-        headers: { Authorization: this.authorization, 'Content-Type': 'application/json', ...(this.options.apiMode === 'messages' ? { 'x-api-key': this.options.apiKey, 'anthropic-version': '2023-06-01' } : {}) },
+        headers: { Authorization: this.authorization, 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(this.options.apiMode === 'messages' ? { 'x-api-key': this.options.apiKey, 'anthropic-version': '2023-06-01' } : {}) },
         body: {
           model: this.options.model,
           ...(this.options.apiMode === 'messages' ? { system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] } : { messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] }),
           max_tokens: 4096,
           temperature: 0.1,
-          stream: false,
+          stream: true,
           reasoning: { effort: this.options.reasoningEffort },
         },
         response_type: 'text',
@@ -574,7 +574,7 @@ function assertProviderStatus(
       retryAfterMs: parseRetryAfter(headerValue(headers, 'retry-after'), clock),
     });
   }
-  const retryable = status === 408 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504;
+  const retryable = status === 408 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || status === 524;
   throw new NbSearchError('PROVIDER_UNAVAILABLE', `${provider} request failed (HTTP ${String(status)}).`, retryable, provider);
 }
 

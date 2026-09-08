@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { CONFIG_SCHEMA_VERSION, parseConfigPatch, parseResolvedConfig, stableFingerprint, type CanonicalConfig, type CanonicalConfigPatch, type ProviderInstanceConfig } from './config-schema.ts';
+import { CONFIG_SCHEMA_VERSION, parseConfigPatch, parseResolvedConfig, stableFingerprint, type CanonicalConfig, type CanonicalConfigPatch, type ExecutionConfig, type ProviderInstanceConfig } from './config-schema.ts';
 import { NbSearchError } from './errors.ts';
 import { DEFAULT_GROK_MODEL } from './providers/grok-responses.ts';
 import { DEFAULT_GMA_EFFORT, DEFAULT_GMA_MODEL } from './providers.ts';
@@ -9,8 +9,16 @@ import { DEFAULT_GMA_EFFORT, DEFAULT_GMA_MODEL } from './providers.ts';
 export type WorkerGrant = { kind: 'environment'; name: string } | { kind: 'opaque'; id: string };
 export interface SecretBinding { credential_slot_id: string; provider_id: string; value: string; worker_grant: WorkerGrant }
 export type SecretBindings = ReadonlyMap<string, SecretBinding>;
-export interface ResolvedConfiguration { config: CanonicalConfig; config_revision: string; config_fingerprint: string; secret_bindings: SecretBindings; canonical_path: string }
+export interface ResolvedConfiguration { config: CanonicalConfig; config_revision: string; config_fingerprint: string; secret_bindings: SecretBindings; canonical_path: string; explicit_search_timeout_ms: boolean }
 export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; cwd?: string; homeDirectory?: string }
+export interface SearchTimeoutLane { provider_id: string; operation_id: string }
+export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
+export const DEFAULT_GMA_SEARCH_TIMEOUT_MS = 600_000;
+export function resolveSearchTimeout(inputTimeoutMs: number | undefined, lanes: readonly SearchTimeoutLane[], configuredTimeoutMs: number, configuredExplicit: boolean): number {
+  if (inputTimeoutMs !== undefined) return inputTimeoutMs;
+  if (configuredExplicit) return configuredTimeoutMs;
+  return lanes.some((lane) => lane.provider_id === 'grok-multi-agent' && lane.operation_id === 'research') ? DEFAULT_GMA_SEARCH_TIMEOUT_MS : configuredTimeoutMs;
+}
 const instance = (provider_id: string, credential_slot_id: string | undefined, options: Record<string, unknown> = {}, base_url?: string): ProviderInstanceConfig => ({ provider_id, enabled: true, ...(credential_slot_id === undefined ? {} : { credential_slot_id }), ...(base_url === undefined ? {} : { base_url }), options });
 export const DEFAULT_FETCH_BLOCKED_MARKERS = ['cf-challenge', 'cf-mitigated', 'verify you are human', 'just a moment', 'please enable javascript', '__cf_chl'] as const;
 export function defaultConfiguration(home: string): CanonicalConfig {
@@ -65,7 +73,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'browser.render': { provider_instance_id: 'browser-render.default', operation_id: 'render', latency: 'slow', cost: 'free' },
     },
     defaults: { fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] }, presets: {}, fetch: { file_scopes: [] },
-    execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: 30_000, fetch_timeout_ms: 60_000, max_inline_bytes: 16 * 1024 * 1024, fetch: { max_source_bytes: 2 * 1024 * 1024, max_response_bytes: 2 * 1024 * 1024, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 0, blocked_markers: [] } } },
+    execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: DEFAULT_SEARCH_TIMEOUT_MS, fetch_timeout_ms: 60_000, max_inline_bytes: 16 * 1024 * 1024, fetch: { max_source_bytes: 2 * 1024 * 1024, max_response_bytes: 2 * 1024 * 1024, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 0, blocked_markers: [] } } },
   };
 }
 export function resolveConfiguration(options: ResolveConfigurationOptions = {}): ResolvedConfiguration {
@@ -77,12 +85,16 @@ export function resolveConfiguration(options: ResolveConfigurationOptions = {}):
 /** Internal pure resolution seam: preserves source precedence without a second disk read. */
 export function resolveCapturedConfiguration(captured: { home: string; canonicalPath: string; canonical: CanonicalConfigPatch | undefined }, options: ResolveConfigurationOptions = {}): ResolvedConfiguration {
   const env = options.env ?? process.env; const { home, canonicalPath, canonical } = captured;
-  const sources: CanonicalConfigPatch[] = [defaultConfiguration(home)];
-  if (canonical !== undefined) sources.push(parseConfigPatch(canonical, 'canonical configuration')); else if (nonempty(env['NB_SEARCH_CONFIG']) !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The explicitly selected canonical configuration was not found.');
-  sources.push(environmentPatch(env)); if (options.config !== undefined) sources.push(parseConfigPatch(options.config, 'host configuration')); if (options.overrides !== undefined) sources.push(parseConfigPatch(options.overrides, 'runtime overrides'));
+  const defaults = defaultConfiguration(home); const sources: CanonicalConfigPatch[] = [defaults]; let explicitSearchTimeout = false;
+  const addSource = (source: CanonicalConfigPatch): void => {
+    const timeout = sourceSearchTimeout(source); if (timeout !== undefined) explicitSearchTimeout = timeout !== null;
+    sources.push(normalizeSearchTimeoutClear(source, defaults.execution));
+  };
+  if (canonical !== undefined) addSource(parseConfigPatch(canonical, 'canonical configuration')); else if (nonempty(env['NB_SEARCH_CONFIG']) !== undefined) throw new NbSearchError('CONFIGURATION_ERROR', 'The explicitly selected canonical configuration was not found.');
+  addSource(environmentPatch(env)); if (options.config !== undefined) addSource(parseConfigPatch(options.config, 'host configuration')); if (options.overrides !== undefined) addSource(parseConfigPatch(options.overrides, 'runtime overrides'));
   let merged: unknown = {}; for (const source of sources) merged = mergeValue(merged, source); const config = parseResolvedConfig(merged);
   const secrets = new Map<string, SecretBinding>(); for (const [slotId, slot] of Object.entries(config.credential_slots)) { const value = nonempty(env[slot.env]); if (value !== undefined) secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value, worker_grant: { kind: 'environment', name: slot.env } }); }
-  const fingerprint = stableFingerprint(config); return { config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: secrets, canonical_path: canonicalPath };
+  const fingerprint = stableFingerprint(config); return { config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: secrets, canonical_path: canonicalPath, explicit_search_timeout_ms: explicitSearchTimeout };
 }
 export function environmentPatch(env: NodeJS.ProcessEnv): CanonicalConfigPatch {
   const provider_instances: Record<string, Record<string, unknown>> = {};
@@ -94,6 +106,12 @@ export function environmentPatch(env: NodeJS.ProcessEnv): CanonicalConfigPatch {
   return { ...(Object.keys(provider_instances).length === 0 ? {} : { provider_instances }), ...(nonempty(env['NB_SEARCH_JOBS_ROOT']) === undefined ? {} : { jobs_root: nonempty(env['NB_SEARCH_JOBS_ROOT']) }), ...(integer(env['NB_SEARCH_RETENTION_HOURS'], 'NB_SEARCH_RETENTION_HOURS') === undefined ? {} : { retention_hours: integer(env['NB_SEARCH_RETENTION_HOURS'], 'NB_SEARCH_RETENTION_HOURS') }), ...(nonempty(env['NB_SEARCH_LOG_LEVEL']) === undefined ? {} : { log_level: nonempty(env['NB_SEARCH_LOG_LEVEL']) as CanonicalConfig['log_level'] }) };
 }
 function readPatch(path: string): CanonicalConfigPatch { try { return parseConfigPatch(JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) as unknown, 'canonical configuration'); } catch (error) { if (error instanceof NbSearchError) throw error; throw new NbSearchError('CONFIGURATION_ERROR', 'Canonical configuration is invalid.'); } }
+function sourceSearchTimeout(source: CanonicalConfigPatch): number | null | undefined { return source.execution === null ? null : source.execution?.search_timeout_ms; }
+function normalizeSearchTimeoutClear(source: CanonicalConfigPatch, defaults: ExecutionConfig): CanonicalConfigPatch {
+  if (source.execution === null) return { ...source, execution: structuredClone(defaults) };
+  if (source.execution?.search_timeout_ms !== null) return source;
+  return { ...source, execution: { ...source.execution, search_timeout_ms: defaults.search_timeout_ms } };
+}
 export function mergeValue(base: unknown, patch: unknown): unknown { if (patch === null) return undefined; if (Array.isArray(patch) || patch === null || typeof patch !== 'object') return patch; const result: Record<string, unknown> = isRecord(base) ? structuredClone(base) : {}; for (const [key, value] of Object.entries(patch)) { if (value === undefined) continue; if (value === null) delete result[key]; else result[key] = mergeValue(result[key], value); } return result; }
 function integer(value: string | undefined, name: string): number | undefined { const raw = nonempty(value); if (raw === undefined) return undefined; const parsed = Number(raw); if (!Number.isSafeInteger(parsed)) throw new NbSearchError('CONFIGURATION_ERROR', `${name} must be an integer.`); return parsed; }
 function nonempty(value: string | undefined): string | undefined { const item = value?.trim(); return item === '' ? undefined : item }

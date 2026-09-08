@@ -20,7 +20,7 @@ function fixture(body = envelope(), status = 200, headers: Record<string, string
 describe('explicit GMA relay messages mode', () => {
   it('sends the observed relay contract once and preserves the typed research projection', async () => {
     const f = fixture(); const result = await f.provider.research(request());
-    expect(f.calls).toHaveLength(1); expect(f.calls[0]).toMatchObject({ url: 'https://relay.example/v1/messages', method: 'POST', headers: { Authorization: `Bearer ${key}`, 'x-api-key': key, 'anthropic-version': '2023-06-01' }, response_type: 'text', max_response_bytes: RELAY_RESPONSE_MAX_BYTES, body: { system: expect.any(String), messages: [{ role: 'user', content: '<query>brief</query>' }], model: 'grok-4.20-multi-agent-xhigh', max_tokens: 4096, temperature: 0.1, stream: false, reasoning: { effort: 'xhigh' } } });
+    expect(f.calls).toHaveLength(1); expect(f.calls[0]).toMatchObject({ url: 'https://relay.example/v1/messages', method: 'POST', headers: { Authorization: `Bearer ${key}`, 'x-api-key': key, 'anthropic-version': '2023-06-01' }, response_type: 'text', max_response_bytes: RELAY_RESPONSE_MAX_BYTES, body: { system: expect.any(String), messages: [{ role: 'user', content: '<query>brief</query>' }], model: 'grok-4.20-multi-agent-xhigh', max_tokens: 4096, temperature: 0.1, stream: true, reasoning: { effort: 'xhigh' } } });
     expect(result).toMatchObject({ answer: value.answer, api_mode: 'messages', completeness: 'complete', expected_agent_count: 16, backend_trace_observable: false, semantic_verification: false }); expect(result.trace.claims).toHaveLength(1); expect(JSON.stringify(result)).not.toContain('must not surface');
   });
   it('keeps omitted api_mode on the existing chat path and projection', async () => {
@@ -37,7 +37,7 @@ describe('explicit GMA relay messages mode', () => {
     const current = new ProviderRegistry(builtInProviderRegistrations()).operationFingerprint('grok-multi-agent', 'research'); const old = new ProviderRegistry([{ ...registration, descriptor: { ...registration.descriptor, adapter_version: '1' } }]).operationFingerprint('grok-multi-agent', 'research'); expect(current).not.toBe(old);
   });
   it.each(['', '{broken', '{"content":[]}', '{"content":[{"type":"text","text":42}]}', '{"content":[{"type":"thinking","thinking":"hidden"}]}'])('rejects empty/malformed messages JSON without retries (%s)', async (body) => { const f = fixture(body); await expect(f.provider.research(request())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' }); expect(f.calls).toHaveLength(1); });
-  it('enforces response/content limits and rejects SSE instead of guessing a stream contract', () => {
+  it('enforces response/content limits and rejects JSON mislabeled as SSE', () => {
     expect(() => parseRelayMessagesContent('x'.repeat(RELAY_RESPONSE_MAX_BYTES + 1), {}, 'gma')).toThrow(/limit/);
     expect(() => parseRelayMessagesContent(JSON.stringify({ content: [{ type: 'text', text: 'x'.repeat(RELAY_CONTENT_MAX_BYTES + 1) }] }), {}, 'gma')).toThrow(/limit/);
     expect(() => parseRelayMessagesContent(envelope(), { 'content-type': 'text/event-stream' }, 'gma')).toThrow(/malformed/);
