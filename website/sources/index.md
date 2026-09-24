@@ -1,6 +1,6 @@
 # 信息源目录 (Sources Catalog)
 
-`nb-search` 内置支持 15 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。本地文档转换与 Markdown/资源保存请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
+`nb-search` 内置支持 16 个搜索源（Search Lanes）与 9 个内容抓取管道（Fetch Pipelines）。本地文档转换与 Markdown/资源保存请使用独立的 [nb-extract](https://github.com/NB-Corp/nb-extract) 工具。这些源依据用途场景、成本结构、延迟特征与输出通道进行分类。
 
 ::: tip 维度说明
 表格中的相对成本（`free` / `cheap` / `expensive`）和相对延迟（`fast` / `medium` / `slow`）属于运行时配置内严格声明的定性元数据标签，便于上层编排器进行粗粒度选择，并非真实账单计费依据或基准跑分。
@@ -11,8 +11,8 @@
 根据官方内置用途指引（`src/lane-guidance.ts`），能力按业务目标划分为三个主要分组。**这些分组反映的是使用场景与接入路径，而非质量高低的等级排序**：
 
 1. **入门通用检索与原文 (`onboarding`)**：
-   - **配置建议**：首次集成时，优先配置一个通用 Results 搜索源（例如 `tavily.search`、`brave.search` 或 `exa.search`）并设置为 `defaults.search_lane`。对于抓取，默认 URL 抓取链直接提供 `direct.fetch` 与 `jina.reader`，无需初始密钥即可验证。
-   - **典型源**：`brave.search`、`exa.search`、`tavily.search`、`parallel.search`、`searxng.search`、`zhipu.search`，抓取管道包含 `direct.fetch` 与 `jina.reader`。
+   - **配置建议**：零配置默认 `github.repositories` 仅检索 GitHub 仓库；文档上下文可显式选择 `context7.docs`。通用网页搜索需显式选择 `duckduckgo.search`（公共 HTML 页面可能出现 CAPTCHA）或配置 `tavily.search`、`brave.search`、`exa.search` 等稳定来源并设为 `defaults.search_lane`。抓取默认先用 `direct.fetch`，失败时尝试无需密钥的 `jina.reader`；直连成功但内容无用时，可通过 `execution.fetch.quality` 配置规则触发回退。
+   - **典型源**：`duckduckgo.search`、`brave.search`、`exa.search`、`tavily.search`、`parallel.search`、`searxng.search`、`zhipu.search`，抓取管道包含 `direct.fetch` 与 `jina.reader`。
 2. **按需专题能力 (`specialist`)**：
    - **配置建议**：针对特定类型数据、网页提取或受控环境显式选用，通常通过 `--lane`、`--lanes` 或 `--pipeline` 直接指定，而非作为全网兜底。
    - **典型源**：
@@ -27,9 +27,9 @@
 在本地运行 `node scripts/nb-search.mjs --doctor` 可输出包含用途分组指引的配置就绪摘要；调用 `capabilities` 可查看各源实时的端口激活与支持模式。注意下表中列出的“支持模式”适用于默认未注入自定义 `http_transport` 的标准本地运行时；若宿主显式注入了自定义 transport，所有异步模式将被禁用。`readiness` 仅反映本地配置完整度，并非外部上游的在线可用性探测。
 :::
 
-## 15 个搜索源 (Search Lanes)
+## 16 个搜索源 (Search Lanes)
 
-内置 15 个搜索源分布在不同的底层 Provider 与操作中：
+内置 16 个搜索源分布在不同的底层 Provider 与操作中：
 
 | Lane 标识 | Provider / 操作 | 输出通道与 Schema | 支持模式 (就绪时) | 必需凭据与端点配置 | 相对成本 / 延迟 | 特征与端点约定 |
 |---|---|---|---|---|---|---|
@@ -42,7 +42,8 @@
 | `searxng.search` | `searxng/search` | Results (`nb-search.results@1`) | sync, async | 无需 Key；必需 `NB_SEARCH_SEARXNG_BASE_URL` | free / medium | 自建或私有聚合搜索实例，端点补全 `/search` |
 | `zhipu.search` | `zhipu/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_ZHIPU_API_KEY`；Base URL 可选 | cheap / fast | 智谱 Web Search，端点补全 `/paas/v4/web_search` |
 | `parallel.search` | `parallel/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_PARALLEL_API_KEY` | cheap / fast | 固定端点 `https://api.parallel.ai/v1/search` |
-| `github.repositories` | `github/repositories` | Results (`nb-search.results@1`) | sync, async | `NB_SEARCH_GITHUB_TOKEN` 可选 | free / fast | GitHub 官方仓库搜索；无 Token 易受匿名频控限制 |
+| `github.repositories` | `github/repositories` | Results (`nb-search.results@1`) | sync, async | `NB_SEARCH_GITHUB_TOKEN` 可选 | free / fast | **零配置默认搜索**；仅检索 GitHub 仓库，无 Token 易受匿名频控限制 |
+| `duckduckgo.search` | `duckduckgo/search` | Results (`nb-search.results@1`) | sync, async | 无需凭据或自建端点 | free / medium | 通用网页 HTML 检索，需显式选择；公共端点可能返回 CAPTCHA，不保证可用 |
 | `context7.docs` | `context7/docs` | Typed (`nb-search.docs-context@1`) | sync, async | `NB_SEARCH_CONTEXT7_API_KEY` 可选 | cheap / medium | 框架与代码库文档上下文提取，无 Key 时按公用模式调用 |
 | `grok.synthesis` | `grok/synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_GROK_API_KEY`；Base/Model 可选 | expensive / slow | 基于 xAI Grok Responses API，启用 `web_search` 工具 |
 | `grok.x-synthesis` | `grok/x-synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_GROK_API_KEY`；Base/Model 可选 | expensive / slow | 基于 xAI Grok Responses API，启用 `x_search` 工具 |

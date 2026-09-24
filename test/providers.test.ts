@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import { createRuntimeComposition } from '../src/app.ts';
+import { DuckDuckGoSearchProvider } from '../src/providers/duckduckgo.ts';
+import { FetchJsonTransport } from '../src/transport.ts';
 import type { ProviderInstanceConfig } from '../src/config-schema.ts';
 import { builtInProviderRegistrations, ProviderRegistry } from '../src/provider-registry.ts';
 import { ExaProvider, TavilyProvider, resolveSearchUrl } from '../src/providers.ts';
@@ -48,6 +54,44 @@ describe('provider wire adapters', () => {
     let caught: unknown;
     try { await provider.search(request()); } catch (error) { caught = error; }
     expect(JSON.stringify(caught)).not.toMatch(/my-secret|private\.test/);
+  });
+
+  it('parses keyless DuckDuckGo HTML results and unmasks redirect links using a mocked fetch', async () => {
+    const page = '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fguide%3Futm_source%3Dddg&amp;rut=1">Example &amp; Guide</a><a class="result__snippet">Helpful <b>documentation</b>.</a></div>';
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(page, { status: 200, headers: { 'content-type': 'text/html' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const provider = new DuckDuckGoSearchProvider(new FetchJsonTransport());
+      expect(await provider.search({ ...request(), freshness: 'pw' })).toEqual([{ title: 'Example & Guide', url: 'https://example.com/guide', snippet: 'Helpful documentation.' }]);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('https://html.duckduckgo.com/html/?q=query&df=w');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('reports a DuckDuckGo challenge, rate limit, and unsupported markup instead of an empty result', async () => {
+    for (const response of [
+      { status: 202, body: '<form id="challenge-form" class="anomaly-modal">captcha</form>' },
+      { status: 200, body: '<html><form id="challenge-form">captcha</form></html>' },
+      { status: 200, body: '<html>unknown layout</html>' },
+      { status: 200, body: '<a class="result__a" href="javascript:alert(1)">Unsafe result</a>' },
+    ]) await expect(new DuckDuckGoSearchProvider(new CaptureTransport(response)).search(request())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false });
+    await expect(new DuckDuckGoSearchProvider(new CaptureTransport({ status: 429, body: '' })).search(request())).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true });
+    await expect(new DuckDuckGoSearchProvider(new CaptureTransport({ status: 200, body: '<html>No results found</html>' })).search(request())).resolves.toEqual([]);
+  });
+
+  it('runs the keyless repository default without NB_SEARCH_* configuration through mocked network', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nb-search-zero-config-'));
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ items: [{ full_name: 'example/project', html_url: 'https://github.com/example/project', description: 'a repository', updated_at: '2026-01-01' }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root });
+      const capabilities = await app.runtime.capabilities();
+      expect(capabilities.search.default_lane).toBe('github.repositories');
+      expect(capabilities.search.lanes.find((lane) => lane.id === 'github.repositories')?.availability).toBe('ready');
+      expect(capabilities.search.lanes.find((lane) => lane.id === 'context7.docs')?.availability).toBe('ready');
+      expect(await app.runtime.search({ action: 'run', query: 'example', execution: 'sync' })).toMatchObject({ status: 'succeeded', selection: { source: 'default', lanes: ['github.repositories'] }, output: { results: [{ url: 'https://github.com/example/project', title: 'example/project' }] } });
+      expect(fetchMock.mock.calls[0]?.[0]).toContain('https://api.github.com/search/repositories?q=example');
+    } finally { vi.unstubAllGlobals(); await rm(root, { recursive: true, force: true }); }
   });
 });
 

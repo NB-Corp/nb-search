@@ -126,13 +126,13 @@ describe('P0 results search adapters', () => {
     });
   });
 
-  it('registers both lanes without changing defaults or presets and gates missing credentials before transport', async () => {
+  it('registers both gated lanes without changing the keyless default or presets', async () => {
     const root = await temporaryRoot();
     let calls = 0;
     const transport: HttpTransport = { async send<T>() { calls += 1; return { status: 200, body: {} as T }; } };
     const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport });
     const capabilities = await app.runtime.capabilities();
-    expect(capabilities.search.default_lane).toBeUndefined();
+    expect(capabilities.search.default_lane).toBe('github.repositories');
     expect(capabilities.search.presets).toEqual([]);
     expect(capabilities.search.lanes.find((lane) => lane.id === 'firecrawl.search')).toMatchObject({ output: { channel: 'results', schema_id: 'nb-search.results@1' }, availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'fast', cost: 'cheap' });
     expect(capabilities.search.lanes.find((lane) => lane.id === 'brave.search')).toMatchObject({ output: { channel: 'results', schema_id: 'nb-search.results@1' }, availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'fast', cost: 'cheap' });

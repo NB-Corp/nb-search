@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRuntimeComposition } from '../src/app.ts';
 import { ExaContentsFetchProvider, FirecrawlScrapeFetchProvider, JinaReaderFetchProvider, TavilyExtractFetchProvider } from '../src/fetch-providers.ts';
+import type { DirectFetchIo } from '../src/fetch-security.ts';
 import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
 import { document, mockRegistration } from './helpers.ts';
 
@@ -61,6 +62,17 @@ describe('fetch provider adapters', () => {
     ['firecrawl', (transport: JsonTransport) => new FirecrawlScrapeFetchProvider({ apiKey: 'secret', transport })],
   ] as const)('maps %s upstream errors to FETCH_HTTP_ERROR', async (_name, create) => {
     for (const status of [404, 429, 500]) await expect(create(new CaptureTransport({ status, body: {} })).fetch(request())).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', retryable: status === 429 || status >= 500, data: { status } });
+  });
+
+  it('falls back to the free Jina reader when configured quality rules reject direct content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'nb-search-default-reader-')); roots.push(root);
+    const transport = new CaptureTransport({ status: 200, body: '# Article\nReadable content', headers: { 'content-type': 'text/plain' } });
+    const io: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request() { return { status: 200, headers: { 'content-type': 'text/html' }, body: new TextEncoder().encode('<title>Just a moment</title><p>Verify you are human</p>'), truncated: false }; } };
+    const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport, test_only_direct_fetch_io: io, config: { execution: { fetch: { quality: { min_content_chars: 0, blocked_markers: ['just a moment', 'verify you are human'] } } } } });
+    const result = await app.runtime.fetch({ url: 'https://example.com/page' });
+    expect(result).toMatchObject({ status: 'succeeded', documents: [{ source_lane: 'jina.reader', content: '# Article\nReadable content' }], lane_outcomes: [{ lane: 'direct.fetch', error: { code: 'QUALITY_GATE_FAILED', data: { rule: 'blocked_markers' } } }, { lane: 'jina.reader', state: 'succeeded' }] });
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]?.url).toBe('https://r.jina.ai/https://example.com/page');
   });
 
   it('gates credentialed built-in lanes while keeping direct and Jina ready without keys', async () => {

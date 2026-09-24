@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added a keyless DuckDuckGo HTML search lane; the zero-configuration default now searches GitHub repositories, while Context7 remains available for documentation queries.
+
+### Changed
+
+- Documented the existing direct-to-Jina URL fetch fallback and the need for explicit quality rules when direct fetch returns unusable content. Public DuckDuckGo HTML search may be blocked by CAPTCHA.
+
 ## 0.4.0 - 2026-09-08
 
 ### Added

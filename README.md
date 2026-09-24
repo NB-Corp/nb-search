@@ -51,14 +51,13 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-For search, set a provider key and choose its lane:
+Search works without configuration for **GitHub repositories only**:
 
 ```bash
-# Supply NB_SEARCH_EXA_API_KEY through your environment.
-nb-search search "Node.js release schedule" --lane exa.search
+nb-search search "TypeScript parser"
 ```
 
-A *lane* is a named source operation, such as `exa.search` or `gma.research`. Choose one explicitly or [set your default](https://nb-corp.github.io/nb-search/guide/configuration). Provider usage follows that provider's pricing and limits.
+For general web search, explicitly choose `duckduckgo.search` (its public HTML endpoint can challenge automated traffic) or configure a keyed provider such as `exa.search` and set `defaults.search_lane`. The default URL fetch chain tries `direct.fetch` first, then the keyless `jina.reader` if direct fails; a successful but poor direct response needs explicit `execution.fetch.quality` rules to trigger fallback. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
 
 ## Three methods. Plenty of room to build.
 

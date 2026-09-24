@@ -8,6 +8,7 @@ import { DirectFetchProvider, type DirectFetchIo } from './fetch-security.ts';
 import { LocalFetchProvider } from './fetch-sources.ts';
 import { BraveSearchProvider } from './providers/brave.ts';
 import { Context7DocsProvider } from './providers/context7.ts';
+import { DuckDuckGoSearchProvider } from './providers/duckduckgo.ts';
 import { FirecrawlSearchProvider } from './providers/firecrawl-search.ts';
 import { GitHubRepositoriesProvider } from './providers/github.ts';
 import { GrokResponsesProvider, resolveGrokResponsesUrl } from './providers/grok-responses.ts';
@@ -70,7 +71,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 function invalidDescriptor(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Provider registration descriptor is invalid.'); }
 export function builtInProviderRegistrations(): readonly ProviderRegistration[] { return registrationsWithFetchIo(undefined, playwrightBrowserRenderIo); }
 export function builtInProviderRegistrationsForInternalTest(testDirectIo?: DirectFetchIo, testBrowserIo: BrowserRenderIo = playwrightBrowserRenderIo): readonly ProviderRegistration[] { return registrationsWithFetchIo(testDirectIo, testBrowserIo); }
-function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration, scriptRegistration]; }
+function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, duckduckgoRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration, scriptRegistration]; }
 const urlStages = [{ id: 'remote.acquire', role: 'acquire' as const }, { id: 'content.extract', role: 'extract' as const }];
 const remoteFetch = (operation_id: string): FetchOperationDescriptor => ({ operation_id, schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', stages: urlStages });
 function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml'], stages: [{ id: 'direct.http', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }, { operation_id: 'local', schema_id: 'nb-search.fetch@1', input_kinds: ['inline_text', 'inline_bytes', 'file'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'none', stages: [{ id: 'local.acquire', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: { fetch: new DirectFetchProvider(io), local: new LocalFetchProvider() } }) }; }
@@ -115,6 +116,11 @@ const githubRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'github', adapter_version: '1', query_operations: [{ operation_id: 'repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
   validate: (id, instance) => validateKnownOptions(id, instance, []),
   create(context) { const provider = new GitHubRepositoriesProvider({ ...(context.credential === undefined ? {} : { token: context.credential.value }), transport: context.transports.http, clock: context.clock }); return { query: { repositories: resultsProvider(provider) }, fetch: {} }; },
+};
+const duckduckgoRegistration: ProviderRegistration = {
+  descriptor: { provider_id: 'duckduckgo', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
+  validate: (id, instance) => validateKnownOptions(id, instance, []),
+  create(context) { return { query: { search: resultsProvider(new DuckDuckGoSearchProvider(context.transports.http)) }, fetch: {} }; },
 };
 const parallelRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'parallel', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'none' }, option_keys: [] },

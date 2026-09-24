@@ -16,7 +16,7 @@ const groups: Record<GuidanceGroup, string> = { onboarding: '入门通用检索�
 // Keys are provider + operation, never the configured lane name.
 const guide: Record<string, readonly [GuidanceGroup, string]> = {
   'exa/search': ['onboarding', 'General web evidence retrieval'], 'tavily/search': ['onboarding', 'General web evidence retrieval'],
-  'brave/search': ['onboarding', 'General web evidence retrieval'], 'parallel/search': ['onboarding', 'General web evidence retrieval'],
+  'brave/search': ['onboarding', 'General web evidence retrieval'], 'duckduckgo/search': ['onboarding', 'Keyless web search; public HTML access may require CAPTCHA'], 'parallel/search': ['onboarding', 'General web evidence retrieval'],
   'searxng/search': ['onboarding', 'Self-hosted general web retrieval'], 'zhipu/search': ['onboarding', 'General web evidence retrieval'],
   'direct-http/fetch': ['onboarding', 'Default URL document acquisition'], 'jina-reader/reader': ['onboarding', 'URL reader pipeline'],
   'exa/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'], 'tavily/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'],
@@ -46,5 +46,5 @@ export function describeConfiguredLaneGuidance(config: CanonicalConfig, registra
 }
 /** Safe structural catalog: no canonical/secret/env lookup, runtime construction or network probes. */
 export function listBuiltInLaneGuidance(): GuidanceCatalog {
-  return { schema_version: '1', groups: { ...groups }, lanes: describeConfiguredLaneGuidance(defaultConfiguration('.')), note: 'Usage groups are not quality rankings. Start with one configured general results lane; specialist and research lanes are explicit choices. Cost/latency are relative. Readiness is not a live probe.' };
+  return { schema_version: '1', groups: { ...groups }, lanes: describeConfiguredLaneGuidance(defaultConfiguration('.')), note: 'Usage groups are not quality rankings. The keyless default searches GitHub repositories only; select a general results lane explicitly for web search. Specialist and research lanes are explicit choices. Cost/latency are relative. Readiness is not a live probe.' };
 }

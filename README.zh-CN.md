@@ -51,14 +51,13 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-需要搜索时，配置对应来源的密钥，再选择 lane：
+搜索无需配置即可使用，但**默认仅检索 GitHub 仓库**：
 
 ```bash
-# 在环境中配置 NB_SEARCH_EXA_API_KEY。
-nb-search search "Node.js release schedule" --lane exa.search
+nb-search search "TypeScript parser"
 ```
 
-*Lane* 就是一个命名的来源操作，例如 `exa.search` 或 `gma.research`。可以每次指定，也可以[设为默认来源](https://nb-corp.github.io/nb-search/guide/configuration)。服务商的费用与限额按其自身规则计算。
+如需通用网页搜索，可显式选择 `duckduckgo.search`（其公共 HTML 端点可能对自动请求触发 CAPTCHA）；更稳定的来源需配置密钥，如 `exa.search`，再设置 `defaults.search_lane`。默认 URL 抓取先尝试 `direct.fetch`，失败后回退到无需密钥的 `jina.reader`；若直连成功但正文无用，需要显式配置 `execution.fetch.quality` 规则才会回退。*Lane* 就是命名的来源操作。[查看配置方式 →](https://nb-corp.github.io/nb-search/guide/configuration) 服务商费用与限额仍适用。
 
 ## 三个方法，接入你的应用
 
