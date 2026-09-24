@@ -5,7 +5,7 @@ import type { FetchFileScope, FetchInputKind, FetchRepresentation, LaneCost, Lan
 
 export const CONFIG_SCHEMA_VERSION = '4' as const;
 export function resultTtlSeconds(retentionHours: number): number { return Math.max(1, Math.round(retentionHours * 3600)); }
-export interface ProviderInstanceConfig { provider_id: string; enabled: boolean; credential_slot_id?: string; base_url?: string; options: Readonly<Record<string, unknown>> }
+export interface ProviderInstanceConfig { provider_id: string; enabled: boolean; credential_slot_id?: string; base_url?: string; key_strategy?: 'round-robin' | 'priority'; balance_ttl_ms?: number; options: Readonly<Record<string, unknown>> }
 export interface CredentialSlotConfig { provider_id: string; env: string }
 export interface LaneConfig { provider_instance_id: string; operation_id: string; latency: LaneLatency; cost: LaneCost; evidence_groups?: readonly string[] }
 export interface FetchChainConfig { input_kind: FetchInputKind; representation?: FetchRepresentation; pipelines: readonly string[] }
@@ -26,7 +26,7 @@ export interface CanonicalConfigPatch {
   lanes?: Readonly<Record<string, LaneConfig | null>> | null; defaults?: { search_lane?: string | null; fetch_chain?: readonly FetchChainConfig[] | null } | null;
   presets?: Readonly<Record<string, PresetConfig | null>> | null; fetch?: { file_scopes?: readonly FetchFileScope[] | null } | null; execution?: ExecutionConfigPatch | null;
 }
-const providerInstanceSchema = z.object({ provider_id: z.string().trim().min(1).max(128), enabled: z.boolean(), credential_slot_id: z.string().trim().min(1).max(256).optional(), base_url: z.string().url().optional(), options: z.record(z.string(), z.unknown()) }).strict();
+const providerInstanceSchema = z.object({ provider_id: z.string().trim().min(1).max(128), enabled: z.boolean(), credential_slot_id: z.string().trim().min(1).max(256).optional(), base_url: z.string().url().optional(), key_strategy: z.enum(['round-robin', 'priority']).optional(), balance_ttl_ms: z.number().int().min(60_000).max(86_400_000).optional(), options: z.record(z.string(), z.unknown()) }).strict();
 const credentialSlotSchema = z.object({ provider_id: z.string().trim().min(1).max(128), env: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/) }).strict();
 const laneSchema = z.object({ provider_instance_id: z.string().trim().min(1).max(256), operation_id: z.string().trim().min(1).max(128), latency: z.enum(['fast', 'medium', 'slow']), cost: z.enum(['free', 'cheap', 'expensive']), evidence_groups: z.array(z.string().trim().min(1).max(128)).min(1).max(32).optional() }).strict();
 const presetSchema = z.object({ lanes: z.array(z.string().trim().min(1).max(256)).min(1) }).strict().superRefine((value, context) => { if (new Set(value.lanes).size !== value.lanes.length) context.addIssue({ code: 'custom', path: ['lanes'], message: 'preset lanes must be unique' }); });

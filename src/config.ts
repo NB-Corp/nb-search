@@ -4,6 +4,7 @@ import type { CanonicalConfigPatch, FetchChainConfig, LaneConfig, ProviderInstan
 import { resolveConfiguration, type ResolvedConfiguration } from './config-sources.ts';
 import type { DirectFetchIo } from './fetch-security.ts';
 import { NbSearchError } from './errors.ts';
+import { KeyScheduler } from './key-scheduler.ts';
 import { builtInProviderRegistrations, builtInProviderRegistrationsForInternalTest, ProviderRegistry, type ProviderPorts, type ProviderRegistration } from './provider-registry.ts';
 import { FetchJsonTransport, type JsonTransport } from './transport.ts';
 import type { FetchOperationDescriptor, FetchProvider, QueryExecution, QueryOperationDescriptor, QueryProvider } from './types.ts';
@@ -13,7 +14,7 @@ export interface LaneBinding {
   query_operation?: QueryOperationDescriptor; fetch_operation?: FetchOperationDescriptor; query_provider?: QueryProvider; fetch_provider?: FetchProvider;
   availability: 'ready' | 'unavailable'; issues: string[]; execution_modes: QueryExecution[];
 }
-export interface AppConfiguration { home: string; jobs_root: string; retention_hours: number; log_level: 'error' | 'warn' | 'info' | 'debug'; resolved: ResolvedConfiguration; registry: ProviderRegistry; ports_by_instance: ReadonlyMap<string, ProviderPorts>; lanes: Readonly<Record<string, LaneBinding>> }
+export interface AppConfiguration { home: string; jobs_root: string; retention_hours: number; log_level: 'error' | 'warn' | 'info' | 'debug'; resolved: ResolvedConfiguration; registry: ProviderRegistry; ports_by_instance: ReadonlyMap<string, ProviderPorts>; key_schedulers: ReadonlyMap<string, KeyScheduler>; lanes: Readonly<Record<string, LaneBinding>> }
 export interface LoadConfigurationOptions { config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; test_only_direct_fetch_io?: DirectFetchIo; test_only_browser_render_io?: BrowserRenderIo; cwd?: string; homeDirectory?: string; now?: () => Date }
 export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const resolved = resolveConfiguration({ env, ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.homeDirectory === undefined ? {} : { homeDirectory: options.homeDirectory }) });
@@ -21,13 +22,16 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
 }
 export function configurationFromResolved(resolved: ResolvedConfiguration, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const builtIns = options.test_only_direct_fetch_io === undefined && options.test_only_browser_render_io === undefined ? builtInProviderRegistrations() : builtInProviderRegistrationsForInternalTest(options.test_only_direct_fetch_io, options.test_only_browser_render_io);
-  const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>();
+  const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>(); const keySchedulers = new Map<string, KeyScheduler>();
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances)) {
     const descriptor = registry.descriptor(instance.provider_id); if (descriptor === undefined || !instance.enabled) continue;
     const credential = instance.credential_slot_id === undefined ? undefined : resolved.secret_bindings.get(instance.credential_slot_id);
     const configured = (descriptor.activation.credential === 'none' || credential !== undefined) && (descriptor.activation.endpoint !== 'required' || instance.base_url !== undefined);
     if (!configured) continue;
-    const created = registry.create(instanceId, instance, { ...(credential === undefined ? {} : { credential }), transports: { http: transport }, clock: options.now ?? (() => new Date()) }); ports.set(instanceId, created);
+    const clock = options.now ?? (() => new Date());
+    const scheduler = credential !== undefined && registry.isBuiltIn(instance.provider_id) ? new KeyScheduler(instanceId, instance, credential, transport, clock) : undefined;
+    if (scheduler !== undefined) keySchedulers.set(instanceId, scheduler);
+    const created = registry.create(instanceId, instance, { ...(credential === undefined ? {} : { credential }), transports: { http: scheduler ?? transport }, clock }); ports.set(instanceId, created);
   }
   const lanes: Record<string, LaneBinding> = {};
   for (const [id, lane] of Object.entries(resolved.config.lanes)) {
@@ -42,7 +46,7 @@ export function configurationFromResolved(resolved: ResolvedConfiguration, trans
     lanes[id] = { id, config: lane, instance, provider_id: instance.provider_id, built_in: builtIn, ...(queryOperation === undefined ? {} : { query_operation: queryOperation }), ...(fetchOperation === undefined ? {} : { fetch_operation: fetchOperation }), ...(queryProvider === undefined ? {} : { query_provider: queryProvider }), ...(fetchProvider === undefined ? {} : { fetch_provider: fetchProvider }), availability: ready ? 'ready' : 'unavailable', issues, execution_modes: executionModes };
   }
   validateLaneConfig(resolved.config.defaults, resolved.config.presets, lanes);
-  return { home: resolve(resolved.config.home ?? '.'), jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')), retention_hours: resolved.config.retention_hours, log_level: resolved.config.log_level, resolved, registry, ports_by_instance: ports, lanes };
+  return { home: resolve(resolved.config.home ?? '.'), jobs_root: resolve(resolved.config.jobs_root ?? resolve(resolved.config.home ?? '.', 'jobs')), retention_hours: resolved.config.retention_hours, log_level: resolved.config.log_level, resolved, registry, ports_by_instance: ports, key_schedulers: keySchedulers, lanes };
 }
 export function validateConfigurationSemantics(config: import('./config-schema.ts').CanonicalConfig): void {
   const registrations = builtInProviderRegistrations(); const registry = new ProviderRegistry(registrations);

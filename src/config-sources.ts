@@ -7,7 +7,13 @@ import { DEFAULT_GROK_MODEL } from './providers/grok-responses.ts';
 import { DEFAULT_GMA_EFFORT, DEFAULT_GMA_MODEL } from './providers.ts';
 
 export type WorkerGrant = { kind: 'environment'; name: string } | { kind: 'opaque'; id: string };
-export interface SecretBinding { credential_slot_id: string; provider_id: string; value: string; worker_grant: WorkerGrant }
+export interface SecretBinding { credential_slot_id: string; provider_id: string; value: string; values?: readonly string[]; worker_grant: WorkerGrant }
+/** A single legacy key or an ordered comma-separated key list. Never include key material in errors. */
+export function parseCredentialKeys(value: string): readonly string[] {
+  const keys = value.split(',').map((key) => key.trim());
+  if (keys.length > 32 || keys.some((key) => key.length === 0) || new Set(keys).size !== keys.length) throw new NbSearchError('CONFIGURATION_ERROR', 'Credential key list must contain 1–32 distinct nonempty keys.');
+  return keys;
+}
 export type SecretBindings = ReadonlyMap<string, SecretBinding>;
 export interface ResolvedConfiguration { config: CanonicalConfig; config_revision: string; config_fingerprint: string; secret_bindings: SecretBindings; canonical_path: string; explicit_search_timeout_ms: boolean }
 export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; cwd?: string; homeDirectory?: string }
@@ -105,7 +111,7 @@ export function resolveCapturedConfiguration(captured: { home: string; canonical
     return [id, instance.provider_id === 'script' && typeof module === 'string' && module.trim() !== ''
       ? { ...instance, options: { ...instance.options, module: resolve(moduleBases.get(id) ?? cwd, module) } } : instance];
   })) };
-  const secrets = new Map<string, SecretBinding>(); for (const [slotId, slot] of Object.entries(config.credential_slots)) { const value = nonempty(env[slot.env]); if (value !== undefined) secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value, worker_grant: { kind: 'environment', name: slot.env } }); }
+  const secrets = new Map<string, SecretBinding>(); for (const [slotId, slot] of Object.entries(config.credential_slots)) { const raw = nonempty(env[slot.env]); if (raw !== undefined) { const values = parseCredentialKeys(raw); secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value: values[0]!, values, worker_grant: { kind: 'environment', name: slot.env } }); } }
   const fingerprint = stableFingerprint(config); return { config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: secrets, canonical_path: canonicalPath, explicit_search_timeout_ms: explicitSearchTimeout };
 }
 export function environmentPatch(env: NodeJS.ProcessEnv): CanonicalConfigPatch {

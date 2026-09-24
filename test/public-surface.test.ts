@@ -9,9 +9,9 @@ import { NbSearchRuntimeImpl } from '../src/runtime.ts';
 const execAsync = promisify(exec);
 
 describe('public surface', () => {
-  it('exposes exactly three runtime methods and no fetch-security seam', () => {
+  it('exposes the local key usage method without exposing fetch-security seams', () => {
     const methods = Object.getOwnPropertyNames(NbSearchRuntimeImpl.prototype).filter((name) => name !== 'constructor').sort();
-    expect(methods).toEqual(['capabilities', 'fetch', 'search']);
+    expect(methods).toEqual(['capabilities', 'fetch', 'keyUsage', 'search']);
     expect(new publicModule.ResponseLimitError(128)).toMatchObject({ name: 'ResponseLimitError', maximum: 128, retryable: false });
     for (const internal of ['FetchJsonTransport', 'createRuntimeComposition', 'createCapturedRuntimeComposition', 'resolveCapturedConfiguration']) expect((publicModule as Record<string, unknown>)[internal]).toBeUndefined();
     for (const name of ['answer', 'deepStart', 'deepStatus', 'deepRead', 'deepList', 'deepCancel', 'researchStart', 'researchStatus', 'researchRead', 'researchList', 'researchCancel', 'listJobs']) expect((NbSearchRuntimeImpl.prototype as unknown as Record<string, unknown>)[name]).toBeUndefined();

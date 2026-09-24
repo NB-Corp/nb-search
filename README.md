@@ -59,7 +59,23 @@ nb-search search "TypeScript parser"
 
 For general web search, explicitly choose `duckduckgo.search` (its public HTML endpoint can challenge automated traffic) or configure a keyed provider such as `exa.search` and set `defaults.search_lane`. The default URL fetch chain tries `direct.fetch` first, then the keyless `jina.reader` if direct fails; a successful but poor direct response needs explicit `execution.fetch.quality` rules to trigger fallback. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
 
-## Three methods. Plenty of room to build.
+## Multiple provider keys (local runtime)
+
+Put up to 32 distinct keys, in priority order, in the existing credential environment variable, separated by commas: `NB_SEARCH_TAVILY_API_KEY="key-one,key-two"`. A single key remains valid. Custom `credential_slots.*.env` names use the same format. Keys are never included in config fingerprints or usage output. Configure scheduling per instance in `config.json` (schema version remains `"4"`):
+
+```json
+{
+  "provider_instances": {
+    "tavily.default": { "key_strategy": "priority", "balance_ttl_ms": 600000 }
+  }
+}
+```
+
+`key_strategy` defaults to `round-robin`; `priority` always selects the first available key, failing over in order. Both strategies quarantine 401/403 keys for the lifetime of the runtime, cool 429 keys using `Retry-After` (or 60 seconds), and retry 5xx/connection errors twice with bounded exponential backoff before moving to the next key. A 402 marks a key exhausted until its cache expires or a manual usage refresh restores it. State is in-memory and scoped to the provider instance/process (detached jobs each start a separate worker). The existing execution-level retry policy still applies after key-level attempts fail.
+
+For supported providers, `createNbSearchRuntime().keyUsage({ provider_instance_id: 'tavily.default', refresh: true })` returns an array of key-indexed state and credit usage, with no key values. Omit `refresh` to use a 10-minute TTL cache (`balance_ttl_ms` accepts 60,000–86,400,000 milliseconds); avoid frequent forced refreshes because Tavily [limits usage checks to 10 per 10 minutes](https://docs.tavily.com/documentation/rate-limits#usage-endpoint-rate-limits). Search and fetch **never query balances before dispatch**; only this explicit method fetches them. Tavily's [key usage endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/usage) reports key-level cycle usage/limit; Firecrawl's [team credit endpoint](https://docs.firecrawl.dev/api-reference/endpoint/credit-usage) reports **team-wide** remaining credits (the same balance can appear under multiple keys). Other providers return no usage entries, rather than claiming an unsupported balance API: Exa's [per-key historical spend API](https://exa.ai/docs/reference/team-management/get-api-key-usage) requires a separate team service key and does not report remaining balance. This method exists on the local SDK runtime only, not on remote, CLI or MCP transports.
+
+## Search, fetch, inspect capabilities—and check key usage locally.
 
 ```bash
 npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org

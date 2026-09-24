@@ -3,15 +3,25 @@ import { resultTtlSeconds, type ProviderInstanceConfig } from './config-schema.t
 import { capabilitiesInputSchema, fetchInputSchema, searchInputSchema, type CapabilitiesInput, type FetchInput, type FetchParsedInput, type FetchRunInput, type OperationContext, type SearchInput } from './contracts.ts';
 import { FetchService, outputExceedsInlineLimit, outputTooLargeError, QueryEngine } from './core.ts';
 import { NbSearchError, publicError } from './errors.ts';
+import type { KeyUsage } from './key-scheduler.ts';
 import { resolveSearchSelection } from './planner.ts';
 import type { QueryJobService } from './query-jobs.ts';
 import type { CapabilityEnvelope, CapabilityIssueCode, FetchEnvelope, FetchRunAsyncEnvelope, FetchRunSyncEnvelope, QueryExecution, QueryOperationOutput, SearchEnvelope, SearchRunAsyncEnvelope, SearchRunSyncEnvelope } from './types.ts';
 import { FETCH_REPRESENTATIONS, SCHEMA_VERSION } from './types.ts';
 
+export interface KeyUsageInput { provider_instance_id?: string; refresh?: boolean }
 export interface NbSearchRuntime { search(input: SearchInput, context?: OperationContext): Promise<SearchEnvelope>; fetch(input: FetchInput, context?: OperationContext): Promise<FetchEnvelope>; capabilities(input?: CapabilitiesInput, context?: OperationContext): Promise<CapabilityEnvelope> }
-export class NbSearchRuntimeImpl implements NbSearchRuntime {
+/** Local SDK only: remote/CLI/MCP protocols do not expose credential usage. */
+export interface LocalNbSearchRuntime extends NbSearchRuntime { keyUsage(input?: KeyUsageInput, context?: OperationContext): Promise<KeyUsage[]> }
+export class NbSearchRuntimeImpl implements LocalNbSearchRuntime {
   private readonly engine: QueryEngine; private readonly fetcher: FetchService;
   constructor(private readonly app: AppConfiguration, private readonly jobs: QueryJobService, now?: () => Date, private readonly disableDetachedAsync = false) { this.engine = new QueryEngine(app, now); this.fetcher = new FetchService(app); }
+  async keyUsage(input: KeyUsageInput = {}, context: OperationContext = {}): Promise<KeyUsage[]> {
+    if (input === null || typeof input !== 'object' || input.refresh !== undefined && typeof input.refresh !== 'boolean' || input.provider_instance_id !== undefined && (typeof input.provider_instance_id !== 'string' || input.provider_instance_id.length === 0)) throw new NbSearchError('INVALID_INPUT', 'Invalid key usage input.');
+    assertActive(context.signal);
+    const selected = [...this.app.key_schedulers.entries()].filter(([id, scheduler]) => scheduler.supportsUsage && (input.provider_instance_id === undefined || id === input.provider_instance_id)).sort(([a], [b]) => a.localeCompare(b));
+    return (await Promise.all(selected.map(([, scheduler]) => scheduler.usage(input.refresh, context.signal)))).flat();
+  }
   async search(input: SearchInput, context: OperationContext = {}): Promise<SearchEnvelope> { const parsed = searchInputSchema.parse(input); assertActive(context.signal); if (parsed.action === 'get') return await this.jobs.get(parsed); if (parsed.action === 'read') return await this.jobs.read(parsed); if (parsed.action === 'cancel') return await this.jobs.cancel(parsed); const execution = parsed.execution ?? 'sync'; if (execution === 'async' && this.disableDetachedAsync) return failedAsync(injectedTransportAsyncError()); let selected; try { selected = resolveSearchSelection(parsed, this.app, execution); } catch (error) { return execution === 'async' ? failedAsync(error) : failedSync(error); } if (execution === 'async') return await this.jobs.start(parsed, selected); try { const output = await this.engine.execute(parsed, selected, context.signal); const maximum = this.app.resolved.config.execution.max_inline_bytes; if (outputExceedsInlineLimit(output, maximum)) return failedSync(outputTooLargeError(maximum), selected.selection); return { schema_version: SCHEMA_VERSION, action: 'run', execution: 'sync', selection: selected.selection, status: output.status, output, hints: output.hints }; } catch (error) { return failedSync(error, selected.selection); } }
   async fetch(input: { url: string; pipeline?: string; representation?: 'markdown' | 'text'; timeout_ms?: number; max_content_chars?: number }, context?: OperationContext): Promise<FetchRunSyncEnvelope>;
   async fetch(input: FetchRunInput & { execution?: 'sync' }, context?: OperationContext): Promise<FetchRunSyncEnvelope>;
