@@ -51,13 +51,15 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-Search works without configuration for **GitHub repositories only**:
+The **0.5.0-next.4 source prerelease** searches the general web with DuckDuckGo by default, without registration, an API key or lane selection:
 
 ```bash
-nb-search search "TypeScript parser"
+node scripts/nb-search.mjs search "NASA James Webb telescope"
 ```
 
-For general web search, explicitly choose `duckduckgo.search` (its public HTML endpoint can challenge automated traffic) or configure a keyed provider such as `exa.search` and set `defaults.search_lane`. The default URL fetch chain tries `direct.fetch` first, then the keyless `jina.reader` if direct fails; a successful but poor direct response needs explicit `execution.fetch.quality` rules to trigger fallback. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
+DuckDuckGo's public HTML endpoint may issue a challenge or rate limit; these are reported as errors, not empty results. Wait before retrying, or explicitly choose another configured provider. `github.repositories` remains available for repository search. Configured defaults and explicit choices take precedence, including an explicitly removed default; failures never silently switch to a paid source. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
+
+This source prerelease also includes main-body Direct HTML extraction and configurable URL routing. Known GitHub raw text/repository JSON, npm metadata and PyPI JSON use Direct only by default; user rules can replace that list or restore your usual chain. Unmatched URLs still use the Direct-to-Jina default chain. Route decisions, actual attempts and content warnings are returned in receipts. [Routing configuration and host APIs →](docs/model-facing-lane-runtime.md#fetch) These changes are available from the source build/local prerelease package; the npm commands above still install the published 0.4.0.
 
 ## Multiple provider keys (local runtime)
 

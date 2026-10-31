@@ -4,7 +4,7 @@
     "module": "preserve",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "lib": ["ES2024"],
+    "lib": ["ES2024", "DOM"],
     "strict": true,
     "isolatedModules": true,
     "noUncheckedIndexedAccess": true,

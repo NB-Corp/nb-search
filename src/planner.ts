@@ -3,6 +3,7 @@ import type { AppConfiguration, LaneBinding } from './config.ts';
 import type { FetchRunInput, SearchRunInput } from './contracts.ts';
 import { NbSearchError, publicError } from './errors.ts';
 import { normalizeUrl } from './url.ts';
+import { selectFetchRoute, type FetchRouteDecision } from './fetch-routing-contracts.ts';
 import type { LaneAttempt, PublicError, QueryExecution, ResultProvenance, SearchResult, SearchSelection } from './types.ts';
 
 export interface ResolvedSearchSelection { selection: SearchSelection; lanes: LaneBinding[]; channel: 'results' | 'typed'; schema_id: string }
@@ -18,13 +19,33 @@ export function resolveSearchSelection(input: SearchRunInput, app: AppConfigurat
   if ((input.lanes !== undefined || input.preset !== undefined) && channel !== 'results') throw new NbSearchError('MIXED_OUTPUT_UNSUPPORTED', 'lanes and preset support results operations only.');
   return { selection, lanes, channel, schema_id: lanes[0]!.query_operation!.output.schema_id };
 }
-export interface ResolvedFetchSelection { source: 'default' | 'pipeline'; lanes: LaneBinding[]; requested?: string }
+export interface ResolvedFetchSelection { source: 'default' | 'pipeline'; lanes: LaneBinding[]; requested?: string; routing?: FetchRouteDecision }
 export function resolveFetchPipelines(input: FetchRunInput, app: AppConfiguration, execution: QueryExecution): ResolvedFetchSelection {
   const representation = input.representation ?? 'markdown'; const inputKind = input.source.kind; const mediaType = input.source.kind === 'inline_text' || input.source.kind === 'inline_bytes' ? input.source.media_type.split(';')[0]!.trim().toLowerCase() : undefined;
-  if (input.pipeline !== undefined) { const lane = app.lanes[input.pipeline]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch pipeline ${input.pipeline} is not registered.`); if (inputKind !== 'url' && lane.fetch_operation.egress !== 'none') throw new NbSearchError('FETCH_EGRESS_DENIED', `Fetch pipeline ${input.pipeline} cannot receive local or inline content.`); if (lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Fetch pipeline ${input.pipeline} is unavailable.`); if (!lane.fetch_operation.input_kinds.includes(inputKind) || !lane.fetch_operation.representations.includes(representation) || mediaType !== undefined && !lane.fetch_operation.media_types.includes(mediaType)) throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', `Fetch pipeline ${input.pipeline} does not support the requested source and representation.`); if (!lane.execution_modes.includes(execution)) throw new NbSearchError('LANE_EXECUTION_UNSUPPORTED', `Fetch pipeline ${input.pipeline} does not support ${execution}.`); return { source: 'pipeline', lanes: [lane], requested: input.pipeline }; }
-  const chain = app.resolved.config.defaults.fetch_chain?.find((item) => item.input_kind === inputKind && (item.representation ?? representation) === representation); if (chain === undefined) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch chain matches the requested source and representation.');
-  const lanes = chain.pipelines.map((id) => { const lane = app.lanes[id]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch pipeline ${id} is not registered.`); return lane; }).filter((lane) => inputKind !== 'url' && lane.fetch_operation!.egress !== 'none' || lane.fetch_operation!.input_kinds.includes(inputKind) && lane.fetch_operation!.representations.includes(representation) && (mediaType === undefined || lane.fetch_operation!.media_types.includes(mediaType)) && (lane.availability !== 'ready' || lane.execution_modes.includes(execution)));
-  if (lanes.length === 0) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch pipeline supports the requested source, representation, and execution mode.'); return { source: 'default', lanes };
+  const chain = app.resolved.config.defaults.fetch_chain?.find((item) => item.input_kind === inputKind && (item.representation ?? representation) === representation);
+  const routing = inputKind === 'url' ? selectFetchRoute({ url: input.source.kind === 'url' ? input.source.url : undefined, pipeline: input.pipeline, representation, execution }, app.resolved.config.fetch.routing, chain?.pipelines ?? []) : undefined;
+  const ids = input.pipeline === undefined ? routing?.pipelines ?? chain?.pipelines : [input.pipeline];
+  if (ids === undefined || ids.length === 0) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch chain matches the requested source and representation.');
+  const userAction = routing?.origin === 'user' ? app.resolved.config.fetch.routing?.rules?.find((rule) => rule.id === routing.rule_id)?.action : undefined;
+  const strict = input.pipeline !== undefined || routing?.origin === 'builtin' || userAction !== undefined && 'pipelines' in userAction;
+  try {
+    let lanes = ids.map((id) => {
+      const lane = app.lanes[id]; if (lane?.fetch_operation === undefined) throw new NbSearchError('LANE_NOT_REGISTERED', `Fetch pipeline ${id} is not registered.`);
+      if (strict) {
+        if (inputKind !== 'url' && lane.fetch_operation.egress !== 'none') throw new NbSearchError('FETCH_EGRESS_DENIED', `Fetch pipeline ${id} cannot receive local or inline content.`);
+        if (input.pipeline !== undefined && lane.availability !== 'ready') throw new NbSearchError('LANE_NOT_CONFIGURED', `Fetch pipeline ${id} is unavailable.`);
+        if (!lane.fetch_operation.input_kinds.includes(inputKind) || !lane.fetch_operation.representations.includes(representation) || mediaType !== undefined && !lane.fetch_operation.media_types.includes(mediaType)) throw new NbSearchError('FETCH_PIPELINE_UNSUPPORTED', `Fetch pipeline ${id} does not support the requested source and representation.`);
+        if (!lane.fetch_operation.execution_modes.includes(execution) || lane.availability === 'ready' && !lane.execution_modes.includes(execution)) throw new NbSearchError('LANE_EXECUTION_UNSUPPORTED', `Fetch pipeline ${id} does not support ${execution}.`);
+      }
+      return lane;
+    });
+    if (!strict) lanes = lanes.filter((lane) => inputKind !== 'url' && lane.fetch_operation!.egress !== 'none' || lane.fetch_operation!.input_kinds.includes(inputKind) && lane.fetch_operation!.representations.includes(representation) && (mediaType === undefined || lane.fetch_operation!.media_types.includes(mediaType)) && (lane.availability !== 'ready' || lane.execution_modes.includes(execution)));
+    if (lanes.length === 0) throw new NbSearchError('FETCH_CHAIN_UNAVAILABLE', 'No fetch pipeline supports the requested source, representation, and execution mode.');
+    return { source: input.pipeline === undefined ? 'default' : 'pipeline', lanes, requested: input.pipeline, routing };
+  } catch (error) {
+    if (error instanceof NbSearchError && routing !== undefined) throw new NbSearchError(error.code, error.message, error.retryable, error.provider, { data: { ...error.data, routing } });
+    throw error;
+  }
 }
 export function assertAttemptBudget(unitCount: number, retryCount: number, maxProviderCalls: number): void { if (unitCount * (retryCount + 1) > maxProviderCalls) throw new NbSearchError('BUDGET_EXCEEDED', 'The execution plan exceeds the provider attempt limit.'); }
 export interface ExecutionUnit<T> { lane: string; provider_instance_id: string; run(signal: AbortSignal): Promise<T> }

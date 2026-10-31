@@ -1,3 +1,4 @@
+import type { FetchRouteDecision, FetchRoutingCapability } from './fetch-routing-contracts.ts';
 export const SCHEMA_VERSION = '3.0' as const;
 export const FRESHNESS_VALUES = ['pd', 'pw', 'pm', 'py'] as const;
 export const FETCH_INPUT_KINDS = ['url', 'inline_text', 'inline_bytes', 'file'] as const;
@@ -59,7 +60,7 @@ export interface FetchProviderRequest { source: FetchSource; representation: Fet
 export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
 export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
 export interface FetchDocument extends FetchProviderResult { source_lane: string }
-export interface FetchFileScope { id: string; root: string; media_types?: readonly string[] }
+export interface FetchFileScope { id: string; root: string; media_types?: readonly string[]; canonical_target?: string; approved_identity?: { dev: string; ino: string } }
 
 export interface ProviderResult {
   title: string; url: string; snippet?: string; published_at?: string; site_name?: string; score?: number;
@@ -97,7 +98,7 @@ export interface MultiAgentResearchProvider { readonly name: 'grok-multi-agent';
 export type LaneAttemptState = 'succeeded' | 'empty' | 'failed' | 'timeout' | 'cancelled';
 export type LaneOutcomeState = LaneAttemptState | 'skipped';
 export interface LaneAttempt { lane: string; provider_instance_id: string; attempt: number; state: LaneAttemptState; duration_ms: number; error?: PublicError }
-export interface LaneOutcome { lane: string; ok: boolean; state: LaneOutcomeState; duration_ms: number; result_count: number; warnings: Hint[]; error?: PublicError }
+export interface LaneOutcome { lane: string; ok: boolean; state: LaneOutcomeState; duration_ms: number; result_count: number; warnings: Hint[]; error?: PublicError; attempts?: LaneAttempt[] }
 export interface SearchSelection { source: 'default' | 'lane' | 'lanes' | 'preset'; lanes: string[]; requested?: string | string[] }
 export interface ResultProvenance { lane: string; provider_instance_id: string; query_index: number; rank: number; original_url: string; evidence_groups: string[]; upstream?: readonly UpstreamResultAttribution[] }
 export interface SearchResult { title: string; url: string; snippet: string; published_at?: string; site_name?: string; rrf_score?: number; evidence_groups: string[]; provenance: ResultProvenance[] }
@@ -118,10 +119,10 @@ export interface SearchReadEnvelope { schema_version: typeof SCHEMA_VERSION; act
 export interface SearchCancelEnvelope { schema_version: typeof SCHEMA_VERSION; action: 'cancel'; job_id: string; state: JobState; cancel_requested: boolean }
 export type SearchEnvelope = SearchRunSyncEnvelope | SearchRunAsyncEnvelope | SearchGetEnvelope | SearchReadEnvelope | SearchCancelEnvelope;
 
-export interface FetchRunSyncEnvelope { schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'sync'; selection: { source: 'default' | 'pipeline'; pipeline?: string }; status: LogicalStatus; lane_outcomes: LaneOutcome[]; documents: FetchDocument[]; hints: Hint[]; error?: PublicError }
-export interface FetchRunAsyncEnvelope { schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'async'; selection?: { source: 'default' | 'pipeline'; pipeline?: string }; status: 'queued' | 'failed'; schema_id?: 'nb-search.fetch@1'; job?: JobReceipt; reused?: boolean; poll_after_ms?: number; error?: PublicError; hints: Hint[] }
-export interface FetchGetEnvelope extends SearchGetEnvelope { mode: 'fetch' }
-export interface FetchReadEnvelope extends SearchReadEnvelope { mode: 'fetch' }
+export interface FetchRunSyncEnvelope { routing?: FetchRouteDecision; schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'sync'; selection: { source: 'default' | 'pipeline'; pipeline?: string }; status: LogicalStatus; lane_outcomes: LaneOutcome[]; documents: FetchDocument[]; hints: Hint[]; error?: PublicError }
+export interface FetchRunAsyncEnvelope { routing?: FetchRouteDecision; schema_version: typeof SCHEMA_VERSION; mode: 'fetch'; action: 'run'; execution: 'async'; selection?: { source: 'default' | 'pipeline'; pipeline?: string }; status: 'queued' | 'failed'; schema_id?: 'nb-search.fetch@1'; job?: JobReceipt; reused?: boolean; poll_after_ms?: number; error?: PublicError; hints: Hint[] }
+export interface FetchGetEnvelope extends SearchGetEnvelope { mode: 'fetch'; routing?: FetchRouteDecision }
+export interface FetchReadEnvelope extends SearchReadEnvelope { mode: 'fetch'; routing?: FetchRouteDecision }
 export interface FetchCancelEnvelope extends SearchCancelEnvelope { mode: 'fetch' }
 export type FetchEnvelope = FetchRunSyncEnvelope | FetchRunAsyncEnvelope | FetchGetEnvelope | FetchReadEnvelope | FetchCancelEnvelope;
 export type CapabilityIssueCode = 'PROVIDER_NOT_REGISTERED' | 'PROVIDER_DISABLED' | 'CREDENTIAL_NOT_CONFIGURED' | 'ENDPOINT_NOT_CONFIGURED' | 'PROVIDER_PORTS_UNAVAILABLE' | 'PROVIDER_PORTS_PARTIAL' | 'LANE_NOT_REGISTERED' | 'OPERATION_NOT_REGISTERED' | 'LANE_NOT_CONFIGURED' | 'BROWSER_NOT_INSTALLED' | 'RATE_LIMIT_UNAUTHENTICATED' | (string & {});
@@ -133,6 +134,7 @@ export interface CapabilityEnvelope {
   providers: { descriptors: CapabilityProviderDescriptor[]; instances: CapabilityProviderInstance[] };
   search: { default_lane?: string; lanes: Array<{ id: string; output: QueryOperationOutput; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[]; latency: LaneLatency; cost: LaneCost }>; presets: Array<{ name: string; lanes: string[]; execution_modes: QueryExecution[]; availability: 'ready' | 'unavailable'; issues: CapabilityIssue[] }>; limits: { max_queries: number; max_results: number; max_timeout_ms: number; max_inline_bytes: number } };
   fetch: {
+    routing?: FetchRoutingCapability;
     default_representation: 'markdown';
     inputs: Array<{ kind: FetchInputKind; enabled: boolean; max_bytes: number; media_types?: string[]; scope_ids?: string[] }>;
     chains: Array<{ input_kind: FetchInputKind; representation: FetchRepresentation; pipelines: string[] }>;

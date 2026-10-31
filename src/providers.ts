@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { NbSearchError } from './errors.ts';
 import { redactText } from './redaction.ts';
@@ -150,36 +151,27 @@ export class TavilyProvider implements SearchProvider {
   readonly credential_slot_id?: string;
   readonly redactions: readonly string[];
   private readonly endpoint: string;
+  private readonly authorization: string;
   constructor(private readonly options: ProviderOptions) {
     this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
     this.credential_slot_id = options.credentialSlotId;
     this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL, options.searchPath);
-    this.redactions = [options.apiKey, this.endpoint];
+    this.authorization = `Bearer ${options.apiKey}`;
+    this.redactions = [options.apiKey, this.authorization, this.endpoint];
   }
   async search(request: ProviderSearchRequest): Promise<readonly ProviderResult[]> {
     try {
-      const body: Record<string, unknown> = {
-        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: false,
-      };
-      const days = freshnessDays(request.freshness);
-      if (days !== undefined) body['days'] = days;
-      const response = await this.options.transport.send<{ results?: unknown }>({
-        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: request.signal,
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
+        body: tavilySearchBody(request.query, request.limit, false, request.freshness),
+        response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
       });
       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
-      const rows = Array.isArray(response.body.results) ? response.body.results : [];
-      return rows.flatMap((item): ProviderResult[] => {
-        if (!isRecord(item) || stringValue(item['url']) === '') return [];
-        return [{
-          title: stringValue(item['title']), url: stringValue(item['url']), snippet: stringValue(item['content']),
-          ...(stringValue(item['published_date']) === '' ? {} : { published_at: stringValue(item['published_date']) }),
-          ...(numberValue(item['score']) === undefined ? {} : { score: numberValue(item['score']) }),
-        }];
-      });
+      if (!isRecord(response.body)) throw malformedCapabilityError('tavily');
+      return projectTavilyRows(response.body['results'], request.limit);
     } catch (error) {
       if (request.signal.aborted) throw error;
+      if (error instanceof ResponseLimitError) throw malformedCapabilityError('tavily', error);
       throw safeProviderError(error, this.name, this.redactions);
     }
   }
@@ -192,21 +184,19 @@ export class TavilyAnswerProvider implements AnswerProvider {
   readonly credential_slot_id?: string;
   readonly redactions: readonly string[];
   private readonly endpoint: string;
+  private readonly authorization: string;
   constructor(private readonly options: CapabilityProviderOptions) {
     this.provider_instance_id = options.providerInstanceId ?? 'tavily.default';
     this.credential_slot_id = options.credentialSlotId;
     this.endpoint = resolveSearchUrl(options.baseUrl ?? TAVILY_SEARCH_URL, options.operationPath);
-    this.redactions = [options.apiKey, this.endpoint];
+    this.authorization = `Bearer ${options.apiKey}`;
+    this.redactions = [options.apiKey, this.authorization, this.endpoint];
   }
   async answer(request: ProviderAnswerCapabilityRequest): Promise<ProviderAnswerCapabilityResult> {
     try {
-      const body: Record<string, unknown> = {
-        api_key: this.options.apiKey, query: request.query, max_results: request.limit, include_answer: 'advanced',
-      };
-      const days = freshnessDays(request.freshness);
-      if (days !== undefined) body['days'] = days;
       const response = await this.options.transport.send<unknown>({
-        url: this.endpoint, method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
+        body: tavilySearchBody(request.query, request.limit, 'advanced', request.freshness),
         response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal,
       });
       assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
@@ -221,6 +211,75 @@ export class TavilyAnswerProvider implements AnswerProvider {
     }
   }
 }
+
+export class TavilyCrawlProvider {
+  readonly name = 'tavily' as const;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  private readonly authorization: string;
+  constructor(private readonly options: CapabilityProviderOptions) {
+    this.endpoint = resolveOperationUrl(options.baseUrl ?? 'https://api.tavily.com/crawl', '/crawl');
+    this.authorization = `Bearer ${options.apiKey}`;
+    this.redactions = [options.apiKey, this.authorization, this.endpoint];
+  }
+  async crawl(request: { root_url: string; max_pages: number; signal: AbortSignal }): Promise<import('./types.ts').JsonValue> {
+    try {
+      const rootUrl = tavilyRootUrl(request.root_url);
+      const response = await this.options.transport.send<unknown>({
+        url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization),
+        body: { url: rootUrl, limit: Math.max(1, request.max_pages), format: 'markdown', extract_depth: 'basic', timeout: 150, include_usage: true },
+        response_type: 'json', max_response_bytes: 8 * 1024 * 1024, signal: request.signal,
+      });
+      assertProviderStatus(response.status, this.name, response.headers, this.options.clock);
+      if (!isRecord(response.body) || !Array.isArray(response.body['results'])) throw malformedCapabilityError('tavily');
+      const documents = response.body['results'].slice(0, 100).flatMap((item) => !isRecord(item) || typeof item['raw_content'] !== 'string' ? [] : [tavilyCrawlDocument(item, item['raw_content'])]);
+      if (documents.length === 0) throw malformedCapabilityError('tavily');
+      return JSON.parse(JSON.stringify({ capability: 'crawl', base_url: stringValue(response.body['base_url']) || rootUrl, documents, response_time: numberValue(response.body['response_time']), request_id: stringValue(response.body['request_id']) || undefined, usage: isRecord(response.body['usage']) ? response.body['usage'] : undefined })) as import('./types.ts').JsonValue;
+    } catch (error) { if (request.signal.aborted) throw error; throw safeProviderError(error, this.name, this.redactions); }
+  }
+}
+export class TavilyResearchProvider {
+  readonly name = 'tavily' as const;
+  readonly redactions: readonly string[];
+  private readonly endpoint: string;
+  private readonly authorization: string;
+  constructor(private readonly options: CapabilityProviderOptions) {
+    this.endpoint = resolveOperationUrl(options.baseUrl ?? 'https://api.tavily.com/research', '/research');
+    this.authorization = `Bearer ${options.apiKey}`;
+    this.redactions = [options.apiKey, this.authorization, this.endpoint];
+  }
+  async researchTask(request: { query: string; signal: AbortSignal }): Promise<Record<string, import('./types.ts').JsonValue>> {
+    try {
+      const created = await this.options.transport.send<unknown>({ url: this.endpoint, method: 'POST', headers: tavilyHeaders(this.authorization), body: { input: request.query, model: 'auto', stream: false, output_length: 'standard' }, response_type: 'json', max_response_bytes: 1_048_576, signal: request.signal });
+      assertProviderStatus(created.status, this.name, created.headers, this.options.clock);
+      if (!isRecord(created.body) || stringValue(created.body['request_id']) === '') throw malformedCapabilityError('tavily');
+      const taskId = stringValue(created.body['request_id']);
+      const final = await this.awaitTask(taskId, request.signal);
+      const content = final['content'];
+      if (typeof content !== 'string' || content.trim() === '') throw malformedCapabilityError('tavily');
+      return JSON.parse(JSON.stringify({ capability: 'research-task', task_id: taskId, content, sources: normalizeSupportingUrls(tavilySources(final['sources']), 'provider-grounding'), model: optionalText(final['model']), response_time: numberValue(final['response_time']) })) as Record<string, import('./types.ts').JsonValue>;
+    } catch (error) { if (request.signal.aborted) throw error; throw safeProviderError(error, this.name, this.redactions); }
+  }
+  private async awaitTask(taskId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const clock = this.options.clock ?? (() => new Date()); const deadlineAt = clock().getTime() + 900_000;
+    for (;;) {
+      const polled = await this.options.transport.send<unknown>({ url: `${this.endpoint}/${encodeURIComponent(taskId)}`, method: 'GET', headers: { Authorization: this.authorization }, response_type: 'json', max_response_bytes: 1_048_576, signal });
+      assertProviderStatus(polled.status, this.name, polled.headers, this.options.clock);
+      if (!isRecord(polled.body)) throw malformedCapabilityError('tavily');
+      const status = polled.body['status'];
+      if (status === 'completed') return polled.body;
+      if (status === 'failed' || status === 'error') throw new NbSearchError('PROVIDER_UNAVAILABLE', 'tavily research task failed.', false, this.name, { data: { task_status: 'failed' } });
+      if (clock().getTime() >= deadlineAt) throw new NbSearchError('DEADLINE_EXCEEDED', 'tavily research task did not complete in time.', true, this.name, { data: { task_status: typeof status === 'string' ? status : 'unknown' } });
+      await delay(2_000, undefined, { signal });
+    }
+  }
+}
+function tavilyHeaders(authorization: string): Record<string, string> { return { Authorization: authorization, 'Content-Type': 'application/json' }; }
+function tavilySearchBody(query: string, limit: number, includeAnswer: boolean | 'advanced', freshness: ProviderSearchRequest['freshness']): Record<string, unknown> { const time_range = freshness === 'pd' ? 'day' : freshness === 'pw' ? 'week' : freshness === 'pm' ? 'month' : freshness === 'py' ? 'year' : undefined; return { query, max_results: Math.max(0, Math.min(20, limit)), include_answer: includeAnswer, include_published_date: true, ...(time_range === undefined ? {} : { time_range }) }; }
+function tavilyRootUrl(value: string): string { const candidate = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) ? value : `https://${value}`; let url: URL; try { url = new URL(candidate); } catch { throw new NbSearchError('INVALID_INPUT', 'Tavily crawl requires an HTTP(S) root URL.'); } if (!['https:', 'http:'].includes(url.protocol) || url.hostname === '' || url.username !== '' || url.password !== '') throw new NbSearchError('INVALID_INPUT', 'Tavily crawl requires an HTTP(S) root URL.'); return url.toString(); }
+function tavilyCrawlDocument(item: Record<string, unknown>, rawContent: string): import('./types.ts').FetchProviderResult { const truncated = rawContent.length > 200_000; const url = stringValue(item['url']); return { ...(url === '' ? {} : { url, final_url: url }), content: truncated ? rawContent.slice(0, 200_000) : rawContent, content_type: 'text/markdown', media_type: 'text/markdown', representation: 'markdown', format: 'text', byte_length: Buffer.byteLength(rawContent, 'utf8'), truncated, warnings: truncated ? [{ code: 'CRAWL_CONTENT_CHARS_LIMIT', message: 'The crawl document character limit was reached.', data: { max_content_chars: 200_000 } }] : [] }; }
+function tavilySources(value: unknown): Array<{ url: unknown; title?: unknown }> { return Array.isArray(value) ? value.slice(0, 100).flatMap((item) => isRecord(item) ? [{ url: item['url'], title: item['title'] }] : []) : []; }
+function optionalText(value: unknown): string | undefined { if (typeof value !== 'string') return undefined; const text = value.trim(); return text === '' || text.length > 128 ? undefined : text; }
 
 export class ExaResearchLightProvider implements ResearchLightProvider {
   readonly name = 'exa' as const;
@@ -589,7 +648,7 @@ function assertProviderStatus(
 function safeProviderError(error: unknown, provider: ProviderName, redactions: readonly string[]): NbSearchError {
   if (error instanceof NbSearchError) {
     return new NbSearchError(error.code, redactText(error.message, redactions), error.retryable, provider, {
-      cause: error, retryAfterMs: error.retryAfterMs,
+      cause: error, retryAfterMs: error.retryAfterMs, data: error.data,
     });
   }
   return new NbSearchError('PROVIDER_UNAVAILABLE', redactText(`${provider} provider failed.`, redactions), true, provider, { cause: error });

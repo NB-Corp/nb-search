@@ -1,8 +1,9 @@
 import { NbSearchError } from '../errors.ts';
 import { htmlToText } from '../fetch-security.ts';
-import { ResponseLimitError, type HttpTransport } from '../transport.ts';
+import type { HttpTransport } from '../transport.ts';
 import type { ProviderResult, ProviderSearchRequest, SearchProvider } from '../types.ts';
 import { normalizeUrl } from '../url.ts';
+import { assertSearchStatus, searchProviderError } from './search-adapter.ts';
 
 const SEARCH_URL = 'https://html.duckduckgo.com/html/';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -25,11 +26,11 @@ export class DuckDuckGoSearchProvider implements SearchProvider {
         headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; nb-search/0.4)' },
         max_response_bytes: MAX_RESPONSE_BYTES, signal: request.signal,
       });
-      if (response.status === 429) throw new NbSearchError('PROVIDER_RATE_LIMIT', 'DuckDuckGo rate limit was reached.', true, this.name, { data: { status: 429 } });
+      if (response.status === 429) assertSearchStatus(response.status, this.name, response.headers);
       if (response.status < 200 || response.status >= 300) throw new NbSearchError('PROVIDER_UNAVAILABLE', `DuckDuckGo search failed (HTTP ${String(response.status)}).`, response.status >= 500, this.name, { data: { status: response.status } });
-      if (typeof response.body !== 'string' || /anomaly-modal|challenge-form|captcha|verify you are human/iu.test(response.body)) throw malformed();
+      if (response.status !== 200 || typeof response.body !== 'string' || /<(?:form|div|input)\b[^>]{0,2000}(?:anomaly-modal|challenge-form|captcha)|verify you are human/iu.test(response.body)) throw malformed();
       const matches = [...response.body.matchAll(RESULT_ANCHOR)].filter((match) => /\bresult__a\b|\bresult-link\b/i.test(attribute(match[1] ?? '', 'class') ?? ''));
-      const noResults = /no results (?:found|for)|class=["'][^"']*no-results\b/iu.test(response.body);
+      const noResults = /class\s*=\s*["'][^"']*\bno-results\b/iu.test(response.body);
       if (matches.length === 0 && !noResults) throw malformed();
       const results: ProviderResult[] = [];
       for (const [index, match] of matches.entries()) {
@@ -48,9 +49,7 @@ export class DuckDuckGoSearchProvider implements SearchProvider {
       return results;
     } catch (error) {
       if (request.signal.aborted) throw error;
-      if (error instanceof ResponseLimitError) throw new NbSearchError('PROVIDER_UNAVAILABLE', 'DuckDuckGo response exceeded the configured limit.', false, this.name, { cause: error });
-      if (error instanceof NbSearchError) throw error;
-      throw new NbSearchError('PROVIDER_UNAVAILABLE', 'DuckDuckGo search connection failed.', true, this.name, { cause: error });
+      throw searchProviderError(error, this.name, this.redactions);
     }
   }
 }

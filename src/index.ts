@@ -1,4 +1,11 @@
-import { createRuntimeComposition } from './app.ts';
+import { createRuntimeComposition, createCapturedRuntimeComposition } from './app.ts';
+import type { ResolvedConfiguration } from './config-sources.ts';
+export { resolveCapturedConfiguration, bindCapturedConfiguration, defaultConfiguration } from './config-sources.ts';
+export type { ResolvedConfiguration, ResolveConfigurationOptions } from './config-sources.ts';
+export { runWorker } from './worker-runtime.ts';
+export { captureFetchFileIdentity } from './fetch-sources.ts';
+export type { WorkerLauncher } from './query-jobs.ts';
+export * from './fetch-routing-contracts.ts';
 import type { CanonicalConfigPatch } from './config-schema.ts';
 import type { ProviderRegistration } from './provider-registry.ts';
 import type { LocalNbSearchRuntime } from './runtime.ts';
@@ -25,8 +32,12 @@ export { builtInProviderRegistrations, ProviderRegistry, REGISTRY_SCHEMA_VERSION
 export type { ProviderDescriptor, ProviderFactoryContext, ProviderPorts, ProviderRegistration } from './provider-registry.ts';
 export type { ArtifactChunk, ArtifactRef, CapabilityEnvelope, CapabilityIssue, CapabilityIssueCode, CapabilityProviderDescriptor, CapabilityProviderInstance, ErrorEnvelope, FetchCancelEnvelope, FetchDocument, FetchEnvelope, FetchFileScope, FetchGetEnvelope, FetchInputKind, FetchOperationDescriptor, FetchPipelineDescriptor, FetchProvider, FetchProviderRequest, FetchProviderResult, FetchReadEnvelope, FetchRepresentation, FetchRunAsyncEnvelope, FetchRunSyncEnvelope, FetchSource, FetchStageRole, FetchWarning, Freshness, Hint, JobKind, JobReceipt, JobState, JsonValue, LaneCost, LaneLatency, LaneOutcome, LaneOutcomeState, LogicalStatus, OutputChannel, ProviderId, ProviderInstanceId, ProviderName, ProviderResult, PublicError, PublicErrorCode, QueryExecution, QueryExecutionRequest, QueryOperationDescriptor, QueryOperationOutput, QueryProvider, QueryProviderValue, SearchCancelEnvelope, SearchEnvelope, SearchGetEnvelope, SearchLogicalOutput, SearchReadEnvelope, SearchResult, SearchResultsOutput, SearchRunAsyncEnvelope, SearchRunSyncEnvelope, SearchSelection, SearchTypedOutput } from './types.ts';
 
-export interface CreateNbSearchRuntimeOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; http_transport?: HttpTransport }
-export function createNbSearchRuntime(options: CreateNbSearchRuntimeOptions = {}): LocalNbSearchRuntime {
+export interface CreateNbSearchRuntimeOptions { env?: NodeJS.ProcessEnv; config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; http_transport?: HttpTransport; launcher?: import('./query-jobs.ts').WorkerLauncher }
+function compositionOptions(options: CreateNbSearchRuntimeOptions) {
   if (options.http_transport !== undefined && (options.http_transport === null || typeof options.http_transport.send !== 'function')) throw new NbSearchError('CONFIGURATION_ERROR', 'http_transport must implement send.');
-  return createRuntimeComposition(options.env, { ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.provider_registrations === undefined ? {} : { provider_registrations: options.provider_registrations }), ...(options.http_transport === undefined ? {} : { transport: options.http_transport, disable_detached_async: true }) }).runtime;
+  if (options.launcher !== undefined && (options.launcher === null || typeof options.launcher.launch !== 'function')) throw new NbSearchError('CONFIGURATION_ERROR', 'launcher must implement launch.');
+  return { launcher: options.launcher, config: options.config, overrides: options.overrides, provider_registrations: options.provider_registrations, transport: options.http_transport, disable_detached_async: options.http_transport !== undefined };
 }
+export function createNbSearchRuntime(options: CreateNbSearchRuntimeOptions = {}): LocalNbSearchRuntime { return createRuntimeComposition(options.env, compositionOptions(options)).runtime; }
+/** Composes the captured, already-resolved configuration without reading config files or applying sources twice. Secrets remain in-process. */
+export function createCapturedNbSearchRuntime(resolved: ResolvedConfiguration, options: Omit<CreateNbSearchRuntimeOptions, 'config' | 'overrides'> = {}): LocalNbSearchRuntime { return createCapturedRuntimeComposition(resolved, options.env ?? process.env, compositionOptions(options)).runtime; }

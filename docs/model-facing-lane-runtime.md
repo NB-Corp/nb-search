@@ -8,6 +8,14 @@ The package implements configuration schema v4 with three public capabilities: `
 
 Explicit public injection disables **all detached async run admissions on that runtime instance**, before selection/fetch preflight or job creation, returning `LANE_EXECUTION_UNSUPPORTED`. The transport object is not serialized or silently replaced in a child process. Effective `search.lanes`, presets and `fetch.pipelines` omit async; async-only browser pipelines have no effective modes and are unavailable, never relabeled sync. Provider descriptors retain static adapter support information and are not an instance execution guarantee. Sync operations, including non-egress inline/scoped-file fetch, and existing local get/read/cancel semantics remain unchanged. Omitting the option preserves the default runtime's async behavior. Internal worker/test transport injection is not subject to this public-instance policy. The SDK supplies no new cloud admission/job-store implementation through this option.
 
+## Captured configuration and hosted workers
+
+Hosts that admit configuration themselves can call `resolveCapturedConfiguration({ home, canonicalPath, canonical }, { env, config, overrides })` instead of making the SDK reread a file. `canonical` is the admitted local patch (`{}` when no local document is used); `config` is the host patch. The resolver applies standard defaults, environment settings and patches once and returns `ResolvedConfiguration`, including effective config, revision/fingerprint, timeout provenance and in-process secret bindings. Treat that object as private host state, not a client response.
+
+After importing host-managed credential values into a captured environment, `bindCapturedConfiguration(resolved, env)` refreshes credential grants without merging configuration again. `createCapturedNbSearchRuntime(resolved, { env, launcher })` composes that exact effective configuration without disk reads, default resurrection or a second host patch. Standard `defaultConfiguration(home)` is also public; hosts should reuse it rather than copy default tables. Browser consumers can import input/routing schemas, types, built-in rule metadata and pure `selectFetchRoute` from `@nb-corp/nb-search/contracts`; that entry has no Node IO or worker startup.
+
+`launcher: WorkerLauncher` is a trusted in-process hook with `launch(jobId, jobsRoot): Promise<void>`. Use it when a host executable must own detached worker startup. The public `runWorker(jobId, env?, jobsRoot?, onReady?)` runs the standard worker lifecycle; importing the function does not auto-run a worker. Both ordinary and captured runtime constructors preserve hosted async execution and the normal job snapshot/file admission checks.
+
 ## Offline provider operation inspection for hosts
 
 The root helper `resolveProviderOperation(providerId, operationId, instance: ProviderInstanceConfig): ResolvedProviderOperation` resolves **Exa (search/synthesis/contents), GMA (research), and script (search)** without credentials, network requests, provider construction or script imports. It returns `{ provider, operation, kind, instance, endpoints }`: registry-owned provider/operation descriptors (including adapter version and schema), `kind: 'search' | 'fetch'`, an effective instance, and the adapter's request URLs. It validates options using the registration, uses the same URL resolvers as execution, and shares GMA default resolution with its factory. Unknown operations and providers outside this narrow resolver's coverage throw rather than return guessed endpoint information. Existing `builtInProviderRegistrations()` remains the catalog source; do not duplicate descriptors in a cloud catalog.
@@ -33,7 +41,7 @@ A lane binds one `provider_instance_id` to one `operation_id`. The provider regi
 
 Effective execution modes are computed from registration ownership and runtime readiness. Built-in worker-installed query operations may support sync and async. Host registrations are sync-only in this version. Execution never selects another lane.
 
-`search` is a strict `run | get | read | cancel` action union. A run selects one lane, an ordered results-lane list, or a results-only preset. Typed operations require one lane. The built-in configuration has no search default; when a host configures `defaults.search_lane`, that lane applies to both sync and async.
+`search` is a strict `run | get | read | cancel` action union. A run selects one lane, an ordered results-lane list, or a results-only preset. Typed operations require one lane. The built-in search default is the keyless general-web `duckduckgo.search` lane; a configured `defaults.search_lane` applies to both sync and async. No registration, API key or browser download is needed. Public HTML challenges, rate limits and unrecognized pages are errors, never successful empty results; explicit defaults, removals and lane selections remain authoritative without provider fallback. Tavily's credentialed typed `crawl` and `research` lanes use the official crawl and POST-then-GET research-task protocols, with default query deadlines of 180 seconds and 900 seconds respectively unless the request or configuration supplies a timeout.
 
 One query and one results lane preserve provider order. Each query×lane list canonical-deduplicates before RRF; multiple lists then use fixed RRF, global canonical deduplication, independent evidence groups, and stable plan-position/URL tie-breaking.
 
@@ -51,9 +59,38 @@ Snapshots and artifact manifests start at contract version 1. A snapshot freezes
 
 ## Fetch
 
-`fetch` is a strict `run | get | read | cancel` action union. A run accepts a discriminated `url | inline_text | inline_bytes | file` source and requests `markdown` (default) or `text`. Without an explicit pipeline, `fetch_chain` is matched by input kind and representation and runs serially until one document passes quality gates (default quality rules impose `min_content_chars: 0` and empty `blocked_markers: []`; explicit host rules apply when configured). An explicit pipeline bypasses the chain. Unsupported representation or execution fails preflight rather than degrading or switching execution mode.
+`fetch` is a strict `run | get | read | cancel` action union. A run accepts a discriminated `url | inline_text | inline_bytes | file` source and requests `markdown` (default) or `text`. URL selection is **explicit pipeline → first matching enabled user rule → enabled built-in rule → input/representation fetch chain**. Only the selected ordered list is tried. Unsupported representation or execution fails preflight rather than degrading, matching another rule, or changing execution mode. Inline and file inputs do not use URL routing.
 
-Each pipeline descriptor reports input kinds, media types, representations, execution modes, egress, and typed stages. File and inline sources may enter only `egress: "none"` pipelines. Scoped files use relative paths, lexical and realpath containment, read-only access, source byte limits, and extension/content MIME checks; capabilities expose scope IDs but not roots, and file input remains disabled until a scope is configured. Inline HTML is parsed without script execution or secondary resource fetches. The built-in URL pipelines are `direct.fetch`, `jina.reader`, `tavily.extract`, `exa.contents`, `firecrawl.scrape`, `wayback.fetch`, `browser.render`, and `oac.fetch`; `direct.local` handles inline and scoped-file sources. The default URL chain remains `direct.fetch` then `jina.reader`; the latter three URL pipelines require explicit selection. `direct.local` advertises sync and async execution, `browser.render` is async-only, and the other built-in URL pipelines are sync-only. `browser.render` declares `egress: "url"` because Chromium connects to the target URL and bounded subresources. URL SSRF, redirect, byte/character limits, fallback classification, and `lane_outcomes` behavior remain unchanged. Documents add `representation` and `media_type` while retaining `source_lane`.
+`fetch.routing` defaults to enabled, with the built-in `kiki-common-direct@1` package enabled. Its four rules cover known text files on `raw.githubusercontent.com`, specific GitHub repository JSON endpoints on `api.github.com`, npm metadata, and PyPI JSON. They select only `direct.fetch`: failure does not add Jina, Tavily, or another paid fallback. GitHub webpages, unrelated GitHub APIs, binary raw files, package tarballs, and PyPI project HTML do not match these built-ins. The package and full rules are returned in `capabilities.fetch.routing`.
+
+Configure an exception with an exact HTTP(S) origin, optional `path_globs` and representation, and either a complete ordered `pipelines` list or `use: "default"`. Origins ignore case/default ports/trailing root dots. Paths are case-sensitive, fully anchored and keep percent encoding; `*` does not cross `/`, `**` does. Queries and fragments do not participate in matching, and routing does not rewrite the query sent to the source. A `use: "default"` rule suppresses the built-in match for that URL and restores the configured chain. `enabled: false` turns off routing; `builtin_enabled: false` turns off only built-ins; `disabled_builtin_rules` disables selected built-in IDs.
+
+```json
+{
+  "fetch": {
+    "routing": {
+      "rules": [
+        {
+          "id": "raw-explicit-fallback",
+          "match": { "origin": "https://raw.githubusercontent.com", "path_globs": ["/**/*.md"] },
+          "action": { "pipelines": ["direct.fetch", "jina.reader"] }
+        },
+        {
+          "id": "npm-use-my-chain",
+          "match": { "origin": "https://registry.npmjs.org" },
+          "action": { "use": "default" }
+        }
+      ]
+    }
+  }
+}
+```
+
+Direct URL HTML uses Defuddle 0.19.3 with a linkedom DOM and `useAsync: false`; scripts, iframes and extractor secondary downloads are not executed. It extracts Markdown or readable text with links/code rather than returning the page shell. An empty extracted body fails with `QUALITY_GATE_FAILED`; authentication/challenge structures fail with `FETCH_BLOCKED`. Plain source text preserves whitespace, empty plain bodies return `status: "empty"`, and JSON is pretty-printed. GitHub contents/readme file responses decode base64 locally only when the payload is valid UTF-8 readable text within the byte budget. Directory listings stay JSON; missing content, pagination, byte truncation and LFS pointers carry warnings. No `download_url` is followed automatically. Explicit quality rules still apply after extraction; default `min_content_chars: 0` and `blocked_markers: []` do not impose an arbitrary length threshold. Direct 401/404/410 and GitHub API errors terminate the selected list instead of fetching an error page elsewhere.
+
+Each pipeline descriptor reports input kinds, media types, representations, execution modes, egress, and typed stages. File and inline sources may enter only `egress: "none"` pipelines. Scoped files retain relative-path and realpath containment, read-only byte/MIME checks, and optional host-admitted `canonical_target` plus `approved_identity`; `captureFetchFileIdentity` captures the identity for validation at read time. Capabilities expose scope IDs but not roots. The default URL chain remains `direct.fetch` then `jina.reader` for unmatched URLs. `direct.fetch` and `direct.local` support sync and async, `browser.render` is async-only, and other built-in URL pipelines are sync-only. Browser rendering connects to bounded target subresources; static Direct extraction does not. Existing SSRF, DNS pinning, redirects, abort and byte/character limits remain in the acquisition layer.
+
+URL run receipts return `routing` with origin, rule/package identity, selected pipelines, representation and execution. `lane_outcomes` retain actual provider `attempts`, failures and skipped unavailable lanes. Async admission freezes that decision and list once; workers and get/read use the captured plan even if configuration changes. Failed fetch execution can publish a diagnostic artifact with route/attempts and no successful documents. Inspect document warnings before treating projected content as complete.
 
 ## Capabilities
 

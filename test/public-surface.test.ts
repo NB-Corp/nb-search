@@ -13,7 +13,7 @@ describe('public surface', () => {
     const methods = Object.getOwnPropertyNames(NbSearchRuntimeImpl.prototype).filter((name) => name !== 'constructor').sort();
     expect(methods).toEqual(['capabilities', 'fetch', 'keyUsage', 'search']);
     expect(new publicModule.ResponseLimitError(128)).toMatchObject({ name: 'ResponseLimitError', maximum: 128, retryable: false });
-    for (const internal of ['FetchJsonTransport', 'createRuntimeComposition', 'createCapturedRuntimeComposition', 'resolveCapturedConfiguration']) expect((publicModule as Record<string, unknown>)[internal]).toBeUndefined();
+    for (const internal of ['FetchJsonTransport', 'createRuntimeComposition', 'createCapturedRuntimeComposition']) expect((publicModule as Record<string, unknown>)[internal]).toBeUndefined();
     for (const name of ['answer', 'deepStart', 'deepStatus', 'deepRead', 'deepList', 'deepCancel', 'researchStart', 'researchStatus', 'researchRead', 'researchList', 'researchCancel', 'listJobs']) expect((NbSearchRuntimeImpl.prototype as unknown as Record<string, unknown>)[name]).toBeUndefined();
     for (const name of ['createNodeDirectFetchIo', 'createTestOnlyNodeDirectFetchIo', 'nodeDirectFetchIo', 'DirectFetchProvider', 'ExaProvider', 'TavilyProvider']) expect((publicModule as Record<string, unknown>)[name]).toBeUndefined();
   });
@@ -46,7 +46,7 @@ describe('public surface', () => {
   it('publishes the public documents referenced by the README', async () => {
     const root = fileURLToPath(new URL('..', import.meta.url));
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { exports: Record<string, unknown>; files: string[]; repository: { url: string }; homepage: string; bugs: { url: string } };
-    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './SKILL.md']);
+    expect(Object.keys(pkg.exports).sort()).toEqual(['.', './SKILL.md', './contracts']);
     expect(pkg.files).toEqual(['dist', 'README.md', 'README.zh-CN.md', 'docs/assets', 'CHANGELOG.md', 'SKILL.md', '.env.example', 'docs/model-facing-lane-runtime.md', 'docs/remote-protocol.md', 'docs/cli.md', 'scripts/nb-search.mjs', 'examples/script-lane', 'skills/nb-search']);
     expect(pkg).toMatchObject({ repository: { url: 'git+https://github.com/NB-Corp/nb-search.git' }, homepage: 'https://github.com/NB-Corp/nb-search#readme', bugs: { url: 'https://github.com/NB-Corp/nb-search/issues' } });
     const readmes = await Promise.all(['README.md', 'README.zh-CN.md'].map((path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')));

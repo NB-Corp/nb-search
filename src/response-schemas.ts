@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SCHEMA_VERSION } from './types.ts';
+import { fetchRouteDecisionSchema, fetchRoutingCapabilitySchema } from './fetch-routing-contracts.ts';
 
 const openObject = <T extends z.core.$ZodLooseShape>(shape: T) => z.object(shape).passthrough();
 
@@ -83,6 +84,7 @@ const laneOutcomeSchema = openObject({
   duration_ms: safeNonnegativeInt,
   result_count: safeNonnegativeInt,
   warnings: z.array(hintSchema),
+  attempts: z.array(openObject({ lane: z.string(), provider_instance_id: z.string(), attempt: safeNonnegativeInt, state: z.enum(['succeeded', 'empty', 'failed', 'timeout', 'cancelled']), duration_ms: safeNonnegativeInt, error: publicErrorSchema.optional() })).optional(),
   error: publicErrorSchema.optional(),
 });
 
@@ -285,6 +287,7 @@ const capabilityFetchPipelineSchema = openObject({
   cost: laneCostSchema,
 });
 const capabilityFetchSchema = openObject({
+  routing: fetchRoutingCapabilitySchema.optional(),
   default_representation: z.literal('markdown'),
   inputs: z.array(capabilityFetchInputSchema),
   chains: z.array(capabilityFetchChainSchema),
@@ -438,6 +441,7 @@ export const searchEnvelopeSchema = z.union([
 export const fetchRunSyncEnvelopeSchema = openObject({
   schema_version: z.literal(SCHEMA_VERSION),
   mode: z.literal('fetch'),
+  routing: fetchRouteDecisionSchema.optional(),
   action: z.literal('run'),
   execution: z.literal('sync'),
   selection: fetchSelectionSchema,
@@ -451,6 +455,7 @@ export const fetchRunSyncEnvelopeSchema = openObject({
 const fetchRunAsyncEnvelopeSchema = openObject({
   schema_version: z.literal(SCHEMA_VERSION),
   mode: z.literal('fetch'),
+  routing: fetchRouteDecisionSchema.optional(),
   action: z.literal('run'),
   execution: z.literal('async'),
   selection: fetchSelectionSchema.optional(),
@@ -476,6 +481,7 @@ const fetchRunAsyncEnvelopeSchema = openObject({
 const fetchGetEnvelopeSchema = openObject({
   schema_version: z.literal(SCHEMA_VERSION),
   mode: z.literal('fetch'),
+  routing: fetchRouteDecisionSchema.optional(),
   action: z.literal('get'),
   job_id: uuidSchema,
   state: jobStateSchema,
@@ -492,6 +498,7 @@ const fetchGetEnvelopeSchema = openObject({
 const fetchReadEnvelopeSchema = openObject({
   schema_version: z.literal(SCHEMA_VERSION),
   mode: z.literal('fetch'),
+  routing: fetchRouteDecisionSchema.optional(),
   action: z.literal('read'),
   job_id: uuidSchema,
   state: jobStateSchema,
@@ -503,6 +510,7 @@ const fetchReadEnvelopeSchema = openObject({
 const fetchCancelEnvelopeSchema = openObject({
   schema_version: z.literal(SCHEMA_VERSION),
   mode: z.literal('fetch'),
+  routing: fetchRouteDecisionSchema.optional(),
   action: z.literal('cancel'),
   job_id: uuidSchema,
   state: jobStateSchema,

@@ -62,7 +62,7 @@ describe('fetch serial lane chain', () => {
     const shortValue = await short.runtime.fetch({ url: 'https://example.com' }); expect(shortValue.documents[0]?.source_lane).toBe('b.fetch'); expect(shortValue.lane_outcomes[0]?.error?.code).toBe('QUALITY_GATE_FAILED');
     const marker = await runtime(['a.fetch', 'b.fetch'], { a: async (url) => document(url, 'Please Enable JavaScript now'), b: async (url) => document(url, 'usable content') }, { quality: { min_content_chars: 0, blocked_markers: ['please enable javascript'] } });
     const markerValue = await marker.runtime.fetch({ url: 'https://example.com' }); expect(markerValue.documents[0]?.source_lane).toBe('b.fetch'); expect(markerValue.lane_outcomes[0]?.error?.code).toBe('QUALITY_GATE_FAILED');
-    const disabledLength = await runtime(['a.fetch'], { a: async (url) => document(url, '') }, { quality: { min_content_chars: 0, blocked_markers: [] } }); expect((await disabledLength.runtime.fetch({ url: 'https://example.com' })).status).toBe('succeeded');
+    const disabledLength = await runtime(['a.fetch'], { a: async (url) => document(url, '') }, { quality: { min_content_chars: 0, blocked_markers: [] } }); expect((await disabledLength.runtime.fetch({ url: 'https://example.com' })).status).toBe('empty');
     const disabledMarkers = await runtime(['a.fetch'], { a: async (url) => document(url, 'JUST A MOMENT') }, { quality: { min_content_chars: 0, blocked_markers: [] } }); expect((await disabledMarkers.runtime.fetch({ url: 'https://example.com' })).status).toBe('succeeded');
   });
 

@@ -20,10 +20,15 @@ export interface ResolveConfigurationOptions { env?: NodeJS.ProcessEnv; config?:
 export interface SearchTimeoutLane { provider_id: string; operation_id: string }
 export const DEFAULT_SEARCH_TIMEOUT_MS = 30_000;
 export const DEFAULT_GMA_SEARCH_TIMEOUT_MS = 600_000;
+export const DEFAULT_TAVILY_RESEARCH_TIMEOUT_MS = 900_000;
+export const DEFAULT_TAVILY_CRAWL_TIMEOUT_MS = 180_000;
 export function resolveSearchTimeout(inputTimeoutMs: number | undefined, lanes: readonly SearchTimeoutLane[], configuredTimeoutMs: number, configuredExplicit: boolean): number {
   if (inputTimeoutMs !== undefined) return inputTimeoutMs;
   if (configuredExplicit) return configuredTimeoutMs;
-  return lanes.some((lane) => lane.provider_id === 'grok-multi-agent' && lane.operation_id === 'research') ? DEFAULT_GMA_SEARCH_TIMEOUT_MS : configuredTimeoutMs;
+  if (lanes.some((lane) => lane.provider_id === 'grok-multi-agent' && lane.operation_id === 'research')) return DEFAULT_GMA_SEARCH_TIMEOUT_MS;
+  if (lanes.some((lane) => lane.provider_id === 'tavily' && lane.operation_id === 'research')) return DEFAULT_TAVILY_RESEARCH_TIMEOUT_MS;
+  if (lanes.some((lane) => lane.provider_id === 'tavily' && lane.operation_id === 'crawl')) return DEFAULT_TAVILY_CRAWL_TIMEOUT_MS;
+  return configuredTimeoutMs;
 }
 const instance = (provider_id: string, credential_slot_id: string | undefined, options: Record<string, unknown> = {}, base_url?: string): ProviderInstanceConfig => ({ provider_id, enabled: true, ...(credential_slot_id === undefined ? {} : { credential_slot_id }), ...(base_url === undefined ? {} : { base_url }), options });
 export const DEFAULT_FETCH_BLOCKED_MARKERS = ['cf-challenge', 'cf-mitigated', 'verify you are human', 'just a moment', 'please enable javascript', '__cf_chl'] as const;
@@ -58,6 +63,8 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'exa.contents': { provider_instance_id: 'exa.default', operation_id: 'contents', latency: 'fast', cost: 'cheap' },
       'tavily.search': { provider_instance_id: 'tavily.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['tavily'] },
       'tavily.synthesis': { provider_instance_id: 'tavily.default', operation_id: 'synthesis', latency: 'medium', cost: 'cheap' },
+      'tavily.crawl': { provider_instance_id: 'tavily.default', operation_id: 'crawl', latency: 'slow', cost: 'cheap' },
+      'tavily.research': { provider_instance_id: 'tavily.default', operation_id: 'research', latency: 'slow', cost: 'expensive' },
       'tavily.extract': { provider_instance_id: 'tavily.default', operation_id: 'extract', latency: 'fast', cost: 'cheap' },
       'context7.docs': { provider_instance_id: 'context7.default', operation_id: 'docs', latency: 'medium', cost: 'cheap' },
       'zhipu.search': { provider_instance_id: 'zhipu.default', operation_id: 'search', latency: 'fast', cost: 'cheap', evidence_groups: ['zhipu'] },
@@ -79,7 +86,7 @@ export function defaultConfiguration(home: string): CanonicalConfig {
       'wayback.fetch': { provider_instance_id: 'wayback.default', operation_id: 'fetch', latency: 'medium', cost: 'free' },
       'browser.render': { provider_instance_id: 'browser-render.default', operation_id: 'render', latency: 'slow', cost: 'free' },
     },
-    defaults: { search_lane: 'github.repositories', fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] }, presets: {}, fetch: { file_scopes: [] },
+    defaults: { search_lane: 'duckduckgo.search', fetch_chain: [{ input_kind: 'url', pipelines: ['direct.fetch', 'jina.reader'] }, { input_kind: 'inline_text', pipelines: ['direct.local'] }, { input_kind: 'inline_bytes', pipelines: ['direct.local'] }, { input_kind: 'file', pipelines: ['direct.local'] }] }, presets: {}, fetch: { file_scopes: [], routing: { enabled: true, builtin_enabled: true, disabled_builtin_rules: [], rules: [] } },
     execution: { max_provider_calls: 64, max_concurrency: 8, retry_count: 1, search_timeout_ms: DEFAULT_SEARCH_TIMEOUT_MS, fetch_timeout_ms: 60_000, max_inline_bytes: 16 * 1024 * 1024, fetch: { max_source_bytes: 2 * 1024 * 1024, max_response_bytes: 2 * 1024 * 1024, max_content_chars: 200_000, max_redirects: 5, quality: { min_content_chars: 0, blocked_markers: [] } } },
   };
 }
@@ -111,8 +118,7 @@ export function resolveCapturedConfiguration(captured: { home: string; canonical
     return [id, instance.provider_id === 'script' && typeof module === 'string' && module.trim() !== ''
       ? { ...instance, options: { ...instance.options, module: resolve(moduleBases.get(id) ?? cwd, module) } } : instance];
   })) };
-  const secrets = new Map<string, SecretBinding>(); for (const [slotId, slot] of Object.entries(config.credential_slots)) { const raw = nonempty(env[slot.env]); if (raw !== undefined) { const values = parseCredentialKeys(raw); secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value: values[0]!, values, worker_grant: { kind: 'environment', name: slot.env } }); } }
-  const fingerprint = stableFingerprint(config); return { config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: secrets, canonical_path: canonicalPath, explicit_search_timeout_ms: explicitSearchTimeout };
+  const fingerprint = stableFingerprint(config); return bindCapturedConfiguration({ config, config_revision: `config-4-${fingerprint.slice(0, 16)}`, config_fingerprint: fingerprint, secret_bindings: new Map(), canonical_path: canonicalPath, explicit_search_timeout_ms: explicitSearchTimeout }, env);
 }
 export function environmentPatch(env: NodeJS.ProcessEnv): CanonicalConfigPatch {
   const provider_instances: Record<string, Record<string, unknown>> = {};
@@ -134,3 +140,10 @@ export function mergeValue(base: unknown, patch: unknown): unknown { if (patch =
 function integer(value: string | undefined, name: string): number | undefined { const raw = nonempty(value); if (raw === undefined) return undefined; const parsed = Number(raw); if (!Number.isSafeInteger(parsed)) throw new NbSearchError('CONFIGURATION_ERROR', `${name} must be an integer.`); return parsed; }
 function nonempty(value: string | undefined): string | undefined { const item = value?.trim(); return item === '' ? undefined : item }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+
+/** Refreshes credential grants from a captured host environment without merging configuration again. */
+export function bindCapturedConfiguration(resolved: ResolvedConfiguration, env: NodeJS.ProcessEnv): ResolvedConfiguration {
+  const secrets = new Map<string, SecretBinding>();
+  for (const [slotId, slot] of Object.entries(resolved.config.credential_slots)) { const raw = nonempty(env[slot.env]); if (raw !== undefined) { const values = parseCredentialKeys(raw); secrets.set(slotId, { credential_slot_id: slotId, provider_id: slot.provider_id, value: values[0]!, values, worker_grant: { kind: 'environment', name: slot.env } }); } }
+  return { ...resolved, secret_bindings: secrets };
+}

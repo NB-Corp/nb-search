@@ -3,6 +3,8 @@ import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { NbSearchError } from './errors.ts';
+import { canonicalFetchUrl } from './fetch-routing-contracts.ts';
+import { extractHtml, projectJson } from './fetch-content.ts';
 import type { FetchProvider, FetchProviderRequest, FetchProviderResult, FetchWarning, ProviderName } from './types.ts';
 
 export interface DirectFetchIo {
@@ -32,12 +34,18 @@ export class DirectFetchProvider implements FetchProvider {
         if (response.status < 200 || response.status >= 300) throw new NbSearchError('FETCH_HTTP_ERROR', `HTTP fetch failed with status ${String(response.status)}.`, response.status >= 500, this.name, { data: { status: response.status } });
         const contentType = mediaType(response.headers['content-type']);
         if (contentType === undefined || !TEXT_TYPES.has(contentType)) throw new NbSearchError('FETCH_CONTENT_TYPE_REJECTED', 'The response content type is not allowed.', false, this.name);
-        const decoded = new TextDecoder('utf-8', { fatal: false }).decode(response.body);
-        const projected = contentType === 'text/html' || contentType === 'application/xhtml+xml' ? htmlToText(decoded) : { content: normalizeText(decoded), title: undefined };
+        let decoded: string;
+        try { decoded = new TextDecoder('utf-8', { fatal: !response.truncated }).decode(response.body); } catch { throw new NbSearchError('FETCH_CONTENT_TYPE_REJECTED', 'The response is not valid UTF-8 text.', false, this.name); }
+        if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(decoded)) throw new NbSearchError('FETCH_CONTENT_TYPE_REJECTED', 'The response contains binary data.', false, this.name);
+        const json = contentType === 'application/json' || contentType === 'application/ld+json' ? projectJson(decoded, current, response.truncated, request.max_source_bytes, request.representation) : undefined;
+        const projected: { content: string; title?: string } = contentType === 'text/html' || contentType === 'application/xhtml+xml' ? await extractHtml(decoded, current.toString(), request.representation) : json ?? { content: decoded.replace(/\r\n?/g, '\n') };
         const maximumChars = Math.min(request.max_content_chars, Number.MAX_SAFE_INTEGER);
         const charTruncated = projected.content.length > maximumChars;
         const content = charTruncated ? projected.content.slice(0, maximumChars) : projected.content;
-        const warnings: FetchWarning[] = [];
+        const warnings: FetchWarning[] = [...json?.warnings ?? []];
+        if (response.headers['link']?.includes('rel="next"')) warnings.push({ code: 'FETCH_PAGINATED', message: 'Only this response page was fetched; more pages are available.' });
+        if (decoded.startsWith('version https://git-lfs.github.com/spec/v1\n')) warnings.push({ code: 'GIT_LFS_POINTER', message: 'This is a Git LFS pointer, not the referenced file content. No additional download was made.' });
+        if (content.trim() === '') warnings.push({ code: 'EMPTY_CONTENT', message: 'The response contains no readable text.' });
         if (response.truncated) warnings.push({ code: 'FETCH_BYTES_LIMIT', message: 'The response byte limit was reached.', data: { max_response_bytes: request.max_response_bytes } });
         if (charTruncated) warnings.push({ code: 'FETCH_CONTENT_CHARS_LIMIT', message: 'The content character limit was reached.', data: { max_content_chars: maximumChars } });
         return {
@@ -107,7 +115,7 @@ const METADATA_HOSTS = new Set(['localhost', 'localhost.localdomain', 'metadata'
 
 export function parsePublicUrl(value: string, provider: ProviderName = 'direct-http'): URL {
   let url: URL;
-  try { url = new URL(value); } catch { throw blocked('Fetch URL is invalid.', provider); }
+  try { url = canonicalFetchUrl(value); } catch { throw blocked('Fetch URL is invalid.', provider); }
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '' || url.username !== '' || url.password !== '') throw blocked('Only credential-free HTTP(S) URLs are allowed.', provider);
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (METADATA_HOSTS.has(hostname) || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw blocked('Target host is blocked.', provider);

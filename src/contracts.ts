@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { FRESHNESS_VALUES } from './types.ts';
 
+export * from './fetch-routing-contracts.ts';
 export const freshnessSchema = z.enum(FRESHNESS_VALUES);
 const selectorShape = { lane: z.string().trim().min(1).max(256).optional(), lanes: z.array(z.string().trim().min(1).max(256)).min(1).optional(), preset: z.string().trim().min(1).max(256).optional() };
 const runSchema = z.object({ action: z.literal('run'), query: z.union([z.string().trim().min(1).max(4000), z.array(z.string().trim().min(1).max(4000)).min(1).max(64)]), ...selectorShape, execution: z.enum(['sync', 'async']).optional(), idempotency_key: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional(), freshness: freshnessSchema.optional(), max_results: z.number().int().min(1).max(100).optional(), timeout_ms: z.number().int().min(100).max(3_600_000).optional() }).strict().superRefine((value, context) => { if ([value.lane, value.lanes, value.preset].filter((item) => item !== undefined).length > 1) context.addIssue({ code: 'custom', message: 'lane, lanes, and preset are mutually exclusive' }); const execution = value.execution ?? 'sync'; if (execution === 'async' && value.idempotency_key === undefined) context.addIssue({ code: 'custom', path: ['idempotency_key'], message: 'async execution requires idempotency_key' }); if (execution === 'sync' && value.idempotency_key !== undefined) context.addIssue({ code: 'custom', path: ['idempotency_key'], message: 'sync execution does not accept idempotency_key' }); });

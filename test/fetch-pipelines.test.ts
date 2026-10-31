@@ -57,7 +57,7 @@ describe('wayback.fetch adapter', () => {
     const value = await new WaybackFetchProvider({ transport, directIo }).fetch(fetchRequest());
     expect(transport.requests[0]).toMatchObject({ url: 'https://archive.org/wayback/available?url=https%3A%2F%2Fexample.com%2Fpage', method: 'GET', response_type: 'json' });
     expect(transport.requests).toHaveLength(1); expect(requested).toEqual([snapshot]);
-    expect(value).toMatchObject({ url: 'https://example.com/page', final_url: snapshot, title: 'Archived', content: 'Archived\narchived content', media_type: 'text/html', warnings: [{ code: 'WAYBACK_SNAPSHOT', data: { snapshot_timestamp: '20240102030405', archived_at: '2024-01-02T03:04:05Z' } }] });
+    expect(value).toMatchObject({ url: 'https://example.com/page', final_url: snapshot, title: 'Archived', content: 'archived content', media_type: 'text/html', warnings: [{ code: 'WAYBACK_SNAPSHOT', data: { snapshot_timestamp: '20240102030405', archived_at: '2024-01-02T03:04:05Z' } }] });
   });
 
   it('revalidates every snapshot redirect, enforces max_redirects, and reports the actual final URL', async () => {

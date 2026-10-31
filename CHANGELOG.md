@@ -4,11 +4,16 @@
 
 ### Added
 
-- Added a keyless DuckDuckGo HTML search lane; the zero-configuration default now searches GitHub repositories, while Context7 remains available for documentation queries.
+- General-web search now defaults to keyless DuckDuckGo HTML without registration or lane selection. Configured defaults, explicit removals and lane choices are preserved; errors never switch providers. Challenges and unrecognized pages fail rather than returning empty results, and 429 retains Retry-After metadata. DuckDuckGo adapter version 2 changes operation fingerprints; finish version-1 jobs before upgrading. GitHub and Context7 remain explicit specialist choices.
+- Added default-on ordered URL routing, the versioned `kiki-common-direct@1` rule package, route/attempt receipts, and browser-safe public contracts. Explicit pipelines take precedence; direct-only rules do not silently add paid fallback.
+- Exported captured configuration/runtime composition, credential rebinding, hosted worker launch/run hooks, and approved file identity capture. Hosts can reuse standard defaults and resolution without substitute config files.
+- Added the official Tavily typed crawl and research-task lanes, preserving Bearer authentication and bounded POST/GET task polling.
 
 ### Changed
 
-- Documented the existing direct-to-Jina URL fetch fallback and the need for explicit quality rules when direct fetch returns unusable content. Public DuckDuckGo HTML search may be blocked by CAPTCHA.
+- Direct URL HTML now uses Defuddle 0.19.3 with linkedom, without extractor networking. Raw text retains source whitespace; JSON and GitHub contents/readme responses produce readable bounded projections. Empty HTML fails rather than passing a page shell; empty plain bodies report `empty`.
+- Direct supports detached async; routing is frozen at admission and retained on get/read and execution-failure artifacts. Existing SSRF/redirect/abort/byte limits and file identity protections remain in place. Zod stays an external production dependency so public schema declaration types are nameable by downstream packages.
+- Configuration schema `4` and envelope schema `3.0` remain compatible through optional routing fields. The local source package is `0.5.0-next.4`, not a published registry release. Finish older unpatched Direct/Tavily jobs before changing adapter fingerprints; no persisted job is silently rebuilt. Public DuckDuckGo HTML search may be blocked by CAPTCHA.
 
 ## 0.4.0 - 2026-09-08
 

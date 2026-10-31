@@ -97,13 +97,13 @@ describe('provider key scheduling', () => {
   it('shares rotation across real Tavily search body and fetch Authorization ports', async () => {
     const keys: string[] = [];
     const send: HttpTransport['send'] = async <T>(input: HttpRequest) => {
-      if (input.url.endsWith('/search')) { keys.push((input.body as { api_key: string }).api_key); return { status: 200, body: { results: [{ url: 'https://example.org', title: 'Example', content: 'Found' }] } as T }; }
+      if (input.url.endsWith('/search')) { keys.push(input.headers?.['Authorization'] ?? 'missing'); return { status: 200, body: { results: [{ url: 'https://example.org', title: 'Example', content: 'Found' }] } as T }; }
       keys.push(input.headers?.['Authorization'] ?? 'missing'); return { status: 200, body: { results: [{ url: 'https://example.org', raw_content: 'Fetched article content' }] } as T };
     };
     const runtime = createNbSearchRuntime({ env: { NB_SEARCH_TAVILY_API_KEY: 'alpha,beta' }, http_transport: { send } });
     expect(await runtime.search({ action: 'run', query: 'example', lane: 'tavily.search' })).toMatchObject({ status: 'succeeded' });
     expect(await runtime.fetch({ url: 'https://example.org', pipeline: 'tavily.extract' })).toMatchObject({ status: 'succeeded' });
-    expect(keys).toEqual(['alpha', 'Bearer beta']);
+    expect(keys).toEqual(['Bearer alpha', 'Bearer beta']);
   });
   it('queries Firecrawl team credits only when asked and skips unsupported Exa usage', async () => {
     const requests: string[] = [];

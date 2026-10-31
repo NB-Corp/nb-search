@@ -20,6 +20,7 @@ const guide: Record<string, readonly [GuidanceGroup, string]> = {
   'searxng/search': ['onboarding', 'Self-hosted general web retrieval'], 'zhipu/search': ['onboarding', 'General web evidence retrieval'],
   'direct-http/fetch': ['onboarding', 'Default URL document acquisition'], 'jina-reader/reader': ['onboarding', 'URL reader pipeline'],
   'exa/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'], 'tavily/synthesis': ['research', 'Provider-generated synthesis with supporting evidence'],
+  'tavily/crawl': ['research', 'Provider crawl with bounded Markdown documents'], 'tavily/research': ['research', 'Provider research task with supporting evidence'],
   'grok/synthesis': ['research', 'Responses web synthesis'], 'grok-multi-agent/research': ['research', 'One complete multi-agent research brief'],
   'openai-compatible/synthesis': ['research', 'Explicit compatible-model synthesis'],
   'grok/x-synthesis': ['specialist', 'Responses X-focused synthesis'], 'context7/docs': ['specialist', 'Library and code documentation'],
@@ -46,5 +47,5 @@ export function describeConfiguredLaneGuidance(config: CanonicalConfig, registra
 }
 /** Safe structural catalog: no canonical/secret/env lookup, runtime construction or network probes. */
 export function listBuiltInLaneGuidance(): GuidanceCatalog {
-  return { schema_version: '1', groups: { ...groups }, lanes: describeConfiguredLaneGuidance(defaultConfiguration('.')), note: 'Usage groups are not quality rankings. The keyless default searches GitHub repositories only; select a general results lane explicitly for web search. Specialist and research lanes are explicit choices. Cost/latency are relative. Readiness is not a live probe.' };
+  return { schema_version: '1', groups: { ...groups }, lanes: describeConfiguredLaneGuidance(defaultConfiguration('.')), note: 'Usage groups are not quality rankings. The keyless default searches the general web with DuckDuckGo; public HTML access may be challenged or rate-limited. Explicit selections and configured defaults take precedence; failures never switch to a paid source. Specialist and research lanes are explicit choices. Cost/latency are relative. Readiness is not a live probe.' };
 }

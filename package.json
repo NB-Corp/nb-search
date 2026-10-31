@@ -1,6 +1,6 @@
 {
   "name": "@nb-corp/nb-search",
-  "version": "0.4.0",
+  "version": "0.5.0-next.4",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
   "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
@@ -22,6 +22,7 @@
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
     },
+    "./contracts": { "types": "./dist/contracts.d.mts", "import": "./dist/contracts.mjs" },
     "./SKILL.md": "./SKILL.md"
   },
   "bin": {
@@ -55,6 +56,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
+    "defuddle": "0.19.3",
+    "linkedom": "0.18.13",
+    "turndown": "7.2.4",
+    "temml": "0.13.5",
+    "mathml-to-latex": "1.8.0",
     "zod": "4.3.6"
   },
   "peerDependencies": {

@@ -43,13 +43,15 @@ export class TavilyExtractFetchProvider implements FetchProvider {
     try {
       const response = await this.options.transport.send<unknown>({
         url: this.endpoint, method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
-        body: { urls: [fetchUrl(request)], format: 'text' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
+        body: { urls: [fetchUrl(request)], format: request.representation, extract_depth: 'basic' }, response_type: 'json', max_response_bytes: request.max_response_bytes, signal: request.signal,
       });
       assertFetchStatus(response.status, this.name);
       if (!isRecord(response.body) || !Array.isArray(response.body['results'])) throw malformed(this.name);
       const item = response.body['results'].find(isRecord);
       if (item === undefined) { const failures = Array.isArray(response.body['failed_results']) ? response.body['failed_results'].length : 0; if (failures > 0) throw businessFailure(this.name, { failed_results: failures }); throw malformed(this.name); }
-      return normalized(request, stringValue(item['url']) || fetchUrl(request), stringValue(item['raw_content']) || stringValue(item['content']), 'text/plain', stringValue(item['title']));
+      const rawContent = item['raw_content'];
+      if (typeof rawContent !== 'string') throw malformed(this.name);
+      return normalized(request, stringValue(item['url']) || fetchUrl(request), rawContent, request.representation === 'markdown' ? 'text/markdown' : 'text/plain', stringValue(item['title']));
     } catch (error) { throw fetchProviderError(error, this.name); }
   }
 }

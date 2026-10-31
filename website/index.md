@@ -11,7 +11,7 @@
 - [首次配置](/guide/quickstart)：Node/pnpm 环境准备、目录检查与最小可用配置
 - [配置系统与凭据](/guide/configuration)：Schema v4 规则、环境变量与优先级
 - [接入方式](/guide/integrations)：SDK、CLI、MCP stdio 与远程协议客户端
-- [信息源目录](/sources/index)：15 个 Search Lanes 与 9 个 Fetch Pipelines 完整清单
+- [信息源目录](/sources/index)：18 个 Search Lanes 与 9 个 Fetch Pipelines 完整清单
 - [异步任务管理](/guide/jobs)：长耗时作业与完整产物获取
 - [故障排查与诊断](/guide/troubleshooting)：常见错误码与定位步骤
 
