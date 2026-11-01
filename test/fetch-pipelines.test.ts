@@ -1,3 +1,4 @@
+import { fixtureDirectIo } from './direct-fixture.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createFetchJobRunnerFromSnapshot, createRuntimeComposition } from '../src/app.ts';
 import { BrowserRenderProvider, createTestOnlyPlaywrightBrowserRenderIo, playwrightBrowserRenderIo, type BrowserRenderIo } from '../src/browser-render.ts';
 import { NbSearchError } from '../src/errors.ts';
-import type { DirectFetchIo } from '../src/fetch-security.ts';
+
 import { WaybackFetchProvider } from '../src/fetch-providers.ts';
 import { OpenAiCompatibleFetchProvider } from '../src/providers/openai-compatible.ts';
 import { ResponseLimitError, type JsonRequest, type JsonResponse, type JsonTransport } from '../src/transport.ts';
@@ -53,7 +54,7 @@ describe('wayback.fetch adapter', () => {
   it('looks up a status-200 snapshot, fetches it through pinned direct IO, and annotates archive time', async () => {
     const snapshot = 'https://web.archive.org/web/20240102030405id_/https://example.com/page'; const requested: string[] = [];
     const transport = new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: '200', url: snapshot, timestamp: '20240102030405' } } } }]);
-    const directIo: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request(input) { requested.push(input.url.toString()); return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: new TextEncoder().encode('<html><head><title>Archived</title></head><body><main>archived content</main></body></html>'), truncated: false }; } };
+    const directIo = fixtureDirectIo({ fetch(url) { requested.push(url.toString()); return { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: new TextEncoder().encode('<html><head><title>Archived</title></head><body><main>archived content</main></body></html>') }; } });
     const value = await new WaybackFetchProvider({ transport, directIo }).fetch(fetchRequest());
     expect(transport.requests[0]).toMatchObject({ url: 'https://archive.org/wayback/available?url=https%3A%2F%2Fexample.com%2Fpage', method: 'GET', response_type: 'json' });
     expect(transport.requests).toHaveLength(1); expect(requested).toEqual([snapshot]);
@@ -64,13 +65,13 @@ describe('wayback.fetch adapter', () => {
     const lookup = { status: 200, body: { archived_snapshots: { closest: { status: '200', url: 'https://snapshot.test/start', timestamp: '20240102030405' } } } };
     const transport = new SequenceTransport([lookup, lookup]);
     const resolved: string[] = []; let calls = 0;
-    const directIo: DirectFetchIo = { async resolve(hostname) { resolved.push(hostname); return hostname === 'private.test' ? ['10.0.0.1'] : ['8.8.8.8']; }, async request(input) { calls += 1; return input.url.hostname === 'snapshot.test' ? { status: 302, headers: { location: 'https://final.test/page' } as Readonly<Record<string, string>>, body: new Uint8Array(), truncated: false } : { status: 200, headers: { 'content-type': 'text/plain' } as Readonly<Record<string, string>>, body: new TextEncoder().encode('final archive'), truncated: false }; } };
+    const directIo = fixtureDirectIo({ lookup: async (hostname) => { resolved.push(hostname); return hostname === 'private.test' ? ['10.0.0.1'] : ['8.8.8.8']; }, fetch(url) { calls += 1; return url.hostname === 'snapshot.test' ? { status: 302, headers: { location: 'https://final.test/page' } as Readonly<Record<string, string>>, body: new Uint8Array() } : { status: 200, headers: { 'content-type': 'text/plain' } as Readonly<Record<string, string>>, body: new TextEncoder().encode('final archive') }; } });
     const provider = new WaybackFetchProvider({ transport, directIo });
-    await expect(provider.fetch({ ...fetchRequest(), max_redirects: 0 })).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', provider: 'wayback', data: { status: 302, max_redirects: 0 } });
+    await expect(provider.fetch({ ...fetchRequest(), max_redirects: 0 })).rejects.toMatchObject({ code: 'FETCH_HTTP_ERROR', provider: 'wayback', data: { max_redirects: 0 } });
     calls = 0; resolved.length = 0;
     await expect(provider.fetch(fetchRequest())).resolves.toMatchObject({ final_url: 'https://final.test/page', content: 'final archive' });
     expect(resolved).toEqual(['snapshot.test', 'final.test']); expect(calls).toBe(2);
-    const blocked = new WaybackFetchProvider({ transport: new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: '200', url: 'https://snapshot.test/start', timestamp: '20240102030405' } } } }]), directIo: { ...directIo, async request() { return { status: 302, headers: { location: 'https://private.test/page' }, body: new Uint8Array(), truncated: false }; } } });
+    const blocked = new WaybackFetchProvider({ transport: new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: '200', url: 'https://snapshot.test/start', timestamp: '20240102030405' } } } }]), directIo: fixtureDirectIo({ lookup: async (hostname) => hostname === 'private.test' ? ['10.0.0.1'] : ['8.8.8.8'], fetch() { return { status: 302, headers: { location: 'https://private.test/page' }, body: new Uint8Array() }; } }) });
     await expect(blocked.fetch(fetchRequest())).rejects.toMatchObject({ code: 'FETCH_BLOCKED', provider: 'wayback' });
   });
 
@@ -91,7 +92,7 @@ describe('wayback.fetch adapter', () => {
     await expect(new WaybackFetchProvider({ transport: new SequenceTransport([{ status: 200, body: [] }]) }).fetch(fetchRequest())).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false });
     const root = await tempRoot('nb-search-wayback-empty-');
     const transport = new SequenceTransport([{ status: 200, body: { archived_snapshots: { closest: { status: 200, url: 'https://web.archive.org/snapshot', timestamp: '20200101000000' } } } }]);
-    const directIo: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request() { return { status: 200, headers: { 'content-type': 'text/plain' }, body: new Uint8Array(), truncated: false }; } };
+    const directIo = fixtureDirectIo({ fetch() { return { status: 200, headers: { 'content-type': 'text/plain' }, body: new Uint8Array() }; } });
     const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport, test_only_direct_fetch_io: directIo, config: { home: root, jobs_root: join(root, 'jobs'), execution: { retry_count: 0, fetch: { quality: { min_content_chars: 1, blocked_markers: [] } } } } });
     expect(await app.runtime.fetch({ action: 'run', source: { kind: 'url', url: 'https://example.com/page' }, pipeline: 'wayback.fetch' })).toMatchObject({ status: 'failed', lane_outcomes: [{ error: { code: 'QUALITY_GATE_FAILED' } }] });
   });

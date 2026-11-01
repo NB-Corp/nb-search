@@ -56,7 +56,7 @@ export type QueryProviderValue = { channel: 'results'; value: QueryResultsValue 
 export interface QueryProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; execute(request: QueryExecutionRequest): Promise<QueryProviderValue> }
 
 export interface FetchWarning extends Hint {}
-export interface FetchProviderRequest { source: FetchSource; representation: FetchRepresentation; signal: AbortSignal; max_source_bytes: number; max_response_bytes: number; max_content_chars: number; max_redirects: number; file_scopes: readonly FetchFileScope[] }
+export interface FetchProviderRequest { source: FetchSource; representation: FetchRepresentation; signal: AbortSignal; timeout_ms?: number; max_source_bytes: number; max_response_bytes: number; max_content_chars: number; max_redirects: number; file_scopes: readonly FetchFileScope[] }
 export interface FetchProviderResult { url?: string; final_url?: string; title?: string; content: string; content_type: string; media_type: string; representation: FetchRepresentation; format: 'text'; byte_length: number; truncated: boolean; warnings: FetchWarning[] }
 export interface FetchProvider { readonly name: ProviderName; readonly redactions?: readonly string[]; fetch(request: FetchProviderRequest): Promise<FetchProviderResult> }
 export interface FetchDocument extends FetchProviderResult { source_lane: string }

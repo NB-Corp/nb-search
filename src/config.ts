@@ -3,6 +3,7 @@ import type { BrowserRenderIo } from './browser-render.ts';
 import type { CanonicalConfigPatch, FetchChainConfig, LaneConfig, ProviderInstanceConfig } from './config-schema.ts';
 import { resolveConfiguration, type ResolvedConfiguration } from './config-sources.ts';
 import type { DirectFetchIo } from './fetch-security.ts';
+import { directFetchIoForEnvironment } from './direct-proxy.ts';
 import { NbSearchError } from './errors.ts';
 import { KeyScheduler } from './key-scheduler.ts';
 import { builtInProviderRegistrations, builtInProviderRegistrationsForInternalTest, ProviderRegistry, type ProviderPorts, type ProviderRegistration } from './provider-registry.ts';
@@ -18,10 +19,11 @@ export interface AppConfiguration { home: string; jobs_root: string; retention_h
 export interface LoadConfigurationOptions { config?: CanonicalConfigPatch; overrides?: CanonicalConfigPatch; provider_registrations?: readonly ProviderRegistration[]; test_only_direct_fetch_io?: DirectFetchIo; test_only_browser_render_io?: BrowserRenderIo; cwd?: string; homeDirectory?: string; now?: () => Date }
 export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
   const resolved = resolveConfiguration({ env, ...(options.config === undefined ? {} : { config: options.config }), ...(options.overrides === undefined ? {} : { overrides: options.overrides }), ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.homeDirectory === undefined ? {} : { homeDirectory: options.homeDirectory }) });
-  return configurationFromResolved(resolved, transport, options);
+  return configurationFromResolved(resolved, transport, options, env);
 }
-export function configurationFromResolved(resolved: ResolvedConfiguration, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}): AppConfiguration {
-  const builtIns = options.test_only_direct_fetch_io === undefined && options.test_only_browser_render_io === undefined ? builtInProviderRegistrations() : builtInProviderRegistrationsForInternalTest(options.test_only_direct_fetch_io, options.test_only_browser_render_io);
+export function configurationFromResolved(resolved: ResolvedConfiguration, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}, env: NodeJS.ProcessEnv = process.env): AppConfiguration {
+  const directIo = options.test_only_direct_fetch_io ?? directFetchIoForEnvironment(env);
+  const builtIns = options.test_only_browser_render_io === undefined ? builtInProviderRegistrations(directIo) : builtInProviderRegistrationsForInternalTest(directIo, options.test_only_browser_render_io);
   const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>(); const keySchedulers = new Map<string, KeyScheduler>();
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances)) {
     const descriptor = registry.descriptor(instance.provider_id); if (descriptor === undefined || !instance.enabled) continue;

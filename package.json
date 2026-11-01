@@ -31,6 +31,8 @@
   },
   "files": [
     "dist",
+    "LICENSES",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "README.zh-CN.md",
     "docs/assets",
@@ -46,6 +48,9 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "vendor:direct:check": "node scripts/vendor-direct-dependencies.mjs --check",
+    "vendor:direct:recover": "node scripts/vendor-direct-dependencies.mjs --write",
+    "test:next7-oracle": "node scripts/check-next7-oracle.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && vitest run",
     "smoke": "node scripts/smoke.mjs",
@@ -61,6 +66,8 @@
     "turndown": "7.2.4",
     "temml": "0.13.5",
     "mathml-to-latex": "1.8.0",
+    "undici": "7.30.0",
+    "ipaddr.js": "2.2.0",
     "zod": "4.3.6"
   },
   "peerDependencies": {
@@ -73,6 +80,7 @@
   },
   "devDependencies": {
     "@types/node": "22.15.3",
+    "guarded-fetch": "0.1.5",
     "tsdown": "0.22.0",
     "typescript": "6.0.2",
     "vitest": "4.1.4"

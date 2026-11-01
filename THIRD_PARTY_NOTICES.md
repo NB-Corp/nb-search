@@ -1,0 +1,9 @@
+# Direct URL acquisition dependencies
+
+Direct URL acquisition includes **guarded-fetch 0.1.5**, from [vercel-labs/guarded-fetch](https://github.com/vercel-labs/guarded-fetch), commit `bacdd4336d2b4b2474da02fb0e0c6212578964be`, under Apache-2.0. The twelve modules in `src/vendor/guarded-fetch/` were recovered from the published 0.1.5 source map; the export barrel comes from that fixed upstream commit. The accepted next.7 per-target synthetic-DNS callback is retained in `hostname-safety.ts`, `assert-url-safe.ts`, and `guarded-fetch.ts`. A type-only indexed-property spelling change accommodates this repository's TypeScript settings. `LICENSES/guarded-fetch.txt` reproduces the complete upstream license and Vercel copyright notice. The npm 0.1.5 distribution has no separate NOTICE file.
+
+The unchanged external runtime dependencies are **Undici 7.30.0** ([nodejs/undici](https://github.com/nodejs/undici), MIT) and **ipaddr.js 2.2.0** ([whitequark/ipaddr.js](https://github.com/whitequark/ipaddr.js), MIT). Their licenses are in `LICENSES/undici.txt` and `LICENSES/ipaddr.js.txt`.
+
+Proxy selection includes the accepted next.7 captured-environment port of **proxy-from-env 2.1.0**, from [Rob--W/proxy-from-env](https://github.com/Rob--W/proxy-from-env), commit `570ce3a4279d83af3ff13e7600a347d01c453394`, under MIT. `src/vendor/proxy-from-env.ts` was mechanically recovered from that bundle region with types restored. It receives captured environment values instead of reading `process.env`. `LICENSES/proxy-from-env.txt` reproduces the complete license.
+
+The private maintenance inputs, original upstream tests, and recovery instructions are in `vendor/direct-dependencies/`. `scripts/vendor-direct-dependencies.mjs` is a new recovery/check utility; normal builds consume the maintained source without rewriting it. Distributors must retain the licenses and modification notices for included ports and for dependencies they bundle.

@@ -1,3 +1,4 @@
+import { fixtureDirectIo } from './direct-fixture.ts';
 import { mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import { NbSearchError } from '../src/errors.ts';
 import { captureFetchFileIdentity } from '../src/fetch-sources.ts';
 import { extractHtml, projectJson } from '../src/fetch-content.ts';
 import { selectFetchRoute, fetchRoutingConfigSchema, type FetchRoutingConfig } from '../src/fetch-routing-contracts.ts';
-import type { DirectFetchIo } from '../src/fetch-security.ts';
+
 import { document, mockConfig, mockRegistration } from './helpers.ts';
 
 const roots: string[] = [];
@@ -17,7 +18,7 @@ const raw = 'https://raw.githubusercontent.com/example/project/main/README.md';
 const chain = ['jina.reader', 'tavily.extract', 'direct.fetch'];
 const user: FetchRoutingConfig = { rules: [{ id: 'override', match: { origin: 'https://raw.githubusercontent.com', path_globs: ['/**'] }, action: { pipelines: ['direct.fetch', 'mock.fetch'] } }] };
 async function root() { const path = await realpath(await mkdtemp(join(tmpdir(), 'nb-routing-'))); roots.push(path); return path; }
-function io(body = 'const greeting = "two  spaces";\n  return greeting;', status = 200, type = 'text/plain'): DirectFetchIo { return { async resolve() { return ['8.8.8.8']; }, async request() { return { status, headers: { 'content-type': type }, body: new TextEncoder().encode(body), truncated: false }; } }; }
+function io(body = 'const greeting = "two  spaces";\n  return greeting;', status = 200, type = 'text/plain') { return fixtureDirectIo({ fetch() { return { status, headers: { 'content-type': type }, body: new TextEncoder().encode(body) }; } }); }
 describe('fetch route and useful-content contract', () => {
   it('selects explicit, ordered user/default exceptions, builtins and negatives without calls', () => {
     expect(selectFetchRoute({ url: raw, pipeline: 'jina.reader' }, user, chain)).toMatchObject({ origin: 'explicit', pipelines: ['jina.reader'] });
@@ -58,7 +59,7 @@ describe('fetch route and useful-content contract', () => {
     expect(await fallback.runtime.fetch({ url: raw })).toMatchObject({ status: 'succeeded', routing: { origin: 'user', pipelines: ['direct.fetch', 'mock.fetch'] }, lane_outcomes: [{ lane: 'direct.fetch', attempts: [{ error: { code: 'QUALITY_GATE_FAILED' } }] }, { lane: 'mock.fetch' }] }); expect(remote).toBe(1);
     for (const status of [401, 404]) { const app = createRuntimeComposition({}, { cwd: home, homeDirectory: home, config: { ...config, fetch: { routing: user } }, provider_registrations: [registration], test_only_direct_fetch_io: io('', status) }); expect(await app.runtime.fetch({ url: raw })).toMatchObject({ status: 'failed', lane_outcomes: [{ error: { data: { status } } }] }); }
     expect(remote).toBe(1);
-    expect(await fallback.runtime.fetch({ url: 'http://metadata.google.internal./latest', pipeline: 'mock.fetch' })).toMatchObject({ status: 'failed', error: { code: 'FETCH_BLOCKED' } }); expect(remote).toBe(1);
+    expect(await fallback.runtime.fetch({ url: 'http://169.254.169.254/latest', pipeline: 'mock.fetch' })).toMatchObject({ status: 'failed', error: { code: 'FETCH_BLOCKED' } }); expect(remote).toBe(1);
   });
   it('freezes selected async plan and bindings once across changed config, exposing route and attempts', async () => {
     const home = await root(); let calls = 0;

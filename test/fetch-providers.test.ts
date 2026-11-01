@@ -1,10 +1,11 @@
+import { fixtureDirectIo } from './direct-fixture.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRuntimeComposition } from '../src/app.ts';
 import { ExaContentsFetchProvider, FirecrawlScrapeFetchProvider, JinaReaderFetchProvider, TavilyExtractFetchProvider } from '../src/fetch-providers.ts';
-import type { DirectFetchIo } from '../src/fetch-security.ts';
+
 import type { JsonRequest, JsonResponse, JsonTransport } from '../src/transport.ts';
 import { document, mockRegistration } from './helpers.ts';
 
@@ -67,7 +68,7 @@ describe('fetch provider adapters', () => {
   it('falls back to the free Jina reader when configured quality rules reject direct content', async () => {
     const root = await mkdtemp(join(tmpdir(), 'nb-search-default-reader-')); roots.push(root);
     const transport = new CaptureTransport({ status: 200, body: '# Article\nReadable content', headers: { 'content-type': 'text/plain' } });
-    const io: DirectFetchIo = { async resolve() { return ['8.8.8.8']; }, async request() { return { status: 200, headers: { 'content-type': 'text/html' }, body: new TextEncoder().encode('<title>Just a moment</title><p>Verify you are human</p>'), truncated: false }; } };
+    const io = fixtureDirectIo({ fetch() { return { status: 200, headers: { 'content-type': 'text/html' }, body: new TextEncoder().encode('<title>Just a moment</title><p>Verify you are human</p>') }; } });
     const app = createRuntimeComposition({}, { cwd: root, homeDirectory: root, transport, test_only_direct_fetch_io: io, config: { execution: { fetch: { quality: { min_content_chars: 0, blocked_markers: ['just a moment', 'verify you are human'] } } } } });
     const result = await app.runtime.fetch({ url: 'https://example.com/page' });
     expect(result).toMatchObject({ status: 'succeeded', documents: [{ source_lane: 'jina.reader', content: '# Article\nReadable content' }], lane_outcomes: [{ lane: 'direct.fetch', error: { code: 'QUALITY_GATE_FAILED', data: { rule: 'blocked_markers' } } }, { lane: 'jina.reader', state: 'succeeded' }] });
