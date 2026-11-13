@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-11-14
 
 ### Added
 
@@ -13,7 +13,7 @@
 
 - Direct URL HTML now uses Defuddle 0.19.3 with linkedom, without extractor networking. Raw text retains source whitespace; JSON and GitHub contents/readme responses produce readable bounded projections. Empty HTML fails rather than passing a page shell; empty plain bodies report `empty`.
 - Direct supports detached async; routing is frozen at admission and retained on get/read and execution-failure artifacts. Existing SSRF/redirect/abort/byte limits and file identity protections remain in place. Zod stays an external production dependency so public schema declaration types are nameable by downstream packages.
-- Configuration schema `4` and envelope schema `3.0` remain compatible through optional routing fields. The local source package is `0.5.0-next.4`, not a published registry release. Finish older unpatched Direct/Tavily jobs before changing adapter fingerprints; no persisted job is silently rebuilt. Public DuckDuckGo HTML search may be blocked by CAPTCHA.
+- Configuration schema `4` and envelope schema `3.0` remain compatible through optional routing fields. Direct approved-file identity handling and Tavily API parity change adapter fingerprints; finish older Direct/Tavily jobs before upgrading. Persisted jobs are never silently rebuilt. Public DuckDuckGo HTML search may be blocked by CAPTCHA.
 
 ## 0.4.0 - 2026-09-08
 

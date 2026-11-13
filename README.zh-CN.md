@@ -35,7 +35,7 @@
 **需要 Node.js ≥ 24.15。** 从官方 npm registry 安装 CLI：
 
 ```bash
-npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.5.0 --registry=https://registry.npmjs.org
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
@@ -51,7 +51,7 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-**0.5.0-next.4 源码预发布版**默认使用 DuckDuckGo 搜索通用网页，无需注册、API 密钥或手选 lane：
+**0.5.0** 默认使用 DuckDuckGo 搜索通用网页，无需注册、API 密钥或手选 lane：
 
 ```bash
 node scripts/nb-search.mjs search "中国 大熊猫 国家公园"
@@ -59,12 +59,12 @@ node scripts/nb-search.mjs search "中国 大熊猫 国家公园"
 
 DuckDuckGo 的公共 HTML 端点可能触发验证或限流；工具会报告错误，不会伪装为空结果。等待后再试，或显式选择其他已配置的来源。仓库检索仍可选择 `github.repositories`。已配置的默认值和显式选择优先，显式删除默认值也会保留；失败不会静默切换到收费来源。*Lane* 就是命名的来源操作。[查看配置方式 →](https://nb-corp.github.io/nb-search/guide/configuration) 服务商费用与限额仍适用。
 
-此源码预发布版也包含 Direct HTML 主体提取和可配置的 URL 路由：已知 GitHub raw 文本、仓库 JSON、npm 元数据及 PyPI JSON 默认仅走 Direct；用户规则可替换完整顺序列表，或恢复原抓取链。未命中的 URL 仍使用 Direct→Jina 默认链。回执显示路由来源、实际尝试与内容警告。[查看路由配置和宿主接口 →](docs/model-facing-lane-runtime.md#fetch) 这些改进目前通过源码构建或本地预发布包使用；上面的 npm 命令仍安装已发布的 0.4.0。
+此版本还包含 Direct HTML 主体提取和可配置的 URL 路由：已知 GitHub raw 文本、仓库 JSON、npm 元数据及 PyPI JSON 默认仅走 Direct；用户规则可替换完整顺序列表，或恢复原抓取链。未命中的 URL 仍使用 Direct→Jina 默认链。回执显示路由来源、实际尝试与内容警告。[查看路由配置和宿主接口 →](docs/model-facing-lane-runtime.md#fetch)
 
 ## 三个方法，接入你的应用
 
 ```bash
-npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.5.0 --registry=https://registry.npmjs.org
 ```
 
 ```js

@@ -35,7 +35,7 @@ Use it inside your app, from a terminal, as an MCP server, or through an agent S
 **Requires Node.js ≥ 24.15.** Install the CLI from the official npm registry:
 
 ```bash
-npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search@0.5.0 --registry=https://registry.npmjs.org
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
@@ -51,7 +51,7 @@ pnpm build
 node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-The **0.5.0-next.4 source prerelease** searches the general web with DuckDuckGo by default, without registration, an API key or lane selection:
+The **0.5.0 release** searches the general web with DuckDuckGo by default, without registration, an API key or lane selection:
 
 ```bash
 node scripts/nb-search.mjs search "NASA James Webb telescope"
@@ -59,7 +59,7 @@ node scripts/nb-search.mjs search "NASA James Webb telescope"
 
 DuckDuckGo's public HTML endpoint may issue a challenge or rate limit; these are reported as errors, not empty results. Wait before retrying, or explicitly choose another configured provider. `github.repositories` remains available for repository search. Configured defaults and explicit choices take precedence, including an explicitly removed default; failures never silently switch to a paid source. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
 
-This source prerelease also includes main-body Direct HTML extraction and configurable URL routing. Known GitHub raw text/repository JSON, npm metadata and PyPI JSON use Direct only by default; user rules can replace that list or restore your usual chain. Unmatched URLs still use the Direct-to-Jina default chain. Route decisions, actual attempts and content warnings are returned in receipts. [Routing configuration and host APIs →](docs/model-facing-lane-runtime.md#fetch) These changes are available from the source build/local prerelease package; the npm commands above still install the published 0.4.0.
+This release also includes main-body Direct HTML extraction and configurable URL routing. Known GitHub raw text/repository JSON, npm metadata and PyPI JSON use Direct only by default; user rules can replace that list or restore your usual chain. Unmatched URLs still use the Direct-to-Jina default chain. Route decisions, actual attempts and content warnings are returned in receipts. [Routing configuration and host APIs →](docs/model-facing-lane-runtime.md#fetch)
 
 ## Multiple provider keys (local runtime)
 
@@ -80,7 +80,7 @@ For supported providers, `createNbSearchRuntime().keyUsage({ provider_instance_i
 ## Search, fetch, inspect capabilities—and check key usage locally.
 
 ```bash
-npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search@0.5.0 --registry=https://registry.npmjs.org
 ```
 
 ```js
