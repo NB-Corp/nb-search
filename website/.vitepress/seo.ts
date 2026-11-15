@@ -16,133 +16,127 @@ interface LlmsDocEntry {
 
 const LLMS_SECTIONS: Array<{ heading: string; entries: LlmsDocEntry[] }> = [
   {
-    heading: 'Overview & Agent Execution Protocol',
+    heading: 'Overview',
     entries: [
       {
         urlPath: 'en/',
         filePath: 'website/en/index.md',
-        title: 'English Overview & Quickstart',
-        summary: 'Zero-key CLI, 3-tool MCP (~1.4k tokens), Agent Skill (~110 idle tokens), TypeScript SDK, RRF fusion, 32-key failover, and comparison matrix.'
-      },
-      {
-        urlPath: '',
-        filePath: 'website/index.md',
-        title: '中文首页与产品总览',
-        summary: '面向 AI Agent 与 TypeScript 应用的统一搜索、URL 转 Markdown、RRF 融合与异步深度研究总览。'
+        title: 'nb-search Overview & Quick Start',
+        summary: 'Zero-key CLI, 3-tool MCP (~1.4k tokens), Agent Skill (~110 idle tokens), RRF fusion, 32-key failover, and comparison matrix.'
       }
     ]
   },
   {
-    heading: 'Guides (入门与核心指南)',
+    heading: 'Guides',
     entries: [
       {
-        urlPath: 'guide/quickstart',
-        filePath: 'website/guide/quickstart.md',
-        title: 'Quickstart (快速上手)',
+        urlPath: 'en/guide/quickstart',
+        filePath: 'website/en/guide/quickstart.md',
+        title: 'Quick Start',
         summary: 'Node.js >= 24.15 setup, zero-key DuckDuckGo/Defuddle verification, Skill mounting, and BYOK RRF search.'
       },
       {
-        urlPath: 'guide/configuration',
-        filePath: 'website/guide/configuration.md',
-        title: 'Configuration & Multi-Key Rotation (配置与多密钥轮转)',
+        urlPath: 'en/guide/configuration',
+        filePath: 'website/en/guide/configuration.md',
+        title: 'Configuration & Multi-Key Rotation',
         summary: 'Schema v4 config precedence, environment variables, 32-key rotation (round-robin/priority), 429/402 failover, and local SDK keyUsage().'
       },
       {
-        urlPath: 'guide/integrations',
-        filePath: 'website/guide/integrations.md',
-        title: 'Integrations: SDK, CLI, MCP & Skill (集成方式)',
+        urlPath: 'en/guide/integrations',
+        filePath: 'website/en/guide/integrations.md',
+        title: 'Integrations: SDK, CLI, MCP & Skill',
         summary: 'TypeScript SDK (search, fetch, capabilities, keyUsage), CLI --stdin, npx nb-search-mcp stdio config, Agent Skill, and Remote HTTP client.'
       },
       {
-        urlPath: 'guide/search',
-        filePath: 'website/guide/search.md',
-        title: 'Web Search & RRF Fusion (多源网页搜索)',
+        urlPath: 'en/guide/search',
+        filePath: 'website/en/guide/search.md',
+        title: 'Web Search & RRF Fusion',
         summary: 'Results (nb-search.results@1) vs Typed channels, URL canonicalization, Reciprocal Rank Fusion (RRF), and provenance.'
       },
       {
-        urlPath: 'guide/fetch',
-        filePath: 'website/guide/fetch.md',
-        title: 'URL-to-Markdown & Routing (内容抓取与路由)',
+        urlPath: 'en/guide/fetch',
+        filePath: 'website/en/guide/fetch.md',
+        title: 'URL-to-Markdown & Routing',
         summary: 'Defuddle direct.fetch, ordered URL routing (kiki-common-direct@1), fallback chains, SSRF IP pinning, and byte limits.'
       },
       {
-        urlPath: 'guide/jobs',
-        filePath: 'website/guide/jobs.md',
-        title: 'Detached Async Jobs (异步作业与产物)',
+        urlPath: 'en/guide/jobs',
+        filePath: 'website/en/guide/jobs.md',
+        title: 'Detached Async Jobs',
         summary: 'Idempotent run/get/read/cancel lifecycle, --wait budgets, immutable SHA-256 chunk reconstruction via read --all, and 72h retention.'
       },
       {
-        urlPath: 'guide/troubleshooting',
-        filePath: 'website/guide/troubleshooting.md',
-        title: 'Troubleshooting & Exit Codes (故障排查)',
+        urlPath: 'en/guide/troubleshooting',
+        filePath: 'website/en/guide/troubleshooting.md',
+        title: 'Troubleshooting & Exit Codes',
         summary: 'CLI exit codes (0/2/3/4/5/6/7), error diagnostics, --doctor offline checks, and capabilities inspection.'
       },
       {
-        urlPath: 'guide/upgrading',
-        filePath: 'website/guide/upgrading.md',
-        title: 'Upgrading Guide (版本升级指南)',
+        urlPath: 'en/guide/upgrading',
+        filePath: 'website/en/guide/upgrading.md',
+        title: 'Upgrading Guide',
         summary: 'Compatibility notes across 0.3, 0.4, and 0.5.x (zero-key default search, Defuddle direct.fetch, opt-in Zhihu, and adapter fingerprints).'
       }
     ]
   },
   {
-    heading: 'Supported Sources (数据源目录)',
+    heading: 'Supported Sources',
     entries: [
       {
-        urlPath: 'sources/',
-        filePath: 'website/sources/index.md',
+        urlPath: 'en/sources/',
+        filePath: 'website/en/sources/index.md',
         title: 'Sources Catalog (18 Search Lanes + 9 Fetch Pipelines + Opt-in)',
         summary: 'Complete cost, latency, schema, credential, and execution-mode matrix across all built-in and opt-in providers.'
       },
       {
-        urlPath: 'sources/web-search',
-        filePath: 'website/sources/web-search.md',
-        title: 'Web & Regional Search + Opt-in Zhihu (#zhihu)',
+        urlPath: 'en/sources/web-search',
+        filePath: 'website/en/sources/web-search.md',
+        title: 'Web & Regional Search',
         summary: 'DuckDuckGo, Tavily, Exa, Brave, Firecrawl, SearXNG, Zhipu, Parallel, and full opt-in Zhihu schema-4 config & UTC+8 free-quota guard.'
       },
       {
-        urlPath: 'sources/developer',
-        filePath: 'website/sources/developer.md',
+        urlPath: 'en/sources/developer',
+        filePath: 'website/en/sources/developer.md',
         title: 'Developer Sources: GitHub & Context7',
         summary: 'Keyless and token-boosted repository search (github.repositories) and library/framework documentation lookup (context7.docs).'
       },
       {
-        urlPath: 'sources/grok',
-        filePath: 'website/sources/grok.md',
+        urlPath: 'en/sources/grok',
+        filePath: 'website/en/sources/grok.md',
         title: 'Synthesis & Multi-Agent Research (Grok, GMA, OAC)',
         summary: 'Grok Responses web/X synthesis, Grok Multi-Agent deep research (10-min default deadline), and OpenAI-compatible synthesis.'
       },
       {
-        urlPath: 'sources/custom',
-        filePath: 'website/sources/custom.md',
+        urlPath: 'en/sources/custom',
+        filePath: 'website/en/sources/custom.md',
         title: 'Custom Script Lanes & SDK ProviderRegistration',
         summary: 'Trusted local .js/.ts script lanes supporting sync + detached async, plus in-process TypeScript ProviderRegistration.'
       }
     ]
   },
   {
-    heading: 'Reference & Wire Contracts (参考与协议规范)',
+    heading: 'Reference & Wire Contracts',
     entries: [
       {
-        urlPath: 'reference/cli',
+        urlPath: 'en/reference/cli',
         filePath: 'docs/cli.md',
         title: 'Official CLI Reference',
         summary: 'Complete CLI flags, local/remote profiles, protected secrets.json, --stdin JSON contract, --wait, read --all, and exit codes.'
       },
       {
-        urlPath: 'reference/runtime',
+        urlPath: 'en/reference/runtime',
         filePath: 'docs/model-facing-lane-runtime.md',
         title: 'Runtime & Host Architecture',
         summary: 'Schema v4 composition, captured host configuration, custom HTTP transport, offline operation resolver, URL routing, and SSRF boundaries.'
       },
       {
-        urlPath: 'reference/remote-protocol',
+        urlPath: 'en/reference/remote-protocol',
         filePath: 'docs/remote-protocol.md',
         title: 'Remote HTTP Protocol v1',
         summary: 'Wire protocol for nb-search-cloud and remote gateways: headers, strict status mapping, idempotency, and URL-only fetch rules.'
       },
       {
-        urlPath: 'reference/changelog',
+        urlPath: 'en/reference/changelog',
         filePath: 'CHANGELOG.md',
         title: 'Changelog',
         summary: 'Release history from 0.2.0 through 0.5.2.'
@@ -224,13 +218,15 @@ export function createTransformHead(version: string, fallbackDescription: string
       ['meta', { name: 'twitter:image', content: OG_IMAGE_URL }]
     ]
 
-    if (rel === 'index.md' || rel === 'en/index.md') {
-      head.push(
-        ['link', { rel: 'alternate', hreflang: 'zh-CN', href: SITE_URL }],
-        ['link', { rel: 'alternate', hreflang: 'en', href: `${SITE_URL}en/` }],
-        ['link', { rel: 'alternate', hreflang: 'x-default', href: `${SITE_URL}en/` }],
-        ['script', { type: 'application/ld+json' }, jsonLd]
-      )
+    const rootPath = isEnglish ? rel.slice(3) : rel
+    head.push(
+      ['link', { rel: 'alternate', hreflang: 'zh-CN', href: toCanonicalUrl(rootPath) }],
+      ['link', { rel: 'alternate', hreflang: 'en', href: toCanonicalUrl(`en/${rootPath}`) }],
+      ['link', { rel: 'alternate', hreflang: 'x-default', href: toCanonicalUrl(`en/${rootPath}`) }]
+    )
+
+    if (rootPath === 'index.md') {
+      head.push(['script', { type: 'application/ld+json' }, jsonLd])
     }
 
     return head
@@ -240,7 +236,7 @@ export function createTransformHead(version: string, fallbackDescription: string
 function normalizeMarkdownForLlms(raw: string, baseDir: string): string {
   const withIncludes = raw.replace(/<!--@include:\s*([^\s>]+)\s*-->/g, (_match, relInclude: string) => {
     const target = path.resolve(baseDir, relInclude)
-    return fs.existsSync(target) ? fs.readFileSync(target, 'utf-8') : ''
+    return fs.readFileSync(target, 'utf-8')
   })
 
   const withoutFrontmatter = withIncludes.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, '')
@@ -295,23 +291,9 @@ export function writeLlmsArtifacts(siteConfig: SiteConfig, repoRoot: string, ver
     ''
   ]
 
-  const skillPath = path.resolve(repoRoot, 'SKILL.md')
-  if (fs.existsSync(skillPath)) {
-    fullParts.push(
-      '---',
-      '',
-      'Source: https://github.com/NB-Corp/nb-search/blob/main/SKILL.md',
-      '',
-      normalizeMarkdownForLlms(fs.readFileSync(skillPath, 'utf-8'), repoRoot),
-      ''
-    )
-  }
-
   for (const section of LLMS_SECTIONS) {
     for (const entry of section.entries) {
-      if (entry.urlPath === '') continue
       const absPath = path.resolve(repoRoot, entry.filePath)
-      if (!fs.existsSync(absPath)) continue
       const cleaned = normalizeMarkdownForLlms(fs.readFileSync(absPath, 'utf-8'), path.dirname(absPath))
       fullParts.push(
         '---',

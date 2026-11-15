@@ -14,9 +14,6 @@ hero:
     - theme: alt
       text: 数据源目录
       link: /sources/
-    - theme: alt
-      text: English Overview
-      link: /en/
 
 features:
   - title: 省下 90% 上下文开销
@@ -72,5 +69,5 @@ nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ## 文档与 AI 检索导航
 
 - **入门与集成**：[快速开始](/guide/quickstart) · [配置与 32 密钥轮转](/guide/configuration) · [SDK / CLI / MCP / Skill 接入](/guide/integrations)
-- **能力与数据源**：[数据源总览](/sources/) · [网页搜索与显式启用知乎](/sources/web-search#zhihu) · [URL 抓取与路由](/guide/fetch) · [异步作业管理](/guide/jobs)
-- **参考与机器可读索引**：[English Overview](/en/) · [CLI 参考](/reference/cli) · [运行时契约](/reference/runtime) · [llms.txt](/llms.txt) · [llms-full.txt](/llms-full.txt)
+- **能力与数据源**：[数据源总览](/sources/) · [通用与区域网页搜索](/sources/web-search) · [URL 抓取与路由](/guide/fetch) · [异步作业管理](/guide/jobs)
+- **参考与机器可读索引**：[CLI 参考](/reference/cli) · [运行时契约](/reference/runtime) · [llms.txt](/llms.txt) · [llms-full.txt](/llms-full.txt)

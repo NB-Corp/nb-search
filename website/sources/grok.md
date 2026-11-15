@@ -40,7 +40,7 @@ GMA 两种模式的 provider 请求都使用 `stream: true`，网关必须支持
     "grok-multi-agent.default": {
       "provider_id": "grok-multi-agent",
       "enabled": true,
-      "base_url": "https://relay.internal/v1",
+      "base_url": "https://relay.example.test/v1",
       "options": {
         "api_mode": "messages",
         "reasoning_effort": "high"
@@ -107,7 +107,7 @@ GMA 的调用按宿主已有授权与预算执行。针对相互独立的研究�
     "openai-compatible.default": {
       "provider_id": "openai-compatible",
       "enabled": true,
-      "base_url": "https://llm-gateway.internal/v1",
+      "base_url": "https://llm.example.test/v1",
       "options": {
         "model": "qwen-max",
         "fallback_models": ["qwen-plus"]

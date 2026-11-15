@@ -101,7 +101,7 @@ const hostQueryRegistration: ProviderRegistration = {
                 results: [
                   {
                     title: 'Internal Docs',
-                    url: 'https://wiki.internal/doc/1',
+                    url: 'https://wiki.example.test/doc/1',
                     snippet: request.query
                   }
                 ]

@@ -1,4 +1,4 @@
-# 网页搜索源 (Web Search)
+# 通用与区域网页搜索
 
 网页搜索类 Lane 专注于返回规范化的网络链接、页面摘要与相关度排序，标准结果通道统一输出 `nb-search.results@1`（知乎直达综合 `zhihu.synthesis` 输出 `nb-search.synthesis@1`）。
 
