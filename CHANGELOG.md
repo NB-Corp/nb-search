@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 - 2026-11-15
+
+### Added
+
+- Added the opt-in Zhihu provider (`provider_id: zhihu`) with `zhihu.search`, `zhihu.global` and typed `zhihu.synthesis` lanes. No Zhihu provider instance, credential slot or lane is added to the defaults. The content-search operations use the official API paths; Zhida synthesis defaults to `zhida-fast-1p5` and returns `nb-search.synthesis@1`.
+- Added a fail-closed free-quota guard backed by `GET /api/v1/quota`, with per-API request counters from `KeyUsage.usage.meters`, a preserved legacy credits summary, Asia/Shanghai daily reset, caching only when more than 32 requests remain (up to 60 seconds), and synchronous in-process reservations. Wallet billing requires explicit `allow_paid: true`.
+
+### Changed
+
+- Zhihu `base_url` prefixes are preserved when appending configured endpoint paths; Tavily and Firecrawl usage requests also retain configured prefixes.
+
 ## 0.5.0 - 2026-11-14
 
 ### Added

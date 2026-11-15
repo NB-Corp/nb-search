@@ -113,6 +113,50 @@ describe('provider key scheduling', () => {
     expect(await runtime.keyUsage({ provider_instance_id: 'firecrawl.default' })).toMatchObject([{ usage: { scope: 'team', remaining: 9 } }, { usage: { scope: 'team', remaining: 9 } }]);
     expect(requests).toEqual(['https://api.firecrawl.dev/v2/team/credit-usage', 'https://api.firecrawl.dev/v2/team/credit-usage']);
   });
+  it.each(['tavily', 'firecrawl', 'zhihu'])('preserves %s usage URL prefixes', async (provider_id) => {
+    const requests: HttpRequest[] = [];
+    const send: HttpTransport['send'] = async <T>(input: HttpRequest) => {
+      requests.push(input);
+      return { status: 200, body: (provider_id === 'tavily' ? { key: { usage: 3, limit: 10 } } : provider_id === 'firecrawl' ? { success: true, data: { remainingCredits: 7 } } : { Code: 0, Data: [{ APIID: 'zhihu_search', RemainingQuota: 7 }] }) as T };
+    };
+    const pool = new KeyScheduler(`${provider_id}.default`, { provider_id, enabled: true, base_url: 'https://relay.example.test/raw/69', options: {} }, { credential_slot_id: `${provider_id}.default`, provider_id, value: 'YOUR_API_KEY', worker_grant: { kind: 'environment', name: 'TEST_KEY' } }, { send }, () => new Date('2026-11-15T15:59:59Z'));
+    expect(await pool.usage()).toMatchObject([{ usage: { remaining: 7 } }]);
+    expect(requests[0]!.url).toBe(`https://relay.example.test/raw/69${provider_id === 'tavily' ? '/usage' : provider_id === 'firecrawl' ? '/v2/team/credit-usage' : '/api/v1/quota'}`);
+    if (provider_id === 'zhihu') expect(requests[0]!.headers).toMatchObject({ Authorization: 'Bearer YOUR_API_KEY', Accept: 'application/json', 'X-Request-Timestamp': String(Date.parse('2026-11-15T15:59:59Z') / 1000) });
+  });
+  it('parses official Zhihu request meters and preserves the legacy credits summary', async () => {
+    let now = Date.parse('2026-11-15T15:59:59Z'); let calls = 0;
+    const send: HttpTransport['send'] = async <T>() => { calls++; return { status: 200, body: { Code: 0, Data: { Items: [
+      { api_id: 'global_search', api_name: 'Global', total_quota: 20, total_used: 19, remaining_quota: 1 },
+      { APIID: 'zhihu_search', APIName: 'Zhihu', TotalQuota: 10, TotalUsed: 10, RemainingQuota: 0 },
+      { APIID: 'zhida_openai', APIName: 'Zhida', TotalQuota: 5, TotalUsed: 2, RemainingQuota: 3 },
+    ] } } as T }; };
+    const pool = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'YOUR_API_KEY', worker_grant: { kind: 'environment', name: 'TEST_KEY' } }, { send }, () => new Date(now));
+    expect(pool.supportsUsage).toBe(true);
+    const usage = await pool.usage();
+    expect(usage).toEqual([{ provider_instance_id: 'zhihu.default', provider_id: 'zhihu', key_index: 1, state: 'ready', usage: { scope: 'key', unit: 'credits', used: 10, limit: 10, remaining: 0, checked_at: '2026-11-15T15:59:59.000Z', meters: [
+      { id: 'global_search', label: 'Global', unit: 'requests', used: 19, limit: 20, remaining: 1, reset_at: '2026-11-15T16:00:00.000Z', reset_timezone: 'Asia/Shanghai' },
+      { id: 'zhihu_search', label: 'Zhihu', unit: 'requests', used: 10, limit: 10, remaining: 0, reset_at: '2026-11-15T16:00:00.000Z', reset_timezone: 'Asia/Shanghai' },
+      { id: 'zhida_openai', label: 'Zhida', unit: 'requests', used: 2, limit: 5, remaining: 3, reset_at: '2026-11-15T16:00:00.000Z', reset_timezone: 'Asia/Shanghai' },
+    ] } }]);
+    await pool.usage(); expect(calls).toBe(1);
+    now += 1000;
+    expect((await pool.usage())[0]!.usage!.meters![0]!.reset_at).toBe('2026-11-16T16:00:00.000Z');
+    expect(calls).toBe(2);
+  });
+  it.each([
+    [{ APIID: 'zhihu_search', RemainingQuota: 0 }, { APIID: 'global_search', RemainingQuota: 0 }],
+    [{ APIID: 'zhihu_search', RemainingQuota: 0 }],
+    [{ APIID: 'global_search', RemainingQuota: 2 }],
+  ])('only exhausts a Zhihu key when both search meters are zero: %j', async (...rows) => {
+    const send: HttpTransport['send'] = async <T>() => ({ status: 200, body: { Code: 0, Data: rows } as T });
+    const pool = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'YOUR_API_KEY', worker_grant: { kind: 'environment', name: 'TEST_KEY' } }, { send });
+    expect((await pool.usage())[0]).toMatchObject({ state: rows.length === 2 ? 'exhausted' : 'ready', usage: { remaining: rows[0]!.RemainingQuota } });
+  });
+  it.each([{ Code: 20001 }, { Code: 0, Data: [] }, { Code: 0, Data: [{ APIID: 'zhihu_search', RemainingQuota: -1 }] }])('reports unreadable Zhihu meters as invalid_response', async (body) => {
+    const pool = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'YOUR_API_KEY', worker_grant: { kind: 'environment', name: 'TEST_KEY' } }, { async send<T>() { return { status: 200, body: body as T }; } });
+    expect(await pool.usage()).toMatchObject([{ usage_error: 'invalid_response' }]);
+  });
   it('exposes local SDK usage without disclosing raw key material', async () => {
     const send: HttpTransport['send'] = async <T>(input: HttpRequest) => input.method === 'GET' ? { status: 200, body: { key: { usage: 3, limit: 10 } } as T } : ok<T>();
     const runtime = createNbSearchRuntime({ env: { NB_SEARCH_TAVILY_API_KEY: 'alpha,beta' }, http_transport: { send } });

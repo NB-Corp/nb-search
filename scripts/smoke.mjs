@@ -31,7 +31,9 @@ try {
   const publicModule = await import(new URL('../dist/index.mjs', import.meta.url));
   const runtime = publicModule.createNbSearchRuntime({ env });
   const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(runtime)).filter((name) => name !== 'constructor').sort();
-  assert(JSON.stringify(methods) === JSON.stringify(['capabilities', 'fetch', 'search']), 'three-method SDK');
+  assert(JSON.stringify(methods) === JSON.stringify(['capabilities', 'fetch', 'keyUsage', 'search']), 'local SDK methods');
+  assert(JSON.stringify(await runtime.keyUsage()) === '[]', 'empty-environment local key usage');
+  assert(typeof publicModule.ZhihuProvider === 'function' && publicModule.DEFAULT_ZHIHU_BASE_URL === 'https://developer.zhihu.com', 'public Zhihu adapter');
   assert(new publicModule.ResponseLimitError(128).maximum === 128, 'public transport limit error');
   let injectedCalls = 0;
   const injected = publicModule.createNbSearchRuntime({ env, http_transport: { async send() { injectedCalls++; throw new Error('Smoke must not dispatch HTTP.'); } } });

@@ -16,6 +16,7 @@ import { OpenAiCompatibleFetchProvider, OpenAiCompatibleSynthesisProvider, valid
 import { ParallelSearchProvider } from './providers/parallel.ts';
 import { SearxngSearchProvider, validateSearxngBaseUrl } from './providers/searxng.ts';
 import { ZhipuSearchProvider } from './providers/zhipu.ts';
+import { ZhihuProvider, validateZhihuOptions, type ZhihuOptions } from './providers/zhihu.ts';
 import { scriptRegistration } from './providers/script.ts';
 import { ExaProvider, ExaResearchLightProvider, GrokMultiAgentProvider, TavilyAnswerProvider, TavilyCrawlProvider, TavilyProvider, TavilyResearchProvider, resolveGmaOptions, resolveGmaUrl, validateGrokModel, validateProviderBaseUrl, validateSearchPath } from './providers.ts';
 import type { HttpTransport } from './transport.ts';
@@ -71,7 +72,7 @@ function deepFreeze<T>(value: T): T { if (value !== null && typeof value === 'ob
 function invalidDescriptor(): NbSearchError { return new NbSearchError('CONFIGURATION_ERROR', 'Provider registration descriptor is invalid.'); }
 export function builtInProviderRegistrations(directIo?: DirectFetchIo): readonly ProviderRegistration[] { return registrationsWithFetchIo(directIo, playwrightBrowserRenderIo); }
 export function builtInProviderRegistrationsForInternalTest(testDirectIo?: DirectFetchIo, testBrowserIo: BrowserRenderIo = playwrightBrowserRenderIo): readonly ProviderRegistration[] { return registrationsWithFetchIo(testDirectIo, testBrowserIo); }
-function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, githubRegistration, duckduckgoRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration, scriptRegistration]; }
+function registrationsWithFetchIo(directIo: DirectFetchIo | undefined, browserIo: BrowserRenderIo): readonly ProviderRegistration[] { return [directRegistration(directIo), waybackRegistration(directIo), browserRegistration(browserIo), jinaRegistration, exaRegistration, tavilyRegistration, firecrawlRegistration, braveRegistration, context7Registration, zhipuRegistration, zhihuRegistration, githubRegistration, duckduckgoRegistration, parallelRegistration, searxngRegistration, openAiCompatibleRegistration, grokRegistration, gmaRegistration, scriptRegistration]; }
 const urlStages = [{ id: 'remote.acquire', role: 'acquire' as const }, { id: 'content.extract', role: 'extract' as const }];
 const remoteFetch = (operation_id: string): FetchOperationDescriptor => ({ operation_id, schema_id: 'nb-search.fetch@1', input_kinds: ['url'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync'], egress: 'url', stages: urlStages });
 function directRegistration(io: DirectFetchIo | undefined): ProviderRegistration { return { descriptor: { provider_id: 'direct-http', adapter_version: '1-kiki-approved-identity-2', query_operations: [], fetch_operations: [{ ...remoteFetch('fetch'), execution_modes: ['sync', 'async'], media_types: ['text/html', 'application/xhtml+xml', 'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'application/ld+json', 'application/xml', 'text/xml', 'application/rss+xml', 'application/atom+xml'], stages: [{ id: 'direct.http', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }, { operation_id: 'local', schema_id: 'nb-search.fetch@1', input_kinds: ['inline_text', 'inline_bytes', 'file'], media_types: ['text/html', 'text/plain', 'text/markdown'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'none', stages: [{ id: 'local.acquire', role: 'acquire' }, { id: 'html.text', role: 'extract' }] }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] }, validate: (id, instance) => validateKnownOptions(id, instance, []), create: () => ({ query: {}, fetch: { fetch: new DirectFetchProvider(io), local: new LocalFetchProvider() } }) }; }
@@ -120,6 +121,26 @@ const zhipuRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'zhipu', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'optional' }, option_keys: [] },
   validate: (id, instance) => validateKnownOptions(id, instance, []),
   create(context) { const credential = requireCredential(context); const provider = new ZhipuSearchProvider({ apiKey: credential.value, transport: context.transports.http, ...(context.instance.base_url === undefined ? {} : { baseUrl: context.instance.base_url }), clock: context.clock }); return { query: { search: resultsProvider(provider) }, fetch: {} }; },
+};
+const zhihuRegistration: ProviderRegistration = {
+  descriptor: {
+    provider_id: 'zhihu', adapter_version: '1', activation: { credential: 'required', endpoint: 'optional' },
+    option_keys: ['allow_paid', 'search_db', 'zhida_model', 'search_path', 'global_search_path', 'synthesis_path', 'quota_path'],
+    query_operations: [
+      { operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+      { operation_id: 'global', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true },
+      { operation_id: 'synthesis', output: { channel: 'typed', schema_id: 'nb-search.synthesis@1' }, built_in_async: true },
+    ], fetch_operations: [],
+  },
+  validate(_id, instance) { validateZhihuOptions(instance.options, instance.base_url); },
+  create(context) {
+    const provider = new ZhihuProvider({ ...commonOptions(context, requireCredential(context)), options: context.instance.options as ZhihuOptions });
+    return { query: {
+      search: resultsProvider(provider),
+      global: { name: provider.name, redactions: provider.redactions, async execute(request) { return { channel: 'results', value: { results: await provider.global(request) } }; } },
+      synthesis: { name: provider.name, redactions: provider.redactions, async execute(request) { return typed(await provider.synthesize(request)); } },
+    }, fetch: {} };
+  },
 };
 const githubRegistration: ProviderRegistration = {
   descriptor: { provider_id: 'github', adapter_version: '1', query_operations: [{ operation_id: 'repositories', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },

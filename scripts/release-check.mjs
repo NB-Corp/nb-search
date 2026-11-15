@@ -246,7 +246,9 @@ async function checkInstalledCandidate(installedRoot, env, expectedVersion) {
   assert(typeof packageModule.createNbSearchRemoteClient === 'function', 'Public SDK remote-client export is missing.');
   const runtime = packageModule.createNbSearchRuntime({ env });
   const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(runtime)).filter((name) => name !== 'constructor').sort();
-  assert(JSON.stringify(methods) === JSON.stringify(['capabilities', 'fetch', 'search']), 'Public SDK runtime must expose exactly capabilities, fetch, and search.');
+  assert(JSON.stringify(methods) === JSON.stringify(['capabilities', 'fetch', 'keyUsage', 'search']), 'Local SDK runtime must expose capabilities, fetch, keyUsage, and search.');
+  assert(JSON.stringify(await runtime.keyUsage()) === '[]', 'Empty-environment key usage must be empty.');
+  assert(typeof packageModule.ZhihuProvider === 'function' && packageModule.DEFAULT_ZHIHU_BASE_URL === 'https://developer.zhihu.com', 'Public Zhihu adapter export is missing.');
 
   const cli = join(packageRoot, 'dist', 'cli.mjs');
   const packageLauncher = join(packageRoot, 'scripts', 'nb-search.mjs');

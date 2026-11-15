@@ -1,6 +1,6 @@
 {
   "name": "@nb-corp/nb-search",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
   "description": "Deterministic search, fetch, and capability lane runtime",
   "license": "MIT",
