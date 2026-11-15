@@ -4,20 +4,31 @@
 
 ## 版本适用说明
 
-本页说明针对 `@nb-corp/nb-search` `0.4.0` 及以上版本。在升级或排查兼容性前，请先检查本地安装的实际包版本并参阅 [CHANGELOG](/reference/changelog)。
+本页说明覆盖 `@nb-corp/nb-search` 从 `0.3.x` / `0.4.x` 演进至 `0.5.2` 的重要兼容性边界。在升级或排查兼容性前，请先检查本地安装版本并参阅 [CHANGELOG](/reference/changelog)。
 
 CLI 或项目 SDK 均从官方 npm registry 更新：
 
 ```bash
 # 全局 CLI
-npm install -g @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search
 # 项目 SDK
-npm install @nb-corp/nb-search@0.4.0 --registry=https://registry.npmjs.org
+npm install @nb-corp/nb-search
 ```
 
 ## 升级注意项
 
-### Script provider/lane
+### 0.5.1 – 0.5.2：显式启用知乎、多密钥轮转与 `keyUsage()`
+
+- **Opt-in 知乎适配器 (`zhihu`)**：新增 `zhihu.search`、`zhihu.global` 与 `zhihu.synthesis` 支持，但不会向内置默认配置注入任何实例、凭据槽或通道；升级不会影响现有默认配置。启用方式与免费配额门禁详见[网页搜索源：显式启用知乎](/sources/web-search#zhihu)。
+- **最多 32 密钥池与 `keyUsage()`**：现有 `NB_SEARCH_*_API_KEY` 环境变量直接兼容单密钥与逗号分隔多密钥列表；本地 SDK 新增 `runtime.keyUsage()` 方法（`LocalNbSearchRuntime`），远端客户端与 MCP 工具列表保持不变。
+
+### 0.5.0：免密默认搜索、Defuddle 直抓与有序 URL 路由
+
+- **默认搜索源 (`duckduckgo.search`)**：未显式配置 `defaults.search_lane` 时，通用搜索默认走免密 `duckduckgo.search`。若上层宿主依赖旧版“无默认源即返回 `DEFAULT_NOT_CONFIGURED`”的拦截语义，请在 `config.json` 中显式声明 `"defaults": { "search_lane": null }`。
+- **Defuddle 直抓与 URL 路由 (`kiki-common-direct@1`)**：`direct.fetch` 升级为 Defuddle 0.19.3 + linkedom 静态提取并支持异步作业；内置 URL 路由默认将已知 GitHub Raw/API、npm、PyPI JSON 固定至仅 `direct.fetch`（可通过 `fetch.routing` 覆盖或关闭）。
+- **进行中作业指纹变更**：`duckduckgo`（v2）、`direct-http` 与新增 `crawl`/`research` 操作的 `tavily` 适配器更新了操作指纹；升级前请先等待进行中的旧版异步任务执行完毕，已持久化的旧快照不会被静默重建。
+
+### 0.4.0：Script provider/lane
 
 `0.4.0` 新增 `script` provider/lane，可沿用现有 CLI、SDK 与 detached async 作业入口，不改变既有 API；从 0.2→0.3 升级的历史说明仍按原文处理。
 

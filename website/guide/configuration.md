@@ -32,7 +32,7 @@
 
 ### 核心 Provider 环境变量
 
-仅当环境变量非空时才会绑定凭据；空字符串视为未配置，且会覆盖更低优先级的凭据。
+仅当环境变量非空时才会绑定凭据；空字符串视为未配置，且会覆盖更低优先级的凭据。任意 API Key 环境变量均支持传入单个密钥，或以逗号分隔传入最多 **32 个不重复密钥**（如 `NB_SEARCH_TAVILY_API_KEY="key-one,key-two"`）。
 
 ::: code-group
 
@@ -64,6 +64,9 @@ NB_SEARCH_ZHIPU_API_KEY=""
 NB_SEARCH_ZHIPU_BASE_URL=""
 
 NB_SEARCH_PARALLEL_API_KEY=""
+
+# 知乎内置源为 opt-in，除设置环境变量外还需在 config.json 中显式声明实例、槽位与 lane
+NB_SEARCH_ZHIHU_API_KEY=""
 ```
 
 ```bash [模型与高级综合源]
@@ -135,7 +138,7 @@ GMA 内置实例为 `grok-multi-agent.default`，其默认凭据槽位与 Grok �
       "provider_id": "grok-multi-agent",
       "enabled": true,
       "credential_slot_id": "gma.custom",
-      "base_url": "https://relay.internal/gma",
+      "base_url": "https://relay.example.test/gma",
       "options": {
         "api_mode": "messages",
         "reasoning_effort": "high"
@@ -154,6 +157,46 @@ GMA 内置实例为 `grok-multi-agent.default`，其默认凭据槽位与 Grok �
 ::: warning 槽位约束
 声明 `credential_slots` 时，槽位配置对象的 `provider_id` 必须与引用该槽位的 `provider_instance` 的 `provider_id` 完全一致（在此处均为 `"grok-multi-agent"`），否则会抛出配置错误。
 :::
+
+## 多密钥轮转与本地额度查询 (`keyUsage()`)
+
+本地运行时支持为任意内置或自定义 `credential_slots.*.env` 配置**最多 32 个不重复的非空密钥**（按优先级以英文逗号分隔，例如 `NB_SEARCH_TAVILY_API_KEY="key-one,key-two"`）。单个密钥保持完全兼容；密钥明文绝不会写入 `config_fingerprint`、作业快照或用量返回体。
+
+可在 `config.json` 中按 Provider 实例配置调度策略与额度缓存周期（Schema 版本仍为 `"4"`）：
+
+```json
+{
+  "schema_version": "4",
+  "provider_instances": {
+    "tavily.default": {
+      "key_strategy": "priority",
+      "balance_ttl_ms": 600000
+    }
+  }
+}
+```
+
+### 调度与容灾规则
+
+- **轮转策略 (`key_strategy`)**：默认为 `"round-robin"`（按序均衡轮询）；设为 `"priority"` 时始终优先选用第一把可用密钥，仅在受限或故障时按序向后切换。
+- **状态机与错误恢复**：
+  - `401` / `403`：在当前运行时实例生命周期内隔离（quarantine）该密钥；
+  - `429`：按响应头 `Retry-After`（缺省为 60 秒）冷却该密钥并立即切换下一把可用密钥；
+  - `402`：将该密钥标记为额度耗尽（`exhausted`），直至 `balance_ttl_ms` 缓存到期或显式刷新用量恢复；
+  - `5xx` 与连接异常：在当前密钥上执行最多 2 次有界指数退避重试，仍失败则切往下一把密钥。
+- **进程边界**：密钥冷却与健康状态保存在当前进程内存中（后台脱机 `async` 作业在独立子进程 worker 中运行）。当所有可用密钥均尝试失败后，外层执行级重试策略（`execution.retry_count`）仍按原规则生效。
+
+### 本地 SDK `keyUsage()` 与各厂商计量差异
+
+本地 SDK 运行时提供 `runtime.keyUsage({ provider_instance_id, refresh })` 方法，返回脱敏后的密钥索引、健康状态与上游额度摘要（`KeyUsage[]`，不含密钥明文）：
+
+- **缓存与频控**：省略 `refresh`（或设为 `false`）时优先读取内存缓存，默认有效期 10 分钟（`balance_ttl_ms` 取值范围 `60000`–`86400000` 毫秒）。Tavily 官方对 `/usage` 端点实施每 10 分钟最多 10 次请求的限流，日常监控请优先使用缓存读取，避免高频传 `refresh: true`。
+- **各数据源行为对照**：
+  - **Tavily**：调用密钥级 `/usage`（保留 `base_url` 前缀），返回当前计费周期的 key 级用量与上限；常规 `search`/`fetch` 派发前不会额外请求余额接口。
+  - **Firecrawl**：调用 `/v1/team/credit-usage`（保留 `base_url` 前缀），返回**团队级（Team-wide）**剩余积分（同一团队下的多把密钥可能显示相同剩余额度）；常规请求前不预查余额。
+  - **知乎 (`zhihu`)**：调用 `GET /api/v1/quota`，在 `KeyUsage.usage.meters` 中返回按 API 拆分的请求计数器；当 `allow_paid: false`（默认）时，派发请求前也会执行免费配额门禁检查（详见[显式启用知乎来源](/sources/web-search#zhihu)）。
+  - **Exa 及其他源**：Exa 的历史消费接口需要独立的团队管理密钥且不返回剩余可用额度；未提供单 Key 剩余额度接口的数据源在 `keyUsage()` 中不返回用量条目。
+- **协议边界**：`keyUsage()` 仅在本地 SDK（`LocalNbSearchRuntime`）上暴露，不在 CLI、MCP 或 Remote HTTP 协议客户端中暴露。
 
 ## 本地与远程凭据存储 (`secrets.json` / `remote-secrets.json`)
 
@@ -180,7 +223,7 @@ GMA 内置实例为 `grok-multi-agent.default`，其默认凭据槽位与 Grok �
   "profiles": {
     "cloud": {
       "kind": "remote",
-      "base_url": "https://search.internal/api/",
+      "base_url": "https://search.example.test/api/",
       "token_env": "NB_SEARCH_CLOUD_TOKEN",
       "timeout_ms": 120000
     }

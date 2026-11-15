@@ -1,24 +1,76 @@
-# nb-search
+---
+layout: home
+title: nb-search — 统一网页搜索、URL 转 Markdown 与深度研究
+description: 用一个 3 工具 MCP (~1.4k Token) 或 Agent Skill (~110 Token) 替代 5 个高消耗搜索服务，内置零密钥启动、多源 RRF 融合、32 密钥池容灾与后台异步研究。
 
-`nb-search` 面向 AI 宿主与工具集成环境，提供统一的 `search`、`fetch` 与 `capabilities` 运行时。它不自动替你挑选搜索服务，也不做静默的 fallback，而是通过确定的 Lane 与 Pipeline 合同，让模型或宿主在明确配置的前提下获得结构化数据。
+hero:
+  name: nb-search
+  text: 网页搜索、正文提取与深度研究
+  tagline: 用 3 工具 MCP（~1.4k Token）或 Agent Skill（~110 Token）替代 5 套独立工具——开箱免密即用，按需接入 14+ 数据源、RRF 融合与 32 密钥池轮转。
+  actions:
+    - theme: brand
+      text: 快速开始
+      link: /guide/quickstart
+    - theme: alt
+      text: 数据源目录
+      link: /sources/
+    - theme: alt
+      text: English Overview
+      link: /en/
 
-本仓库实现本地运行时与 HTTP 协议客户端，不包含公开托管服务或在线控制台。
-
+features:
+  - title: 省下 90% 上下文开销
+    details: 严格仅暴露 search、fetch、capabilities 3 个 MCP 工具（约 1.4k Token）或挂载 Agent Skill（静默约 110 Token），告别叠加多个厂商 MCP 动辄消耗 15k–35k Token。
+  - title: 零密钥即用 + 按需 BYOK
+    details: 内置 DuckDuckGo、GitHub、Context7、Defuddle 直抓、Jina Reader 与 Wayback 免密源；接入 Exa、Tavily、Brave、Firecrawl、Grok、智谱、SearXNG 或知乎即可解锁全量检索。
+  - title: 多源 RRF 与额度保护
+    details: 并行检索多引擎并完成 URL 规范化去重与倒数排名融合（RRF）；静态网页、GitHub/npm/PyPI 元数据优先走本地 Defuddle 提取，遇到验证墙明确报错不烧积分。
+  - title: 32 密钥容灾与异步任务
+    details: 单源支持逗号分隔最多 32 把密钥自动冷却 429 与跳过 402；长耗时深度研究、整站爬取与 Playwright 渲染走后台异步任务，彻底避开 MCP stdio 60 秒超时。
 ---
 
-## 快速导航
+## 30 秒免密钥体验
 
-- [首次配置](/guide/quickstart)：Node/pnpm 环境准备、目录检查与最小可用配置
-- [配置系统与凭据](/guide/configuration)：Schema v4 规则、环境变量与优先级
-- [接入方式](/guide/integrations)：SDK、CLI、MCP stdio 与远程协议客户端
-- [信息源目录](/sources/index)：18 个 Search Lanes 与 9 个 Fetch Pipelines 完整清单
-- [异步任务管理](/guide/jobs)：长耗时作业与完整产物获取
-- [故障排查与诊断](/guide/troubleshooting)：常见错误码与定位步骤
+需要 **Node.js >= 24.15**。全局安装后即可直接运行通用搜索、库文档检索与网页转 Markdown：
 
----
+```bash
+npm install -g @nb-corp/nb-search
 
-## 核心设计原则
+nb-search search "WebAssembly component model"
+nb-search search "react useOptimistic" --lane context7.docs
+nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
+```
 
-1. **确定性执行**：未指定 Lane 且未配置默认 Lane 时直接报错，不会隐式轮询其他源。
-2. **凭据安全与边界隔离**：capabilities catalog 只暴露配置就绪状态，不回显原始密钥与真实地址；本地文件抓取严格限制在授权路径内。
-3. **结构化输出**：搜索结果采用 `nb-search.results@1` 或显式 Typed Schema，抓取结果采用 `nb-search.fetch@1`，保证下游消费一致。
+在 `Claude Code`、`Codex`、`Claude Desktop` 或 `Cursor` 中通过 `npx` 一键挂载 MCP 服务（仅使用免密源时可省略 `env`）：
+
+```json
+{
+  "mcpServers": {
+    "nb-search": {
+      "command": "npx",
+      "args": ["-y", "--package=@nb-corp/nb-search", "nb-search-mcp"],
+      "env": {
+        "NB_SEARCH_TAVILY_API_KEY": "YOUR_API_KEY",
+        "NB_SEARCH_EXA_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+## 为什么不用叠加多个独立 MCP？
+
+| 能力维度 | 叠加 4–5 个厂商官方 MCP | 多源 BYOK 封装 (`mcp-omnisearch`) | 纯免密爬虫 (`open-webSearch`) | `@nb-corp/nb-search` |
+| --- | --- | --- | --- | --- |
+| **上下文开销** | 约 15k–35k Token（20+ 工具） | 约 4k–8k Token（按厂商拆工具） | 约 1k–2k Token | **约 1.4k Token（MCP）/ 约 110 Token（Skill）** |
+| **零密钥启动** | 不支持 | 不支持（强制前置配 Key） | 仅公共网页 HTML | **支持 6 类免密源 + 10+ 类商业/自建 BYOK** |
+| **多引擎 RRF 融合** | 需模型手工合并去重 | 单次仅调单一引擎 | 无官方 API 证据归属 | **URL 规范化去重 + RRF 排序 + 来源归属追溯** |
+| **多 Key `429` 容灾** | 无 | 单源单密钥 | 无（单 IP 易受限） | **单源最多 32 Key 轮转、`Retry-After` 冷却与 `402` 跳过** |
+| **URL 抓取额度保护** | 每次抓取均扣付费积分 | 直接请求商业抓取接口 | 仅基础 HTML 提取 | **Defuddle Direct 优先 + 有序路由 + 验证墙阻断** |
+| **>60s 异步研究与渲染** | 触发 60 秒 `stdio` 超时 | 长任务同步阻塞超时 | 不支持 | **后台脱机 `run`/`get`/`read`/`cancel` 异步作业** |
+
+## 文档与 AI 检索导航
+
+- **入门与集成**：[快速开始](/guide/quickstart) · [配置与 32 密钥轮转](/guide/configuration) · [SDK / CLI / MCP / Skill 接入](/guide/integrations)
+- **能力与数据源**：[数据源总览](/sources/) · [网页搜索与显式启用知乎](/sources/web-search#zhihu) · [URL 抓取与路由](/guide/fetch) · [异步作业管理](/guide/jobs)
+- **参考与机器可读索引**：[English Overview](/en/) · [CLI 参考](/reference/cli) · [运行时契约](/reference/runtime) · [llms.txt](/llms.txt) · [llms-full.txt](/llms-full.txt)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2 - 2026-11-15
+
+### Added
+
+- Added the English documentation overview (`/en/`), `sitemap.xml`, `robots.txt`, OpenGraph and Twitter card metadata (`og-card.png`), JSON-LD `SoftwareSourceCode` and `SoftwareApplication` structured data, and build-generated `llms.txt` and `llms-full.txt` indexes on the VitePress documentation site.
+- Added npm discovery `keywords`, pointed `package.json` `homepage` to `https://nb-corp.github.io/nb-search/`, and added repository `glama.json` metadata.
+
+### Changed
+
+- Reorganized `README.md`, `README.zh-CN.md`, and `SKILL.md` for proportional multi-source coverage, zero-key quickstart commands, MCP/Skill/SDK onboarding, and competitive trade-off comparison, while relocating provider-specific Zhihu configuration and detailed `keyUsage()` reference material to the documentation site.
+- Updated VitePress guides and source catalog pages for `0.5.x` behavior, including `duckduckgo.search` zero-key default search, Defuddle `direct.fetch` extraction, ordered URL routing, and `npx` MCP server configuration.
+
 ## 0.5.1 - 2026-11-15
 
 ### Added

@@ -48,7 +48,7 @@ describe('public surface', () => {
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { exports: Record<string, unknown>; files: string[]; repository: { url: string }; homepage: string; bugs: { url: string } };
     expect(Object.keys(pkg.exports).sort()).toEqual(['.', './SKILL.md', './contracts']);
     expect(pkg.files).toEqual(['dist', 'LICENSES', 'THIRD_PARTY_NOTICES.md', 'README.md', 'README.zh-CN.md', 'docs/assets', 'CHANGELOG.md', 'SKILL.md', '.env.example', 'docs/model-facing-lane-runtime.md', 'docs/remote-protocol.md', 'docs/cli.md', 'scripts/nb-search.mjs', 'examples/script-lane', 'skills/nb-search']);
-    expect(pkg).toMatchObject({ repository: { url: 'git+https://github.com/NB-Corp/nb-search.git' }, homepage: 'https://github.com/NB-Corp/nb-search#readme', bugs: { url: 'https://github.com/NB-Corp/nb-search/issues' } });
+    expect(pkg).toMatchObject({ repository: { url: 'git+https://github.com/NB-Corp/nb-search.git' }, homepage: 'https://nb-corp.github.io/nb-search/', bugs: { url: 'https://github.com/NB-Corp/nb-search/issues' } });
     const readmes = await Promise.all(['README.md', 'README.zh-CN.md'].map((path) => readFile(new URL(`../${path}`, import.meta.url), 'utf8')));
     const references = readmes.flatMap((text) => [...text.matchAll(/\]\(([^)\s]+)\)|(?:src|srcset)="([^"]+)"/g)].map((match) => (match[1] ?? match[2])!)).filter((path) => !/^(?:[a-z]+:|#|\/\/)/i.test(path)).map((path) => path.split('#')[0]!);
     const { stdout } = await execAsync('npm pack --dry-run --json', { cwd: root, maxBuffer: 1024 * 1024 });

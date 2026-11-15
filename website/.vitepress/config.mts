@@ -2,11 +2,13 @@ import { defineConfig } from 'vitepress'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SITE_URL, createTransformHead, writeLlmsArtifacts } from './seo'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const rootPkgPath = path.resolve(__dirname, '../../package.json')
+const repoRoot = path.resolve(__dirname, '../..')
+const rootPkgPath = path.resolve(repoRoot, 'package.json')
 
-let rootVersion = '0.3.0'
+let rootVersion = '0.5.2'
 try {
   if (fs.existsSync(rootPkgPath)) {
     const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, 'utf-8'))
@@ -18,13 +20,26 @@ try {
   // fallback default
 }
 
+const siteDescription =
+  '面向 AI Agent 与 TypeScript 应用的统一网页搜索、URL 转 Markdown、多源 RRF 融合、多密钥容灾与异步深度研究工具（MCP / Agent Skill / CLI / SDK）'
+
 export default defineConfig({
   base: '/nb-search/',
   title: 'nb-search',
-  description: '确定性搜索、抓取与能力通道运行时官方技术文档',
+  description: siteDescription,
   lang: 'zh-CN',
   lastUpdated: true,
   cleanUrls: true,
+
+  sitemap: {
+    hostname: SITE_URL
+  },
+
+  transformHead: createTransformHead(rootVersion, siteDescription),
+
+  buildEnd(siteConfig) {
+    writeLlmsArtifacts(siteConfig, repoRoot, rootVersion)
+  },
 
   // 避免将 workspace 临时历史、任务文档或环境密钥包含入站点构建
   srcExclude: [
@@ -47,11 +62,12 @@ export default defineConfig({
       { text: '指南', link: '/guide/quickstart', activeMatch: '^/guide/' },
       { text: '数据源', link: '/sources/', activeMatch: '^/sources/' },
       { text: '参考与协议', link: '/reference/cli', activeMatch: '^/reference/' },
+      { text: 'English', link: '/en/', activeMatch: '^/en/' },
       {
         text: `v${rootVersion}`,
         items: [
           { text: '变更日志 (CHANGELOG)', link: '/reference/changelog' },
-          { text: '升级指南 (0.2 -> 0.3)', link: '/guide/upgrading' },
+          { text: '版本升级指南', link: '/guide/upgrading' },
           { text: 'GitHub 源码仓库', link: 'https://github.com/NB-Corp/nb-search' }
         ]
       }
@@ -70,8 +86,8 @@ export default defineConfig({
         {
           text: '核心功能',
           items: [
-            { text: '确定性搜索 (Search)', link: '/guide/search' },
-            { text: '网页抓取与提取 (Fetch)', link: '/guide/fetch' },
+            { text: '多源网页搜索 (Search)', link: '/guide/search' },
+            { text: '网页抓取与路由 (Fetch)', link: '/guide/fetch' },
             { text: '异步任务与并发 (Jobs)', link: '/guide/jobs' }
           ]
         },
@@ -93,10 +109,10 @@ export default defineConfig({
         {
           text: '内置数据源与管道',
           items: [
-            { text: '通用网页搜索与抓取', link: '/sources/web-search' },
-            { text: 'Grok 综合分析 (x-synthesis)', link: '/sources/grok' },
+            { text: '通用网页搜索与知乎源', link: '/sources/web-search' },
+            { text: 'Grok 与多代理研究源', link: '/sources/grok' },
             { text: '开发者技术源 (GitHub / Docs)', link: '/sources/developer' },
-            { text: '自定义 Provider 与管道接入', link: '/sources/custom' }
+            { text: '自定义脚本与 Provider 接入', link: '/sources/custom' }
           ]
         }
       ],
@@ -106,7 +122,7 @@ export default defineConfig({
           items: [
             { text: 'CLI 命令行参考', link: '/reference/cli' },
             { text: 'Remote HTTP 协议规范', link: '/reference/remote-protocol' },
-            { text: '模型通道运行时架构', link: '/reference/runtime' },
+            { text: '运行时与宿主契约', link: '/reference/runtime' },
             { text: '发布变更日志', link: '/reference/changelog' }
           ]
         }
@@ -181,7 +197,7 @@ export default defineConfig({
     },
 
     footer: {
-      message: '基于 MIT 协议开源',
+      message: '基于 MIT 协议开源 · AI 索引: /nb-search/llms.txt',
       copyright: 'Copyright © 2026 NB-Corp & nb-search contributors'
     }
   }

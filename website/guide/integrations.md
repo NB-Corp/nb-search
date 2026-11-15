@@ -1,17 +1,17 @@
 # 接入方式
 
-`nb-search` 提供四种访问形态，满足不同的系统集成需求。无论通过哪种方式接入，底层的能力定义、输入验证与输出数据结构都保持一致。
+`nb-search` 提供五种常见接入形态：Node.js / TypeScript SDK、CLI 命令行、MCP `stdio` 服务器、Agent Skill 以及远程 HTTP 协议客户端。所有形态共享同一套 Schema v4 配置与 `3.0` 结果信封契约。
 
-## 1. Node.js SDK
+## 1. Node.js / TypeScript SDK
 
-SDK 适合直接嵌入在 Node.js 后端服务或宿主应用中运行，要求 Node.js `>=24.15.0`。
+SDK 适合直接嵌入在 Node.js 后端服务或 Agent 宿主进程内运行，要求 Node.js `>=24.15.0`。
 
-### 搜索与能力查询
+### 搜索、能力目录与密钥额度查询
 
 ```typescript
 import { createNbSearchRuntime } from '@nb-corp/nb-search';
 
-const runtime = await createNbSearchRuntime({
+const runtime = createNbSearchRuntime({
   config: {
     schema_version: '4',
     defaults: {
@@ -20,15 +20,18 @@ const runtime = await createNbSearchRuntime({
   }
 });
 
-// 执行同步搜索
+// 1. 执行同步搜索
 const searchResponse = await runtime.search({
   action: 'run',
   query: 'node 24 LTS release notes',
   execution: 'sync'
 });
 
-// 获取能力目录元数据
+// 2. 获取静态能力目录元数据（不发起网络探测）
 const catalog = await runtime.capabilities();
+
+// 3. 查询已脱敏的多密钥健康状态与剩余额度（仅本地 SDK 支持）
+const usage = await runtime.keyUsage();
 ```
 
 ### 读取 URL 正文
@@ -77,7 +80,7 @@ if (fetchResponse.action === 'run' && fetchResponse.execution === 'sync' && fetc
 }
 ```
 
-SDK 暴露的核心操作仅有 `search`、`fetch` 和 `capabilities`。
+本地 SDK 运行时（`LocalNbSearchRuntime`）共暴露 **4 个核心方法**：`search`、`fetch`、`capabilities` 与仅限本机调用的 `keyUsage`（详见[多密钥轮转与额度查询](/guide/configuration#多密钥轮转与本地额度查询-keyusage)）。通用 `NbSearchRuntime` 与远程客户端接口包含前 3 个跨传输方法。
 
 ### TypeScript 消费者兼容性提示
 
@@ -115,22 +118,40 @@ echo '{"action":"run","query":"typescript","lane":"tavily.search","execution":"s
 使用 `--stdin` 时，输入必须是一个完整的 UTF-8 JSON 对象，且数据大小不能超过 4 MiB。不能在命令行上同时混用位置参数。
 :::
 
-## 3. MCP 服务器 (stdio)
+## 3. MCP 服务器 (stdio) 与 Agent Skill
 
-`nb-search` 原生实现了 Model Context Protocol (MCP) 标准，通过 stdio 协议与 AI 桌面客户端（如 Claude Desktop）直接通信。
+### MCP 服务器（约 1.4k 上下文 Token）
 
-启动命令：
+`nb-search` 原生实现了 Model Context Protocol (MCP) `stdio` 服务，严格且仅注册 `search`、`fetch`、`capabilities` **3 个结构化工具**（相比同时挂载 4–5 个厂商官方 MCP 可节省 90% 以上的工具 Schema 上下文开销）。
 
-```bash
-node dist/mcp.mjs
+在 `Claude Code`、`Claude Desktop`、`Codex` 或 `Cursor` 中直接通过 `npx` 接入（仅用免密默认源时可省略 `env`）：
+
+```json
+{
+  "mcpServers": {
+    "nb-search": {
+      "command": "npx",
+      "args": ["-y", "--package=@nb-corp/nb-search", "nb-search-mcp"],
+      "env": {
+        "NB_SEARCH_TAVILY_API_KEY": "YOUR_API_KEY",
+        "NB_SEARCH_EXA_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
 ```
 
-在 MCP 协议中，服务严格注册且仅注册 3 个工具：
-- `search`
-- `fetch`
-- `capabilities`
+若已在本地构建源码或安装依赖，也可直接执行 `node dist/mcp.mjs`。所有 MCP 工具参数均采用严格 JSON Schema 命名字段（`action: "run" | "get" | "read" | "cancel"`）。
 
-所有工具参数均严格采用结构化命名参数，没有 CLI 的位置参数缩写。
+### Agent Skill（静默仅约 110 Token）
+
+在支持本地命令行的编码 Agent（如 `Claude Code`、`Codex`、`OpenCode`）中，挂载内置 Agent Skill 可在静默状态下仅占用约 110 Token，在触发检索任务时再按需加载完整协议：
+
+```bash
+npm install -g @nb-corp/nb-search
+# 将宿主的 Skill 目录指向全局包内的 skills/nb-search（或包根目录）
+echo "$(npm root -g)/@nb-corp/nb-search/skills/nb-search"
+```
 
 ## 4. 远程协议客户端 (Remote Client)
 
@@ -146,7 +167,7 @@ if (!accessKey) {
 
 // 同步创建客户端实例，无需 await
 const client = createNbSearchRemoteClient({
-  base_url: 'https://search-service.internal/api/',
+  base_url: 'https://search.example.test/api/',
   access_key: accessKey
 });
 

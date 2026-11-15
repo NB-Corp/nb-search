@@ -17,8 +17,8 @@
 ## 核心错误代码诊断
 
 ### `DEFAULT_NOT_CONFIGURED`
-- **原因**：执行搜索时既没有通过 `--lane`（或 `--lanes`、`--preset`）指定目标源，配置文件中也没有设置 `defaults.search_lane`。
-- **解决方法**：在命令行传入明确的 `--lane <lane_id>`，或者在 `config.json` 中配置 `"defaults": { "search_lane": "tavily.search" }`。
+- **原因**：`0.5.0` 及以上版本默认已配置 `defaults.search_lane = "duckduckgo.search"`；仅当配置文件或宿主覆盖项显式将 `defaults.search_lane` 清空（设为 `null`），且调用搜索时未传 `--lane`、`--lanes` 或 `--preset` 时才会触发此错误。
+- **解决方法**：在命令行传入明确的 `--lane <lane_id>`，或者在 `config.json` 中恢复 `"defaults": { "search_lane": "duckduckgo.search" }`（或 `"tavily.search"` 等已配置源）。
 
 ### `CREDENTIAL_NOT_CONFIGURED` / `LANE_NOT_CONFIGURED`
 - **原因**：目标 Lane 所需的环境变量密钥不存在或为空字符串，或者该 Provider 实例处于未启用状态。
@@ -54,7 +54,7 @@
 
 ### `OUTPUT_TOO_LARGE`
 - **原因**：同步模式下返回的信封体积超过了 `execution.max_inline_bytes`（默认 16 MiB）。
-- **说明与处理**：系统不会自动截断数据。注意：内置的 7 个公共 URL 抓取管道（`direct.fetch`、`jina.reader`、`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`wayback.fetch`、`oac.fetch`）均为同步（Sync-only），不能直接切为异步；仅 `browser.render` 支持且要求异步。对于抓取，可通过调小 `max_content_chars`；若当前显式配置的 `max_inline_bytes` 低于 16 MiB，可适当调高至上限；对于搜索，可调小 `max_results` 或改用异步执行模式（`--execution async`）。重跑请求可能产生新的计费开销，请谨慎评估。
+- **说明与处理**：系统不会自动截断同步信封。抓取管道中，`direct.fetch` 与 `direct.local` 同时支持 `sync` 与 detached `async`，`browser.render` 仅支持 `async`，而其余 6 个第三方云端管道（`jina.reader`、`exa.contents`、`tavily.extract`、`firecrawl.scrape`、`wayback.fetch`、`oac.fetch`）仅支持 `sync`。遇到超限时，抓取可通过调小 `max_content_chars`（或在支持异步的管道上显式使用 `--execution async`），搜索可调小 `max_results` 或改用 `--execution async`。重跑付费源请求可能产生额外计费开销，请先核查预算。
 
 ### `ENTRY_UNAVAILABLE`
 - **原因**：通过 `scripts/nb-search.mjs` 启动时找不到构建产物 `dist/cli.mjs`。

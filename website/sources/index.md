@@ -11,7 +11,7 @@
 根据官方内置用途指引（`src/lane-guidance.ts`），能力按业务目标划分为三个主要分组。**这些分组反映的是使用场景与接入路径，而非质量高低的等级排序**：
 
 1. **入门通用检索与原文 (`onboarding`)**：
-   - **配置建议**：源码预发布版默认使用免密钥的 `duckduckgo.search` 检索通用网页；公共 HTML 页面可能出现验证或限流，工具会如实报告错误。仓库检索和文档上下文可显式选择 `github.repositories`、`context7.docs`。也可配置 `tavily.search`、`brave.search`、`exa.search` 等来源并设为 `defaults.search_lane`；显式默认和选择优先，失败不会静默切换来源。抓取默认先用 `direct.fetch`，失败时尝试无需密钥的 `jina.reader`；直连成功但内容无用时，可通过 `execution.fetch.quality` 配置规则触发回退。
+   - **配置建议**：`0.5.0` 及以上版本默认使用免密钥的 `duckduckgo.search` 检索通用网页；公共 HTML 页面可能出现验证或限流，工具会如实报告错误而不会伪装为空结果。仓库检索和文档上下文可显式选择 `github.repositories`、`context7.docs`。也可配置 `tavily.search`、`brave.search`、`exa.search` 等来源并设为 `defaults.search_lane`；显式默认和选择优先，失败不会静默切换来源。抓取默认开启 `kiki-common-direct@1` 有序 URL 路由（已知 GitHub Raw/API、npm、PyPI 元数据仅走 `direct.fetch`），其余公共 URL 先用 `direct.fetch`（Defuddle），失败时尝试免密的 `jina.reader`。
    - **典型源**：`duckduckgo.search`、`brave.search`、`exa.search`、`tavily.search`、`parallel.search`、`searxng.search`、`zhipu.search`，抓取管道包含 `direct.fetch` 与 `jina.reader`。
 2. **按需专题能力 (`specialist`)**：
    - **配置建议**：针对特定类型数据、网页提取或受控环境显式选用，通常通过 `--lane`、`--lanes` 或 `--pipeline` 直接指定，而非作为全网兜底。
@@ -45,7 +45,7 @@
 | `zhipu.search` | `zhipu/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_ZHIPU_API_KEY`；Base URL 可选 | cheap / fast | 智谱 Web Search，端点补全 `/paas/v4/web_search` |
 | `parallel.search` | `parallel/search` | Results (`nb-search.results@1`) | sync, async | 必需 `NB_SEARCH_PARALLEL_API_KEY` | cheap / fast | 固定端点 `https://api.parallel.ai/v1/search` |
 | `github.repositories` | `github/repositories` | Results (`nb-search.results@1`) | sync, async | `NB_SEARCH_GITHUB_TOKEN` 可选 | free / fast | 按需仓库检索；无 Token 易受匿名频控限制 |
-| `duckduckgo.search` | `duckduckgo/search` | Results (`nb-search.results@1`) | sync, async | 无需凭据或自建端点 | free / medium | **源码预发布版零配置默认搜索**；通用网页 HTML 检索，公共端点可能返回验证或限流 |
+| `duckduckgo.search` | `duckduckgo/search` | Results (`nb-search.results@1`) | sync, async | 无需凭据或自建端点 | free / medium | **零配置默认通用网页搜索**；公共 HTML 检索，遇到验证或限流直接报错 |
 | `context7.docs` | `context7/docs` | Typed (`nb-search.docs-context@1`) | sync, async | `NB_SEARCH_CONTEXT7_API_KEY` 可选 | cheap / medium | 框架与代码库文档上下文提取，无 Key 时按公用模式调用 |
 | `grok.synthesis` | `grok/synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_GROK_API_KEY`；Base/Model 可选 | expensive / slow | 基于 xAI Grok Responses API，启用 `web_search` 工具 |
 | `grok.x-synthesis` | `grok/x-synthesis` | Typed (`nb-search.synthesis@1`) | sync, async | 必需 `NB_SEARCH_GROK_API_KEY`；Base/Model 可选 | expensive / slow | 基于 xAI Grok Responses API，启用 `x_search` 工具 |
@@ -56,7 +56,7 @@
 
 | Pipeline 标识 | Provider / 操作 | 适用输入与输出 | 支持模式 (就绪时) | 凭据与依赖要求 | 相对成本 / 延迟 | 默认抓取链位置与说明 |
 |---|---|---|---|---|---|---|
-| `direct.fetch` | `direct-http/fetch` | URL -> `nb-search.fetch@1` | sync | 无需凭据，直接 HTTP 请求 | free / fast | **默认 URL 抓取链第 1 位**；直接抓取，无外部依赖 |
+| `direct.fetch` | `direct-http/fetch` | URL -> `nb-search.fetch@1` | sync, async | 无需凭据，直接 HTTP 请求 | free / fast | **默认 URL 抓取链第 1 位**；Defuddle 静态提取 HTML、JSON 与 GitHub API 文本 |
 | `jina.reader` | `jina-reader/reader` | URL -> `nb-search.fetch@1` | sync | `NB_SEARCH_JINA_API_KEY` 可选 | free / medium | **默认 URL 抓取链第 2 位**；正文提取与 Markdown 转换 |
 | `direct.local` | `direct-http/local` | inline / file -> `nb-search.fetch@1` | sync, async | 无需凭据；file 需配置 `file_scopes` | free / fast | **默认 inline/file 抓取链唯一项**；不出网 (`egress: none`) |
 | `exa.contents` | `exa/contents` | URL -> `nb-search.fetch@1` | sync | 必需 `NB_SEARCH_EXA_API_KEY` | cheap / fast | 需显式指定或自定义 chain；调用 Exa 内容提取端点 `/contents` |
@@ -65,3 +65,10 @@
 | `wayback.fetch` | `wayback/fetch` | URL -> `nb-search.fetch@1` | sync | 无需凭据；自动查询 Wayback 归档快照 | free / medium | 需显式指定或自定义 chain；适用于页面已下线或需要历史快照的场景 |
 | `browser.render` | `browser-render/render` | URL -> `nb-search.fetch@1` | async | 依赖 Playwright + Chromium；仅支持异步 | free / slow | 需显式指定或自定义 chain；通过浏览器内核渲染客户端 JavaScript 页面 |
 | `oac.fetch` | `openai-compatible/fetch` | URL -> `nb-search.fetch@1` | sync | 必需 OAC Key + Base URL + Model | expensive / slow | 需显式指定或自定义 chain；使用兼容模型对页面内容进行归纳提取 |
+
+## 显式启用与自定义扩展源 (Opt-in & Custom)
+
+以下内置适配器不会自动创建默认实例或默认通道，需在 `config.json` 或宿主代码中显式声明后启用：
+
+- **知乎内置源 (`provider_id: "zhihu"`)**：支持社区问答与专栏检索（`zhihu.search`）、中文全网检索（`zhihu.global`）以及直达综合回答（`zhihu.synthesis`），内置 `GET /api/v1/quota` 免费额度门禁（默认 `allow_paid: false`）与本地 `keyUsage()` 指标。完整 Schema v4 配置见[网页搜索源：显式启用知乎](/sources/web-search#zhihu)。
+- **本地脚本源 (`provider_id: "script"`) 与 SDK 自定义注册**：将可信本地 `.js`/`.mjs`/`.ts`/`.mts` 模块绑定为支持 `sync` 与 detached `async` 的标准搜索通道，或通过 `ProviderRegistration` 在宿主进程内注入自定义适配器。详见[自定义源与脚本 Lane](/sources/custom)。

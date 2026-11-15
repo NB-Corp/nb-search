@@ -1,4 +1,4 @@
 interface:
   display_name: "NB Search"
-  short_description: "Search the web, read URLs, fuse sources, and run research"
-  default_prompt: "Use $nb-search to search across sources, read primary URLs, and verify current facts."
+  short_description: "Unified web search, URL-to-Markdown, RRF fusion, and research"
+  default_prompt: "Use $nb-search to fuse multi-source web searches, read primary URLs as Markdown, and verify current facts."

@@ -16,18 +16,52 @@
 
 ### 输出表示格式 (Representation)
 
-- `markdown`（默认）：输出 Markdown 文本。`direct` 管道采用轻量级文本/HTML 转换，并非保证结构化提炼；URL 正文提取可显式选择 `jina.reader`。
+- `markdown`（默认）：输出干净的 Markdown 文本。`direct.fetch` 基于 **Defuddle + linkedom** 静态提取 HTML 正文、链接、数学公式与代码块（不执行页面脚本或额外网络请求），保留纯文本空白，格式化 JSON，并在字节限额内本地解码 `api.github.com` 的 `contents` / `readme` Base64 UTF-8 响应。
 - `text`：输出纯文本。
 
-## 抓取链 (Fetch Chain) 与执行规则
+## 有序 URL 路由 (`fetch.routing`) 与抓取链 (Fetch Chain)
 
-当调用未显式指定 `--pipeline` 时，系统根据输入类型匹配 `defaults.fetch_chain` 进行串行尝试：
+对于公共 `url` 请求，运行时按以下固定优先级决定待执行的管道序列，且**严格只尝试选定序列中的管道**：
 
-- **URL 输入默认链**：
-  1. `direct.fetch`：轻量级直接抓取，无外部密钥依赖。
-  2. `jina.reader`：基于 Jina Reader 进行正文提取。
-- **本地文件与行内数据默认链**：
-  - 仅走 `direct.local`（不出外网，`egress: "none"`）。
+1. **显式 `--pipeline <id>`**：调用方点名管道时仅运行该管道。
+2. **首条命中的启用用户规则（`fetch.routing.rules`）**：按规则声明的有序 `pipelines` 执行，或通过 `"use": "default"` 恢复默认链。
+3. **启用的内置规则包（`kiki-common-direct@1`，默认开启）**：将已知纯文本 `raw.githubusercontent.com`、`api.github.com` 仓库元数据/目录/README/Release、`registry.npmjs.org` 包元数据及 `pypi.org` JSON 固定路由至**仅 `direct.fetch`**——失败直接报错，绝不静默追加 Jina 或商业付费抓取器。
+4. **默认 `defaults.fetch_chain`**：
+   - **URL 输入默认链**：先走免密 `direct.fetch`（支持 `sync` 与 detached `async`），需要回退时再尝试免密/选配密钥的 `jina.reader`（`sync`）。
+   - **本地文件与行内数据默认链**：仅走 `direct.local`（不出外网，`egress: "none"`，不参与 URL 路由）。
+
+可在 `config.json` 中自定义域名与路径通配规则（路由决策与每次尝试均记录在返回回执的顶层 `routing` 与 `lane_outcomes[].attempts` 中）：
+
+```json
+{
+  "schema_version": "4",
+  "fetch": {
+    "routing": {
+      "rules": [
+        {
+          "id": "docs-direct-then-jina",
+          "match": {
+            "origin": "https://raw.githubusercontent.com",
+            "path_globs": ["/**/*.md"]
+          },
+          "action": {
+            "pipelines": ["direct.fetch", "jina.reader"]
+          }
+        },
+        {
+          "id": "npm-restore-default-chain",
+          "match": {
+            "origin": "https://registry.npmjs.org"
+          },
+          "action": {
+            "use": "default"
+          }
+        }
+      ]
+    }
+  }
+}
+```
 
 ### 错误中断与故障转移边界 (Fallback)
 

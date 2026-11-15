@@ -5,202 +5,182 @@
   <img src="docs/assets/banner-light.svg" alt="nb-search — Give your agent a wider world." width="1200">
 </picture>
 
-**Search. Read. Research. One interface for your AI.**
+**Unified web search, URL-to-Markdown extraction, RRF multi-source fusion, and async deep research for AI agents and TypeScript apps.**
 
+[![npm version](https://img.shields.io/npm/v/@nb-corp/nb-search?style=flat-square&color=2d4b35)](https://www.npmjs.com/package/@nb-corp/nb-search)
+[![CI](https://img.shields.io/github/actions/workflow/status/NB-Corp/nb-search/ci.yml?branch=main&style=flat-square&color=2d4b35)](https://github.com/NB-Corp/nb-search/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-24.15%2B-2d4b35?style=flat-square)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2d4b35?style=flat-square)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-read_the_wiki-2d4b35?style=flat-square)](https://nb-corp.github.io/nb-search/)
+[![Docs](https://img.shields.io/badge/docs-online-2d4b35?style=flat-square)](https://nb-corp.github.io/nb-search/en/)
 
-[Quick start](#quick-start) · [Documentation](https://nb-corp.github.io/nb-search/) · [Sources](https://nb-corp.github.io/nb-search/sources/) · [Agent Skill](SKILL.md)
+[Quick start](#quick-start) · [MCP & Skill](#mcp--agent-skill) · [Sources](#supported-sources) · [Comparison](#how-it-compares) · [Docs](https://nb-corp.github.io/nb-search/en/)
 
 **English** · [简体中文](README.zh-CN.md)
 
 </div>
 
-Stop wiring a different tool for every source. **nb-search** gives agents and applications one TypeScript interface for web search, web reading and research—while you choose the providers.
-
-Use it inside your app, from a terminal, as an MCP server, or through an agent Skill. Run locally with your credentials, or connect the same client interface to your own [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) service.
+Wiring separate MCP servers for Exa, Tavily, Firecrawl, Context7, and Playwright burns **15k–35k context tokens** before your first prompt, scatters API keys across assistant configs, and breaks on single-key `429` limits or 60-second `stdio` timeouts. **`@nb-corp/nb-search`** replaces that stack with **one 3-tool MCP server (~1.4k tokens)**, an **Agent Skill (~110 idle tokens)**, a **CLI**, and a **TypeScript SDK**—all running locally or against your self-hosted [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) service.
 
 <p align="center"><img src="docs/assets/workflow.svg" alt="Your agent or app → nb-search → search engines, documents and research providers" width="1200"></p>
 
 ## Why nb-search?
 
-- **Bring more than one source.** Exa, Tavily, Brave, Grok, Jina, Firecrawl, GitHub, and the opt-in Zhihu builtin. Combine search results or select a dedicated research operation. [Explore the catalog →](https://nb-corp.github.io/nb-search/sources/)
-- **Research in parallel.** Send independent topics together. Use async jobs for long-running work, with status, cancellation and complete result retrieval.
-- **Get usable output.** Structured results with source URLs, extracted documents, or typed research—not another wall of chat to reverse-engineer.
-- **Keep your workflow.** SDK, CLI, MCP and Skill use the same runtime. Reuse your local provider configuration or connect a remote profile—without configuring every source in every assistant.
+- **Context economy**: Load 3 MCP tools (`search`, `fetch`, `capabilities`, ~1.4k schema tokens) or mount the Agent Skill (~110 tokens at rest) instead of 20+ vendor tool definitions.
+- **Zero-key instant start + BYOK**: Search the web (`duckduckgo.search`), GitHub (`github.repositories`), and library docs (`context7.docs`) or read URLs (`direct.fetch` + `jina.reader`) immediately with zero keys, then plug in Exa, Tavily, Brave, Firecrawl, Grok, Zhipu, SearXNG, or opt-in Zhihu keys as needed.
+- **RRF multi-source fusion**: Query multiple engines in parallel (`--lanes exa.search,tavily.search,brave.search`), canonicalize URLs, deduplicate hits, and rank with Reciprocal Rank Fusion and per-source provenance.
+- **32-key rotation & failover**: Supply comma-separated key pools per provider with automatic `429` `Retry-After` cooldowns, `402` quota-exhaustion skipping, `401`/`403` quarantine, and bounded `5xx` retries.
+- **Direct-first URL credit protection**: Static HTML, GitHub raw/API responses, npm metadata, and PyPI JSON resolve locally via Defuddle (`direct.fetch`) first—surfacing Cloudflare or bot walls explicitly instead of wasting paid scrape credits.
+- **Detached async jobs without 60s timeouts**: Run 10–15 minute deep research (`tavily.research`, `gma.research`), site crawls (`tavily.crawl`), and headless Chromium renders (`browser.render`) via `run`/`get`/`read`/`cancel`.
 
 ## Quick start
 
-**Requires Node.js ≥ 24.15.** Install the CLI from the official npm registry:
+**Requires Node.js >= 24.15.** Install globally and run three zero-key commands right away:
 
 ```bash
-npm install -g @nb-corp/nb-search@0.5.1 --registry=https://registry.npmjs.org
+npm install -g @nb-corp/nb-search
+
+nb-search search "WebAssembly component model"
+nb-search search "react useOptimistic" --lane context7.docs
 nb-search fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
 ```
 
-The command returns JSON. Extracted text is in `documents[].content`; `status` tells you whether extraction succeeded. This direct-fetch example needs no provider key.
-
-For a source checkout, pnpm is needed only to install dependencies and build:
-
-```bash
-git clone https://github.com/NB-Corp/nb-search.git
-cd nb-search
-pnpm install --frozen-lockfile
-pnpm build
-node scripts/nb-search.mjs fetch "https://nodejs.org/en/about/releases/" --pipeline direct.fetch
-```
-
-The **0.5.1 release** searches the general web with DuckDuckGo by default, without registration, an API key or lane selection:
-
-```bash
-node scripts/nb-search.mjs search "NASA James Webb telescope"
-```
-
-DuckDuckGo's public HTML endpoint may issue a challenge or rate limit; these are reported as errors, not empty results. Wait before retrying, or explicitly choose another configured provider. `github.repositories` remains available for repository search. Configured defaults and explicit choices take precedence, including an explicitly removed default; failures never silently switch to a paid source. A *lane* is a named source operation. [Explore configuration →](https://nb-corp.github.io/nb-search/guide/configuration) Provider pricing and limits still apply.
-
-Direct HTML extraction and configurable URL routing are also available. Known GitHub raw text/repository JSON, npm metadata and PyPI JSON use Direct only by default; user rules can replace that list or restore your usual chain. Unmatched URLs still use the Direct-to-Jina default chain. Route decisions, actual attempts and content warnings are returned in receipts. [Routing configuration and host APIs →](docs/model-facing-lane-runtime.md#fetch)
-
-## Multiple provider keys (local runtime)
-
-Put up to 32 distinct keys, in priority order, in the existing credential environment variable, separated by commas: `NB_SEARCH_TAVILY_API_KEY="key-one,key-two"`. A single key remains valid. Custom `credential_slots.*.env` names use the same format. Keys are never included in config fingerprints or usage output. Configure scheduling per instance in `config.json` (schema version remains `"4"`):
+Every command writes structured `3.0` JSON to `stdout`:
 
 ```json
 {
+  "schema_version": "3.0",
+  "action": "run",
+  "execution": "sync",
+  "status": "succeeded",
+  "documents": [
+    {
+      "url": "https://nodejs.org/en/about/releases/",
+      "source_lane": "direct.fetch",
+      "content": "# Node.js Releases\n..."
+    }
+  ]
+}
+```
+
+Public DuckDuckGo HTML challenges or rate limits fail explicitly rather than returning fake empty results, and errors never silently switch to a paid provider. Add your own keys to unlock RRF multi-engine fusion or detached async research:
+
+```bash
+export NB_SEARCH_EXA_API_KEY="YOUR_API_KEY"
+export NB_SEARCH_TAVILY_API_KEY="YOUR_API_KEY"
+
+nb-search search "PostgreSQL logical replication latency" --lanes exa.search,tavily.search --freshness py
+nb-search search "2026 WebAssembly server runtime benchmarks" --lane tavily.research --execution async --idempotency-key wasm-2026
+nb-search search get "<job_id>" --wait 240000
+nb-search search read "<job_id>" --all
+```
+
+## MCP & Agent Skill
+
+### MCP Server (`Claude Code` / `Codex` / `Cursor`)
+
+Add `nb-search-mcp` to your host's `mcpServers` config (`env` is optional for zero-key sources):
+
+```json
+{
+  "mcpServers": {
+    "nb-search": {
+      "command": "npx",
+      "args": ["-y", "--package=@nb-corp/nb-search", "nb-search-mcp"],
+      "env": {
+        "NB_SEARCH_TAVILY_API_KEY": "YOUR_API_KEY",
+        "NB_SEARCH_EXA_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+### Agent Skill & TypeScript SDK
+
+- **Agent Skill (~110 idle tokens)**: After `npm install -g @nb-corp/nb-search`, point your agent's skill directory to `$(npm root -g)/@nb-corp/nb-search/skills/nb-search` (or `node_modules/@nb-corp/nb-search` in a project; see [`SKILL.md`](SKILL.md)).
+- **TypeScript SDK**: Install `npm install @nb-corp/nb-search` (enable `skipLibCheck: true` in `tsconfig.json`; [integration details](https://nb-corp.github.io/nb-search/guide/integrations)):
+
+```ts
+import { createNbSearchRuntime } from '@nb-corp/nb-search';
+
+const runtime = createNbSearchRuntime();
+const hits = await runtime.search({ action: 'run', query: 'SQLite WAL concurrency' });
+const page = await runtime.fetch({
+  action: 'run',
+  source: { kind: 'url', url: 'https://nodejs.org/en/about/releases/' },
+  pipeline: 'direct.fetch'
+});
+
+if (page.action === 'run' && page.execution === 'sync' && page.status === 'succeeded') {
+  console.log(page.documents[0]?.content);
+}
+const catalog = await runtime.capabilities();
+```
+
+## Supported sources
+
+Full schemas, options, and endpoint contracts live in the [Sources Catalog](https://nb-corp.github.io/nb-search/sources/).
+
+| Category | Built-in & Opt-in Providers | Lane / Pipeline IDs | Auth |
+| --- | --- | --- | --- |
+| **Zero-Key Out-of-the-Box** | DuckDuckGo (default), GitHub, Context7, Direct Fetch (Defuddle), Jina Reader, Wayback Machine | `duckduckgo.search`, `github.repositories`, `context7.docs`, `direct.fetch`, `jina.reader`, `wayback.fetch` | Keyless (optional token/key for higher GitHub, Context7, or Jina rate limits) |
+| **BYOK Web & Regional Search** | Exa, Tavily, Brave, Firecrawl, Parallel, Zhipu, SearXNG, [Zhihu (opt-in)](https://nb-corp.github.io/nb-search/sources/web-search#zhihu) | `exa.search`, `tavily.search`, `brave.search`, `firecrawl.search`, `parallel.search`, `zhipu.search`, `searxng.search`, `zhihu.search`, `zhihu.global` | Provider API key (`searxng.search` needs `base_url`; Zhihu requires explicit config opt-in) |
+| **BYOK & Browser URL Reading** | Exa Contents, Tavily Extract, Firecrawl Scrape, OpenAI-Compatible Fetch, Playwright Render, Local File/Inline | `exa.contents`, `tavily.extract`, `firecrawl.scrape`, `oac.fetch`, `browser.render` (async), `direct.local` (no egress) | Provider API key (`browser.render` uses optional `playwright >= 1.50.0`) |
+| **Synthesis, Crawl, Deep Research & Custom Scripts** | Exa / Tavily / Grok / OAC / opt-in Zhihu Synthesis, Tavily Crawl, Tavily Research, Grok Multi-Agent Research, Local [Script](https://nb-corp.github.io/nb-search/sources/custom) | `exa.synthesis`, `tavily.synthesis`, `grok.synthesis`, `grok.x-synthesis`, `oac.synthesis`, `zhihu.synthesis`, `tavily.crawl`, `tavily.research`, `gma.research`, custom `.js`/`.ts` ([example](examples/script-lane/config.json)) | Provider key/endpoint or trusted local module |
+
+Built-in URL routing (`kiki-common-direct@1`) pins known plain-text `raw.githubusercontent.com` files, `api.github.com` repository/README/release JSON, npm package metadata, and PyPI JSON to `direct.fetch` only—never appending paid fallbacks unless your `fetch.routing.rules` explicitly ask for them. [URL routing & host APIs →](docs/model-facing-lane-runtime.md#fetch)
+
+## Multi-key rotation & quota inspection
+
+Pass up to 32 distinct comma-separated keys in any credential variable (`NB_SEARCH_TAVILY_API_KEY="key-one,key-two"`). Keys default to `round-robin`, or fail over in strict order with `"key_strategy": "priority"`:
+
+```json
+{
+  "schema_version": "4",
   "provider_instances": {
     "tavily.default": { "key_strategy": "priority", "balance_ttl_ms": 600000 }
   }
 }
 ```
 
-`key_strategy` defaults to `round-robin`; `priority` always selects the first available key, failing over in order. Both strategies quarantine 401/403 keys for the lifetime of the runtime, cool 429 keys using `Retry-After` (or 60 seconds), and retry 5xx/connection errors twice with bounded exponential backoff before moving to the next key. A 402 marks a key exhausted until its cache expires or a manual usage refresh restores it. State is in-memory and scoped to the provider instance/process (detached jobs each start a separate worker). The existing execution-level retry policy still applies after key-level attempts fail.
+Both strategies quarantine `401`/`403` keys for the runtime's lifetime, cool `429` keys using `Retry-After` (or 60s), skip `402` exhausted keys until TTL expiry or manual refresh, and retry `5xx`/network errors twice before rotating. In the local SDK, call `await runtime.keyUsage({ provider_instance_id: 'tavily.default', refresh: true })` to inspect redacted key state and remaining quota for supported providers without exposing secret values. See [Configuration & Multi-Key Rotation](https://nb-corp.github.io/nb-search/guide/configuration) for provider-specific meter rules.
 
-For supported providers, `createNbSearchRuntime().keyUsage({ provider_instance_id: 'tavily.default', refresh: true })` returns an array of key-indexed state and provider-reported usage, with no key values. Omit `refresh` to use a 10-minute TTL cache (`balance_ttl_ms` accepts 60,000–86,400,000 milliseconds). Avoid frequent forced refreshes because Tavily [limits usage checks to 10 per 10 minutes](https://docs.tavily.com/documentation/rate-limits#usage-endpoint-rate-limits).
+## How it compares
 
-Tavily's [key usage endpoint](https://docs.tavily.com/documentation/api-reference/endpoint/usage) reports key-level cycle usage/limit; Firecrawl's [team credit endpoint](https://docs.firecrawl.dev/api-reference/endpoint/credit-usage) reports **team-wide** remaining credits (the same balance can appear under multiple keys). Providers without a supported usage API return no usage entries. Exa's [per-key historical spend API](https://exa.ai/docs/reference/team-management/get-api-key-usage) requires a separate team service key and does not report remaining balance. `keyUsage()` is available on the local SDK runtime only, not on remote, CLI or MCP transports.
+| Capability | Stacking 4–5 Vendor MCPs | Multi-Vendor BYOK Wrappers (`mcp-omnisearch`) | Keyless Scrapers (`open-webSearch`) | `@nb-corp/nb-search` |
+| --- | --- | --- | --- | --- |
+| **Context Overhead** | ~15k–35k tokens across 20+ tools | ~4k–8k tokens across per-vendor tools | ~1k–2k tokens | **~1.4k tokens (3-tool MCP) / ~110 tokens (Skill)** |
+| **Zero-Key Start** | No (keys required per server) | No (API keys required upfront) | Yes (public HTML scraping only) | **Yes (DuckDuckGo, GitHub, Context7, Defuddle, Jina, Wayback) + BYOK** |
+| **Multi-Engine RRF Fusion** | Manual prompt-level merging | Single provider per call | Multi-engine HTML without API provenance | **URL canonicalization + RRF + per-source provenance** |
+| **Multi-Key `429` Failover** | None | Single key per provider | None (IP rate-limited) | **Up to 32 keys/provider, `Retry-After` cooldown & `402` skip** |
+| **URL Credit Protection** | Every URL hits paid scraper | Direct vendor scrape call | Basic HTML fetch | **Defuddle Direct-first + ordered URL routing + challenge detection** |
+| **>60s Async Research & Render** | Hits 60s MCP `stdio` timeout | Sync call timeouts on long tasks | Not supported | **Detached `run`/`get`/`read`/`cancel` jobs (up to 60 min)** |
 
-Tavily and Firecrawl searches and fetches do not query balances before dispatch; only an explicit `keyUsage()` call does. Zhihu is an exception: when `allow_paid` is false, its free-quota guard checks `GET /api/v1/quota` before dispatch.
+### FAQ
 
-## Opt in to Zhihu
+**MCP server or Agent Skill—which should I pick?**
+Use the Agent Skill in CLI-capable coding agents (`Claude Code`, `Codex`, `OpenCode`) to keep idle context near ~110 tokens. Use `nb-search-mcp` in desktop or IDE hosts (`Claude Desktop`, `Cursor`) that expect MCP `stdio` tools.
 
-The Zhihu builtin is opt-in. It does not add a provider instance, credential slot or lane to the defaults. Add all three explicitly to a schema-4 configuration, then select a lane. The `latency` and `cost` fields below are lane metadata; adjust them to your deployment's estimates rather than treating them as request limits:
+**Does `nb-search` silently fall back to paid APIs when a free source fails?**
+Never. Search errors on `duckduckgo.search` or explicit lanes fail closed, and Direct-only URL routes (`raw.githubusercontent.com`, `api.github.com`, npm, PyPI) never append paid scrapers unless you configure a custom chain.
 
-```json
-{
-  "provider_instances": {
-    "zhihu.manual": {
-      "provider_id": "zhihu",
-      "enabled": true,
-      "credential_slot_id": "zhihu.manual",
-      "base_url": "https://developer.zhihu.com",
-      "options": {
-        "allow_paid": false,
-        "search_db": "all",
-        "zhida_model": "zhida-fast-1p5",
-        "search_path": "/api/v1/content/zhihu_search",
-        "global_search_path": "/api/v1/content/global_search",
-        "synthesis_path": "/v1/chat/completions",
-        "quota_path": "/api/v1/quota"
-      }
-    }
-  },
-  "credential_slots": {
-    "zhihu.manual": {
-      "provider_id": "zhihu",
-      "env": "NB_SEARCH_ZHIHU_API_KEY"
-    }
-  },
-  "lanes": {
-    "zhihu.search": {
-      "provider_instance_id": "zhihu.manual",
-      "operation_id": "search",
-      "latency": "fast",
-      "cost": "cheap"
-    },
-    "zhihu.global": {
-      "provider_instance_id": "zhihu.manual",
-      "operation_id": "global",
-      "latency": "fast",
-      "cost": "cheap"
-    },
-    "zhihu.synthesis": {
-      "provider_instance_id": "zhihu.manual",
-      "operation_id": "synthesis",
-      "latency": "medium",
-      "cost": "cheap"
-    }
-  }
-}
-```
+**When should I use `nb-extract` or `paper-search-cli` instead?**
+Use `nb-search` for web discovery, URL reading, RRF fusion, and deep research. Route local PDF/Office/OCR document conversion and asset export to [nb-extract](https://github.com/NB-Corp/nb-extract), and DOI/arXiv/patent/citation graphs to `paper-search-cli`.
 
-Set `NB_SEARCH_ZHIHU_API_KEY` to `YOUR_API_KEY` in the environment that runs nb-search, then choose a lane explicitly:
+**How can a team share keys without distributing `.env` files?**
+Deploy [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) and connect the same CLI (`--profile cloud`) or SDK (`createNbSearchRemoteClient()`) over [HTTP Protocol v1](docs/remote-protocol.md).
+
+## From source & deeper docs
+
+To build and verify from a git checkout (`pnpm@10.33.0`):
 
 ```bash
-node scripts/nb-search.mjs search "人工智能" --lane zhihu.search
-node scripts/nb-search.mjs search "人工智能" --lane zhihu.global
-node scripts/nb-search.mjs search "比较近期的人工智能研究趋势" --lane zhihu.synthesis
+git clone https://github.com/NB-Corp/nb-search.git
+cd nb-search
+pnpm install --frozen-lockfile && pnpm build
+node scripts/nb-search.mjs capabilities
 ```
 
-- `zhihu.search` sends `GET /api/v1/content/zhihu_search`. The trimmed query must be 2–100 characters, and the requested count is clamped to 1–10.
-- `zhihu.global` sends `GET /api/v1/content/global_search`. The requested count is clamped to 1–20. `options.search_db` is `all` by default and also accepts `realtime` or `static`.
-- `zhihu.synthesis` sends `POST /v1/chat/completions` and returns `nb-search.synthesis@1`. `options.zhida_model` defaults to `zhida-fast-1p5`; it also accepts `zhida-thinking-1p5`, `zhida-agent`, or any other non-empty custom model name.
-- All three lanes support synchronous and asynchronous execution. The path options are `search_path`, `global_search_path`, `synthesis_path` and `quota_path`; the sample shows their official defaults.
+[English Overview](https://nb-corp.github.io/nb-search/en/) · [Configuration](https://nb-corp.github.io/nb-search/guide/configuration) · [URL Fetch & Routing](https://nb-corp.github.io/nb-search/guide/fetch) · [Async Jobs](https://nb-corp.github.io/nb-search/guide/jobs) · [CLI Reference](docs/cli.md) · [Runtime Contract](docs/model-facing-lane-runtime.md) · [`llms.txt`](https://nb-corp.github.io/nb-search/llms.txt)
 
-The official `base_url` default is `https://developer.zhihu.com`. It is a URL prefix: the configured paths append to it without replacing the prefix. The same prefix behavior applies to Zhihu and to Tavily and Firecrawl usage requests. You can also point `base_url` at a reverse-proxy prefix such as `https://relay.example.test/zhihu`.
-
-With `allow_paid: false` (the default), the free-quota guard fails closed when quota is exhausted or cannot be verified. Reservations are shared across instances in the same runtime that target the same quota endpoint and credential, and uncertain interrupted sends retain their reservation until observed `TotalUsed` advances or the daily reset at 00:00 Asia/Shanghai (UTC+8). Observations are cached only when more than 32 requests remain, for at most 60 seconds. Set `allow_paid: true` only as an explicit opt-in to wallet billing.
-
-`keyUsage()` also reads `GET /api/v1/quota` and returns per-API request counters in `KeyUsage.usage.meters`. The legacy credits summary uses the `zhihu_search` meter, or the first available meter; a key is marked exhausted only when both `zhihu_search` and `global_search` have zero remaining requests.
-
-## Search, fetch, inspect capabilities—and check key usage locally.
-
-```bash
-npm install @nb-corp/nb-search@0.5.1 --registry=https://registry.npmjs.org
-```
-
-```js
-import { createNbSearchRuntime } from '@nb-corp/nb-search';
-
-const search = createNbSearchRuntime();
-const page = await search.fetch({
-  action: 'run',
-  source: {
-    kind: 'url',
-    url: 'https://nodejs.org/en/about/releases/'
-  },
-  pipeline: 'direct.fetch'
-});
-
-if (page.action === 'run' && page.execution === 'sync' && page.status === 'succeeded' && page.documents.length > 0) {
-  console.log(page.documents[0].content);
-}
-```
-
-This example reads a public URL, so it needs network access but no provider key. Add `search.search()` for retrieval and `search.capabilities()` to inspect available operations. [SDK examples, MCP setup and remote clients →](https://nb-corp.github.io/nb-search/guide/integrations)
-
-TypeScript consumers should use `skipLibCheck: true` with the current bundled declarations. [Compatibility details →](https://nb-corp.github.io/nb-search/guide/integrations)
-
-## Bring your own script lane
-
-Point a configured `script` provider at your trusted local JavaScript or erasable TypeScript module. Export `execute(request, context)` (or `search(query, context)`) and return a results array. The standard CLI and SDK support both sync and detached async jobs—no custom CLI wrapper or code-registration boilerplate required.
-
-The runnable [local catalog example](examples/script-lane/config.json) needs no network or credentials. Set `NB_SEARCH_CONFIG` to that file, then run `nb-search search "Node" --lane local.search`. Relative module paths are resolved against the config file's directory; SDK inline config paths use the caller's working directory.
-
-Scripts are trusted code with the same permissions as the runtime, not sandboxed plugins. Use `context.logger` for stderr diagnostics and honor `context.signal`; do not write to CLI stdout. [Module API, TypeScript limits and deployment guidance →](https://nb-corp.github.io/nb-search/sources/custom)
-
-## Pick your entry point
-
-| You want to… | Start here |
-| --- | --- |
-| Give an assistant search and research | [Official nb-search Skill](SKILL.md) |
-| Convert web pages or files to Markdown | [nb-extract](https://github.com/NB-Corp/nb-extract) — web/file-to-Markdown document conversion entry point |
-| Build an app or connect an MCP host | [Integration guide](https://nb-corp.github.io/nb-search/guide/integrations) |
-| Share provider credentials with a team | [nb-search-cloud](https://github.com/NB-Corp/nb-search-cloud) — self-hosted users, keys and usage |
-
-## Go deeper
-
-[Configuration](https://nb-corp.github.io/nb-search/guide/configuration) · [Fetch](https://nb-corp.github.io/nb-search/guide/fetch) · [Async jobs](https://nb-corp.github.io/nb-search/guide/jobs) · [Troubleshooting](https://nb-corp.github.io/nb-search/guide/troubleshooting) · [Upgrading](https://nb-corp.github.io/nb-search/guide/upgrading)
-
-Found a broken source, an integration gap, or a better example? [Open an issue](https://github.com/NB-Corp/nb-search/issues) or send a focused PR. Keep credentials out of reports.
-
-[MIT](LICENSE) · Built by [NB-Corp](https://github.com/NB-Corp)
+Found a broken source or integration gap? [Open an issue](https://github.com/NB-Corp/nb-search/issues) (keep credentials out of reports). [MIT](LICENSE) · Built by [NB-Corp](https://github.com/NB-Corp)

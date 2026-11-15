@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const website = resolve(root, 'website');
 async function pages() {
   const paths = [resolve(website, 'index.md')];
-  for (const section of ['guide', 'sources', 'reference']) {
+  for (const section of ['en', 'guide', 'sources', 'reference']) {
     for (const item of await readdir(resolve(website, section))) {
       if (item.endsWith('.md')) paths.push(resolve(website, section, item));
     }
@@ -33,7 +33,7 @@ describe('website examples match the executable contract', () => {
         if (!object(value)) continue;
         if (object(value['profiles'])) {
           expect(profilesSchema.safeParse(value).success, page.path).toBe(true); checked++;
-        } else if (value['action'] === 'run') {
+        } else if (value['action'] === 'run' && !Object.hasOwn(value, 'status')) {
           const schema = Object.hasOwn(value, 'source') || Object.hasOwn(value, 'url') ? fetchInputSchema : searchInputSchema;
           expect(schema.safeParse(value).success, page.path).toBe(true); checked++;
         } else if (['schema_version', 'version', 'defaults', 'provider_instances', 'credential_slots', 'execution', 'fetch', 'lanes', 'presets'].some((key) => Object.hasOwn(value, key)) && !Object.hasOwn(value, 'values') && !Object.hasOwn(value, 'status')) {

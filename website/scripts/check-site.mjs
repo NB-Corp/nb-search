@@ -19,9 +19,10 @@ try {
   process.exit(1);
 }
 
-// 2. Validate essential generated HTML pages
+// 2. Validate essential generated HTML pages and GEO/SEO static artifacts
 const expectedPages = [
   'index.html',
+  'en/index.html',
   '404.html',
   'guide/quickstart.html',
   'guide/configuration.html',
@@ -42,6 +43,14 @@ const expectedPages = [
   'reference/changelog.html'
 ];
 
+const expectedStaticArtifacts = [
+  'sitemap.xml',
+  'robots.txt',
+  'llms.txt',
+  'llms-full.txt',
+  'og-card.png'
+];
+
 let missingPages = [];
 for (const p of expectedPages) {
   const fullPath = path.join(distDir, p);
@@ -56,13 +65,35 @@ if (missingPages.length > 0) {
 }
 console.log(`✓ All ${expectedPages.length} expected HTML pages generated.`);
 
-// 3. Check base path /nb-search/ in index.html
+let missingArtifacts = [];
+for (const artifact of expectedStaticArtifacts) {
+  const fullPath = path.join(distDir, artifact);
+  if (!fs.existsSync(fullPath) || fs.statSync(fullPath).size === 0) {
+    missingArtifacts.push(artifact);
+  }
+}
+
+if (missingArtifacts.length > 0) {
+  console.error('✗ Missing or empty GEO/SEO static artifacts:', missingArtifacts);
+  process.exit(1);
+}
+console.log(`✓ All ${expectedStaticArtifacts.length} GEO/SEO static artifacts verified.`);
+
+// 3. Check base path /nb-search/, canonical/OG tags, and JSON-LD in index.html & en/index.html
 const indexHtml = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
+const enIndexHtml = fs.readFileSync(path.join(distDir, 'en/index.html'), 'utf-8');
 if (!indexHtml.includes('/nb-search/assets/') || !indexHtml.includes('/nb-search/vp-icons.css')) {
   console.error('✗ Base path /nb-search/ missing from asset links in index.html');
   process.exit(1);
 }
-console.log('✓ Base path /nb-search/ verified in output assets.');
+if (!indexHtml.includes('rel="canonical" href="https://nb-corp.github.io/nb-search/"') ||
+    !enIndexHtml.includes('rel="canonical" href="https://nb-corp.github.io/nb-search/en/"') ||
+    !indexHtml.includes('https://nb-corp.github.io/nb-search/og-card.png') ||
+    !indexHtml.includes('application/ld+json')) {
+  console.error('✗ Expected canonical, OpenGraph image, or JSON-LD metadata missing from landing HTML.');
+  process.exit(1);
+}
+console.log('✓ Base path /nb-search/ and SEO/JSON-LD metadata verified in output HTML.');
 
 // 4. Deadlink scan across all generated HTML files (verifies that /nb-search/ target files exist; does not validate hash/anchor fragments)
 function walk(dir) {
