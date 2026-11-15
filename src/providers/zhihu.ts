@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { NbSearchError } from '../errors.ts';
 import { KeyScheduler } from '../key-scheduler.ts';
 import { validateSearchPath } from '../providers.ts';
+import { redactText } from '../redaction.ts';
 import { ResponseLimitError, type HttpRequest, type JsonTransport } from '../transport.ts';
 import type { ProviderResult, ProviderSearchRequest, QueryExecutionRequest, SupportingUrl } from '../types.ts';
 import { normalizeUrl } from '../url.ts';
@@ -19,6 +20,7 @@ const resultsSchema = z.object({ Items: z.array(itemSchema) });
 const completionSchema = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string() }).passthrough() })).min(1) }).passthrough();
 export interface ZhihuProviderOptions {
   apiKey: string;
+  apiKeys?: readonly string[];
   transport: JsonTransport;
   baseUrl?: string;
   clock?: () => Date;
@@ -55,8 +57,10 @@ export class ZhihuProvider {
     validateZhihuOptions({ ...this.settings }, baseUrl);
     this.clock = options.clock ?? (() => new Date());
     this.authorization = `Bearer ${options.apiKey}`;
-    this.redactions = [options.apiKey, this.authorization];
     this.endpoints = resolveZhihuEndpoints(baseUrl, this.settings);
+    const keys = options.apiKeys !== undefined && options.apiKeys.length > 0 ? options.apiKeys : [options.apiKey];
+    const customUrls = options.baseUrl === undefined || options.baseUrl === DEFAULT_ZHIHU_BASE_URL ? [] : [options.baseUrl, ...Object.values(this.endpoints)];
+    this.redactions = [...new Set([...keys.flatMap((key) => [key, `Bearer ${key}`]), ...customUrls])];
     // The scheduler guards after selecting a key; standalone adapters guard their own transport.
     this.transport = options.transport instanceof KeyScheduler && options.transport.instance.provider_id === 'zhihu'
       ? options.transport : new ZhihuQuotaTransport(options.transport, baseUrl, this.settings, this.clock);
@@ -75,12 +79,12 @@ export class ZhihuProvider {
     const results: ProviderResult[] = [];
     for (const item of parsed.data.Items) {
       const resultUrl = normalizeUrl(item.Url.trim()); if (resultUrl === undefined) continue;
-      const tags = [clean(item.ContentType), clean(item.AuthorName), item.AuthorityLevel === undefined ? '' : `authority:${String(item.AuthorityLevel)}`, item.VoteUpCount === undefined ? '' : `votes:${String(item.VoteUpCount)}`, item.CommentCount === undefined ? '' : `comments:${String(item.CommentCount)}`].filter(Boolean);
-      const snippet = `${tags.length === 0 ? '' : `[${tags.join(' · ')}] `}${clean(item.ContentText)}`.trim();
+      const tags = [this.clean(item.ContentType), this.clean(item.AuthorName), item.AuthorityLevel === undefined ? '' : `authority:${this.clean(String(item.AuthorityLevel))}`, item.VoteUpCount === undefined ? '' : `votes:${String(item.VoteUpCount)}`, item.CommentCount === undefined ? '' : `comments:${String(item.CommentCount)}`].filter(Boolean);
+      const snippet = `${tags.length === 0 ? '' : `[${tags.join(' · ')}] `}${this.clean(item.ContentText)}`.trim();
       const seconds = item.EditTime ?? item.CreatedTime;
       const date = seconds === undefined || seconds === null || !Number.isFinite(seconds) || seconds < 0 ? undefined : new Date(seconds * 1000);
       const publishedAt = date === undefined || Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-      results.push({ title: clean(item.Title), url: resultUrl, ...(snippet === '' ? {} : { snippet }), ...(publishedAt === undefined ? {} : { published_at: publishedAt }) });
+      results.push({ title: this.clean(item.Title), url: resultUrl, ...(snippet === '' ? {} : { snippet }), ...(publishedAt === undefined ? {} : { published_at: publishedAt }) });
       if (results.length >= limit) break;
     }
     return results;
@@ -96,26 +100,30 @@ export class ZhihuProvider {
         const candidate = typeof item === 'string' ? item : record(item) ? item['url'] : undefined;
         const url = typeof candidate === 'string' ? normalizeUrl(candidate) : undefined;
         if (url === undefined || seen.has(url)) continue;
-        seen.add(url); const title = record(item) ? clean(item['title']) : '';
+        seen.add(url); const title = record(item) ? this.clean(item['title']) : '';
         supporting.push({ url, ...(title === '' ? {} : { title }), source: 'provider-grounding' });
       }
     }
-    return { text: message.content.trim(), supporting_urls: supporting, citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false } };
+    return { text: redactText(message.content, this.redactions).trim(), supporting_urls: supporting, citation_status: { claim_linked_citations: false, evidence_map_available: false, semantic_verification: false } };
   }
   private async send(request: HttpRequest): Promise<unknown> {
     try {
       const response = await this.transport.send({ ...request, headers: { ...zhihuHeaders(this.authorization, this.clock()), ...(request.method === 'POST' ? { 'Content-Type': 'application/json' } : {}) }, response_type: 'json', max_response_bytes: 2 * 1024 * 1024, redirect: 'manual' });
+      assertZhihuEnvelope(response.body);
       if (response.status === 401 || response.status === 403) throw new NbSearchError('PROVIDER_AUTH', 'zhihu authentication failed.', false, this.name);
       if (response.status === 429) throw new NbSearchError('PROVIDER_RATE_LIMIT', 'zhihu rate limit was reached.', true, this.name);
       if (response.status < 200 || response.status >= 300) throw new NbSearchError('PROVIDER_UNAVAILABLE', `zhihu request failed (HTTP ${String(response.status)}).`, response.status >= 500, this.name);
-      assertZhihuEnvelope(response.body);
       return response.body;
     } catch (error) {
-      if (request.signal.aborted || error instanceof NbSearchError) throw error;
+      if (request.signal.aborted) throw error;
+      if (error instanceof NbSearchError) {
+        throw new NbSearchError(error.code, redactText(error.message, this.redactions), error.retryable, error.provider ?? this.name, { cause: error, retryAfterMs: error.retryAfterMs, data: error.data });
+      }
       if (error instanceof ResponseLimitError) throw malformed();
       throw new NbSearchError('PROVIDER_UNAVAILABLE', 'zhihu provider connection failed.', true, this.name, { cause: error });
     }
   }
+  private clean(value: unknown): string { return typeof value === 'string' ? redactText(value.replace(/<[^>]*>/gu, ' '), this.redactions).replace(/\s+/gu, ' ').trim() : ''; }
 }
 function assertZhihuEnvelope(body: unknown): void {
   if (!record(body) || body['Code'] === undefined || body['Code'] === 0) return;
@@ -126,5 +134,4 @@ function assertZhihuEnvelope(body: unknown): void {
   throw new NbSearchError('PROVIDER_UNAVAILABLE', 'zhihu request was rejected by the upstream service.', code === 90001, 'zhihu');
 }
 function malformed(): NbSearchError { return new NbSearchError('PROVIDER_UNAVAILABLE', 'zhihu returned malformed content.', false, 'zhihu'); }
-function clean(value: unknown): string { return typeof value === 'string' ? value.replace(/<[^>]*>/gu, ' ').replace(/\s+/gu, ' ').trim() : ''; }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }

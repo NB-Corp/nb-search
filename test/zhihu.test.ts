@@ -113,9 +113,14 @@ describe('Zhihu built-in wire contract', () => {
 });
 
 describe('Zhihu free-quota reservations', () => {
-  it.each([quota(0), { Code: 0, Data: [] }, { Code: 0, Data: [{ APIID: 'zhihu_search', RemainingQuota: '10' }] }, { Code: 20001 }])('fails closed before billing on exhausted/unreadable quota %j', async (body) => {
+  it.each([quota(0), { Code: 0, Data: [] }, { Code: 0, Data: [{ APIID: 'zhihu_search', RemainingQuota: '10' }] }])('fails closed before billing on exhausted/unreadable quota %j', async (body) => {
     const { provider, requests } = harness({}, now, () => body);
     await expect(provider.search(request)).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', message: 'zhihu daily free quota is exhausted or unverified.', retryable: false, provider: 'zhihu' });
+    expect(requests).toHaveLength(1); expect(isQuota(requests[0]!)).toBe(true);
+  });
+  it('surfaces PROVIDER_AUTH on quota Code=20001 or HTTP 401/403 while still blocking paid dispatch', async () => {
+    const { provider, requests } = harness({}, now, () => ({ Code: 20001 }));
+    await expect(provider.search(request)).rejects.toMatchObject({ code: 'PROVIDER_AUTH', retryable: false, provider: 'zhihu' });
     expect(requests).toHaveLength(1); expect(isQuota(requests[0]!)).toBe(true);
   });
   it('fails closed on a quota network failure and never sends a billable request', async () => {
@@ -182,19 +187,76 @@ describe('Zhihu free-quota reservations', () => {
     await provider.search(request);
     expect(requests.filter(isQuota)).toHaveLength(2);
   });
-  it('guards the actual scheduler key and each retry rather than rotating between precheck and billing', async () => {
-    const requests: HttpRequest[] = []; let billed = 0;
+  it('guards the actual scheduler key, fails over past quota-exhausted keys, and rejects when all keys are exhausted', async () => {
+    const requests: HttpRequest[] = []; let billed = 0; let firstKeyQuota = 100;
     const transport: HttpTransport = { async send<T>(input: HttpRequest) {
       requests.push(input);
-      if (isQuota(input)) return { status: 200, body: quota(input.headers?.['Authorization'] === 'Bearer YOUR_API_KEY' ? 100 : 0) as T };
+      if (isQuota(input)) return { status: 200, body: quota(input.headers?.['Authorization'] === 'Bearer YOUR_API_KEY' ? firstKeyQuota : 0) as T };
       return { status: ++billed === 1 ? 500 : 200, body: found as T };
     } };
-    const scheduler = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'YOUR_API_KEY', values: ['YOUR_API_KEY', 'ANOTHER_API_KEY'], worker_grant: { kind: 'environment', name: 'NB_SEARCH_ZHIHU_API_KEY' } }, transport, now);
-    const provider = new ZhihuProvider({ apiKey: 'YOUR_API_KEY', transport: scheduler, clock: now });
+    const scheduler = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, key_strategy: 'priority', options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'ANOTHER_API_KEY', values: ['ANOTHER_API_KEY', 'YOUR_API_KEY'], worker_grant: { kind: 'environment', name: 'NB_SEARCH_ZHIHU_API_KEY' } }, transport, now);
+    const provider = new ZhihuProvider({ apiKey: 'ANOTHER_API_KEY', apiKeys: ['ANOTHER_API_KEY', 'YOUR_API_KEY'], transport: scheduler, clock: now });
     await provider.search(request);
-    await expect(provider.search(request)).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT' });
-    expect(requests.map((input) => input.headers?.['Authorization'])).toEqual(['Bearer YOUR_API_KEY', 'Bearer YOUR_API_KEY', 'Bearer YOUR_API_KEY', 'Bearer ANOTHER_API_KEY']);
-    expect(requests.filter((input) => !isQuota(input))).toHaveLength(2);
+    expect(requests.map((input) => input.headers?.['Authorization'])).toEqual(['Bearer ANOTHER_API_KEY', 'Bearer YOUR_API_KEY', 'Bearer YOUR_API_KEY', 'Bearer YOUR_API_KEY']);
+    firstKeyQuota = 0;
+    const exhaustedScheduler = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'ANOTHER_API_KEY', values: ['ANOTHER_API_KEY', 'YOUR_API_KEY'], worker_grant: { kind: 'environment', name: 'NB_SEARCH_ZHIHU_API_KEY' } }, transport, now);
+    const exhaustedProvider = new ZhihuProvider({ apiKey: 'ANOTHER_API_KEY', transport: exhaustedScheduler, clock: now });
+    await expect(exhaustedProvider.search(request)).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: false });
+  });
+  it('shares free-quota reservations across runtime instances using the same quota account and retains uncertain charges', async () => {
+    let billedCalls = 0; let failFirstSend = false;
+    const transport: HttpTransport = { async send<T>(input: HttpRequest) {
+      if (isQuota(input)) return { status: 200, body: quota(1, new URL(input.url).searchParams.get('APIIDs')!) as T };
+      billedCalls += 1;
+      if (failFirstSend && billedCalls === 1) throw new TypeError('socket hang up');
+      return { status: 200, body: found as T };
+    } };
+    const makeApp = () => createRuntimeComposition({ NB_SEARCH_ZHIHU_API_KEY: 'SHARED_KEY' }, { transport, now, config: {
+      provider_instances: {
+        'zhihu.a': { provider_id: 'zhihu', credential_slot_id: 'zhihu.default', enabled: true, options: {} },
+        'zhihu.b': { provider_id: 'zhihu', credential_slot_id: 'zhihu.default', enabled: true, options: {} },
+      },
+      credential_slots: { 'zhihu.default': { provider_id: 'zhihu', env: 'NB_SEARCH_ZHIHU_API_KEY' } },
+      lanes: {
+        'zhihu.a': { provider_instance_id: 'zhihu.a', operation_id: 'search', latency: 'fast', cost: 'cheap' },
+        'zhihu.b': { provider_instance_id: 'zhihu.b', operation_id: 'search', latency: 'fast', cost: 'cheap' },
+      },
+    } });
+    const sharedApp = makeApp();
+    const [first, second] = await Promise.all([
+      sharedApp.runtime.search({ action: 'run', query: '中文检索', lane: 'zhihu.a' }),
+      sharedApp.runtime.search({ action: 'run', query: '中文检索', lane: 'zhihu.b' }),
+    ]);
+    expect([first, second].map((item) => 'status' in item ? item.status : '').sort()).toEqual(['failed', 'succeeded']);
+    expect(billedCalls).toBe(1);
+
+    billedCalls = 0; failFirstSend = true;
+    const uncertainApp = makeApp();
+    await expect(uncertainApp.runtime.search({ action: 'run', query: '中文检索', lane: 'zhihu.a' })).resolves.toMatchObject({ status: 'failed' });
+    expect(billedCalls).toBe(1);
+  });
+  it('redacts rotated credentials in results, synthesis, and usage meters and preserves Zhihu envelope codes over HTTP status', async () => {
+    const transport: HttpTransport = { async send<T>(input: HttpRequest) {
+      if (isQuota(input)) return { status: 200, body: { Code: 0, Data: [{ APIID: new URL(input.url).searchParams.get('APIIDs') ?? 'zhihu_search', APIName: 'Search Bearer KEY_TWO', TotalQuota: 100, TotalUsed: 1, RemainingQuota: 99 }] } as T };
+      if (input.method === 'POST') return { status: 200, body: { choices: [{ message: { content: 'Echo KEY_TWO', citations: [{ url: 'https://example.test/c', title: 'Cite Bearer KEY_TWO' }] } }] } as T };
+      return { status: 200, body: { Code: 0, Data: { Items: [{ Title: 'Leak Bearer KEY_TWO', Url: 'https://example.test/r', ContentText: 'Body KEY_ONE' }] } } as T };
+    } };
+    const scheduler = new KeyScheduler('zhihu.default', { provider_id: 'zhihu', enabled: true, options: {} }, { credential_slot_id: 'zhihu.default', provider_id: 'zhihu', value: 'KEY_ONE', values: ['KEY_ONE', 'KEY_TWO'], worker_grant: { kind: 'environment', name: 'NB_SEARCH_ZHIHU_API_KEY' } }, transport, now);
+    const provider = new ZhihuProvider({ apiKey: 'KEY_ONE', apiKeys: ['KEY_ONE', 'KEY_TWO'], transport: scheduler, clock: now });
+    const hits = await provider.search(request);
+    expect(JSON.stringify(hits)).not.toMatch(/KEY_ONE|KEY_TWO/);
+    const synth = await provider.synthesize(request);
+    expect(JSON.stringify(synth)).not.toMatch(/KEY_ONE|KEY_TWO/);
+    const usage = await scheduler.usage(true);
+    expect(JSON.stringify(usage)).not.toMatch(/KEY_ONE|KEY_TWO/);
+
+    const statusConflict: HttpTransport = { async send<T>() { return { status: 429, body: { Code: 30002 } as T }; } };
+    const p429 = new ZhihuProvider({ apiKey: 'KEY_ONE', transport: statusConflict, options: { allow_paid: true }, clock: now });
+    await expect(p429.search(request)).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: false });
+    const p400 = new ZhihuProvider({ apiKey: 'KEY_ONE', transport: { async send<T>() { return { status: 400, body: { Code: 40003 } as T }; } }, options: { allow_paid: true }, clock: now });
+    await expect(p400.search(request)).rejects.toMatchObject({ code: 'PROVIDER_RATE_LIMIT', retryable: true });
+    const p403 = new ZhihuProvider({ apiKey: 'KEY_ONE', transport: { async send<T>() { return { status: 403, body: { Code: 30003 } as T }; } }, options: { allow_paid: true }, clock: now });
+    await expect(p403.search(request)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', retryable: false });
   });
   it('keeps paid-mode calls usable after a free-quota usage inspection', async () => {
     const requests: HttpRequest[] = [];

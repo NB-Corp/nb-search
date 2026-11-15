@@ -126,9 +126,9 @@ node scripts/nb-search.mjs search "比较近期的人工智能研究趋势" --la
 - `zhihu.synthesis` 发送 `POST /v1/chat/completions`，输出类型为 `nb-search.synthesis@1`。`options.zhida_model` 默认是 `zhida-fast-1p5`，也可使用 `zhida-thinking-1p5`、`zhida-agent` 或其他非空自定义模型名。
 - 三个 lane 都支持同步和异步执行。可配置的路径选项是 `search_path`、`global_search_path`、`synthesis_path` 和 `quota_path`；上面的示例使用官方默认值。
 
-官方 `base_url` 默认值是 `https://developer.zhihu.com`，它是 URL 前缀：配置的路径会追加到此前缀后，不会替换此前缀。知乎以及 Tavily、Firecrawl 的用量请求都保持这一前缀语义。需要展示覆盖地址时，请使用中性的 `https://relay.example.test/zhihu`。
+官方 `base_url` 默认值是 `https://developer.zhihu.com`，它是 URL 前缀：配置的路径会追加到此前缀后，不会替换此前缀。知乎以及 Tavily、Firecrawl 的用量请求都保持这一前缀语义。如需经反向代理转发，可将 `base_url` 指向代理前缀（例如 `https://relay.example.test/zhihu`）。
 
-`allow_paid` 默认是 `false`。免费配额耗尽或无法验证时，配额守卫会拒绝请求；只有确认剩余量大于 32 时才缓存配额，最长 60 秒，并在进程内同步预留。每日配额在 Asia/Shanghai（UTC+8）00:00 重置。只有明确选择钱包计费时，才设置 `allow_paid: true`。
+`allow_paid` 默认是 `false`。免费配额耗尽或无法验证时，配额守卫会拒绝请求；配额账本在同一运行时内按配额端点与凭据共享预留，并对未收到明确回执的异常发送保留扣减直至上游 `TotalUsed` 推进或北京时间 00:00 重置；只有确认剩余量大于 32 时才缓存配额（最长 60 秒）。每日配额在 Asia/Shanghai（UTC+8）00:00 重置。只有明确选择钱包计费时，才设置 `allow_paid: true`。
 
 `keyUsage()` 同样读取 `GET /api/v1/quota`，在 `KeyUsage.usage.meters` 中返回按 API 分开的 request 计数。旧版 credits 摘要取自 `zhihu_search`，没有该项时使用首个 meter；仅当 `zhihu_search` 和 `global_search` 的剩余量都为零时，才将密钥标记为耗尽。
 

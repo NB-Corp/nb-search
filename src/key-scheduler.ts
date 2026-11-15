@@ -3,7 +3,7 @@ import type { ProviderInstanceConfig } from './config-schema.ts';
 import type { SecretBinding } from './config-sources.ts';
 import { NbSearchError } from './errors.ts';
 import { resolveOperationUrl } from './providers.ts';
-import { DEFAULT_ZHIHU_BASE_URL, ZHIHU_PATHS, ZhihuQuotaTransport, zhihuHeaders, zhihuQuotaMeters, type ZhihuOptions } from './providers/zhihu-quota.ts';
+import { DEFAULT_ZHIHU_BASE_URL, ZHIHU_PATHS, ZhihuQuotaTransport, zhihuHeaders, zhihuQuotaMeters, type ZhihuOptions, type ZhihuQuotaLedger } from './providers/zhihu-quota.ts';
 import type { HttpRequest, HttpResponse, HttpTransport } from './transport.ts';
 
 export interface KeyUsageMeter {
@@ -34,11 +34,13 @@ const MAX_RETRIES = 2;
 /** One scheduler per provider instance; all its query and fetch ports share the same key states. */
 export class KeyScheduler implements HttpTransport {
   private readonly keys: readonly string[];
+  private readonly redactions: readonly string[];
   private readonly states: KeyState[];
   private cursor = 0;
-  constructor(readonly instanceId: string, readonly instance: ProviderInstanceConfig, credential: SecretBinding, private readonly transport: HttpTransport, private readonly clock: () => Date = () => new Date()) {
-    if (instance.provider_id === 'zhihu') this.transport = new ZhihuQuotaTransport(transport, instance.base_url, instance.options as ZhihuOptions, clock);
+  constructor(readonly instanceId: string, readonly instance: ProviderInstanceConfig, credential: SecretBinding, private readonly transport: HttpTransport, private readonly clock: () => Date = () => new Date(), zhihuLedger?: ZhihuQuotaLedger) {
+    if (instance.provider_id === 'zhihu') this.transport = new ZhihuQuotaTransport(transport, instance.base_url, instance.options as ZhihuOptions, clock, zhihuLedger);
     this.keys = credential.values ?? [credential.value];
+    this.redactions = [...this.keys.flatMap((key) => [key, `Bearer ${key}`]), ...(instance.base_url === undefined || instance.base_url === DEFAULT_ZHIHU_BASE_URL ? [] : [instance.base_url])];
     this.states = this.keys.map(() => ({ invalid: false, cooldownUntil: 0, exhausted: false }));
   }
   async send<T>(request: HttpRequest): Promise<HttpResponse<T>> {
@@ -59,6 +61,14 @@ export class KeyScheduler implements HttpTransport {
         try {
           const response = await this.transport.send<T>(keyed);
           lastError = undefined;
+          const zhihuCode = this.instance.provider_id === 'zhihu' && record(response.body) && typeof response.body['Code'] === 'number' ? response.body['Code'] : 0;
+          if (zhihuCode !== 0) {
+            if (zhihuCode === 20001) { state.invalid = true; lastResponse = response; break; }
+            if (zhihuCode === 30002) { lastResponse = response; break; }
+            if (zhihuCode === 30001 || zhihuCode === 40003) { state.cooldownUntil = this.clock().getTime() + retryAfter(response.headers, this.clock); lastResponse = response; break; }
+            if (zhihuCode === 90001) { lastResponse = response; if (attempt < MAX_RETRIES) { await this.backoff(attempt, request.signal); continue; } break; }
+            return response;
+          }
           if (response.status === 401 || response.status === 403) { state.invalid = true; lastResponse = response; break; }
           if (response.status === 429) { state.cooldownUntil = this.clock().getTime() + retryAfter(response.headers, this.clock); lastResponse = response; break; }
           if (response.status === 402) { state.exhausted = true; state.cache = { used: null, limit: null, remaining: null, checkedAt: this.clock().getTime(), error: 'unavailable' }; lastResponse = response; break; }
@@ -70,6 +80,12 @@ export class KeyScheduler implements HttpTransport {
           return response;
         } catch (error) {
           if (request.signal.aborted) throw error;
+          if (error instanceof NbSearchError && error.provider === 'zhihu' && !error.retryable && (error.code === 'PROVIDER_AUTH' || error.code === 'PROVIDER_RATE_LIMIT')) {
+            if (error.code === 'PROVIDER_AUTH') state.invalid = true;
+            lastResponse = undefined;
+            lastError = error;
+            break;
+          }
           // Only connection failures are retried; parsing, response-size and explicit non-retryable failures are not.
           if (!(error instanceof TypeError || error instanceof NbSearchError && error.code === 'PROVIDER_UNAVAILABLE' && error.retryable)) throw error;
           lastResponse = undefined;
@@ -111,7 +127,7 @@ export class KeyScheduler implements HttpTransport {
     try {
       const response = await this.transport.send({ url, method: 'GET', headers: zhihu ? zhihuHeaders(`Bearer ${this.keys[index]!}`, this.clock()) : { Authorization: `Bearer ${this.keys[index]!}` }, ...(zhihu ? { redirect: 'manual' as const } : {}), response_type: 'json', max_response_bytes: 64_000, signal });
       if (response.status < 200 || response.status >= 300) { state.cache = { used: null, limit: null, remaining: null, checkedAt: this.clock().getTime(), error: 'unavailable' }; return; }
-      const result = zhihu ? zhihuUsage(response.body, this.clock()) : usageNumbers(response.body, tavily);
+      const result = zhihu ? zhihuUsage(response.body, this.clock(), this.redactions) : usageNumbers(response.body, tavily);
       state.cache = { ...result, checkedAt: this.clock().getTime(), ...(result === undefined ? { error: 'invalid_response' as const } : {}) } as UsageCache;
       // A successful refresh can restore a previously exhausted key, but cannot undo auth quarantine.
       state.exhausted = zhihu ? result?.meters?.find((meter) => meter.id === 'zhihu_search')?.remaining === 0 && result.meters.find((meter) => meter.id === 'global_search')?.remaining === 0 : result?.remaining === 0;
@@ -121,8 +137,8 @@ export class KeyScheduler implements HttpTransport {
     }
   }
 }
-function zhihuUsage(body: unknown, now: Date): Pick<UsageCache, 'used' | 'limit' | 'remaining' | 'meters'> | undefined {
-  const meters = zhihuQuotaMeters(body, now);
+function zhihuUsage(body: unknown, now: Date, redactions: readonly string[]): Pick<UsageCache, 'used' | 'limit' | 'remaining' | 'meters'> | undefined {
+  const meters = zhihuQuotaMeters(body, now, redactions);
   const summary = meters?.find((meter) => meter.id === 'zhihu_search') ?? meters?.[0];
   return summary === undefined ? undefined : { used: summary.used, limit: summary.limit, remaining: summary.remaining, meters };
 }

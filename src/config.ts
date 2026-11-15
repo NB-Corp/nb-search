@@ -6,6 +6,7 @@ import type { DirectFetchIo } from './fetch-security.ts';
 import { directFetchIoForEnvironment } from './direct-proxy.ts';
 import { NbSearchError } from './errors.ts';
 import { KeyScheduler } from './key-scheduler.ts';
+import { createZhihuQuotaLedger } from './providers/zhihu-quota.ts';
 import { builtInProviderRegistrations, builtInProviderRegistrationsForInternalTest, ProviderRegistry, type ProviderPorts, type ProviderRegistration } from './provider-registry.ts';
 import { FetchJsonTransport, type JsonTransport } from './transport.ts';
 import type { FetchOperationDescriptor, FetchProvider, QueryExecution, QueryOperationDescriptor, QueryProvider } from './types.ts';
@@ -24,14 +25,14 @@ export function loadConfiguration(env: NodeJS.ProcessEnv = process.env, transpor
 export function configurationFromResolved(resolved: ResolvedConfiguration, transport: JsonTransport = new FetchJsonTransport(), options: LoadConfigurationOptions = {}, env: NodeJS.ProcessEnv = process.env): AppConfiguration {
   const directIo = options.test_only_direct_fetch_io ?? directFetchIoForEnvironment(env);
   const builtIns = options.test_only_browser_render_io === undefined ? builtInProviderRegistrations(directIo) : builtInProviderRegistrationsForInternalTest(directIo, options.test_only_browser_render_io);
-  const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>(); const keySchedulers = new Map<string, KeyScheduler>();
+  const registry = new ProviderRegistry(builtIns, options.provider_registrations ?? []); const ports = new Map<string, ProviderPorts>(); const keySchedulers = new Map<string, KeyScheduler>(); const zhihuLedger = createZhihuQuotaLedger();
   for (const [instanceId, instance] of Object.entries(resolved.config.provider_instances)) {
     const descriptor = registry.descriptor(instance.provider_id); if (descriptor === undefined || !instance.enabled) continue;
     const credential = instance.credential_slot_id === undefined ? undefined : resolved.secret_bindings.get(instance.credential_slot_id);
     const configured = (descriptor.activation.credential === 'none' || credential !== undefined) && (descriptor.activation.endpoint !== 'required' || instance.base_url !== undefined);
     if (!configured) continue;
     const clock = options.now ?? (() => new Date());
-    const scheduler = credential !== undefined && registry.isBuiltIn(instance.provider_id) ? new KeyScheduler(instanceId, instance, credential, transport, clock) : undefined;
+    const scheduler = credential !== undefined && registry.isBuiltIn(instance.provider_id) ? new KeyScheduler(instanceId, instance, credential, transport, clock, zhihuLedger) : undefined;
     if (scheduler !== undefined) keySchedulers.set(instanceId, scheduler);
     const created = registry.create(instanceId, instance, { ...(credential === undefined ? {} : { credential }), transports: { http: scheduler ?? transport }, clock }); ports.set(instanceId, created);
   }

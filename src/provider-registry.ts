@@ -134,7 +134,8 @@ const zhihuRegistration: ProviderRegistration = {
   },
   validate(_id, instance) { validateZhihuOptions(instance.options, instance.base_url); },
   create(context) {
-    const provider = new ZhihuProvider({ ...commonOptions(context, requireCredential(context)), options: context.instance.options as ZhihuOptions });
+    const credential = requireCredential(context);
+    const provider = new ZhihuProvider({ ...commonOptions(context, credential), ...(credential.values === undefined ? {} : { apiKeys: credential.values }), options: context.instance.options as ZhihuOptions });
     return { query: {
       search: resultsProvider(provider),
       global: { name: provider.name, redactions: provider.redactions, async execute(request) { return { channel: 'results', value: { results: await provider.global(request) } }; } },
